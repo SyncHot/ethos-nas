@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "generated_at": "2026-11-15T11:54:12+00:00",
+  "latest": {
+    "version": "2.1.0",
+    "git_sha": "b4071ef",
+    "git_sha_full": "b4071ef299360c918d366336b75cf4e8f71ca359",
+    "build": 7,
+    "released_at": "2026-11-15T11:54:12+00:00",
+    "notes": "Update check: Settings → System now shows the running version and whether a newer release is published (signed index). Products renamed: Files, Packages, Videos, Cameras, Downloads, Photos. Public repository, MIT license."
+  },
+  "releases": [
+    {
+      "version": "2.1.0",
+      "git_sha": "b4071ef",
+      "git_sha_full": "b4071ef299360c918d366336b75cf4e8f71ca359",
+      "build": 7,
+      "released_at": "2026-11-15T11:54:12+00:00",
+      "notes": "Update check: Settings → System now shows the running version and whether a newer release is published (signed index). Products renamed: Files, Packages, Videos, Cameras, Downloads, Photos. Public repository, MIT license."
+    }
+  ]
+}
