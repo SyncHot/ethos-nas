@@ -100,11 +100,18 @@ def main() -> int:
     check("every <select> has an accessible name", not unnamed, "; ".join(unnamed[:3]))
 
     # ── chips carry white text on AA-safe colours ─────────────────────────
-    kanban = (STATIC / "apps" / "kanban.js").read_text()
-    m = re.search(r"LABEL_COLORS = \[([^\]]+)\]", kanban)
-    colors = re.findall(r"#[0-9a-fA-F]{6}", m.group(1)) if m else []
-    low = [c for c in colors if contrast("#ffffff", c) < 4.5]
-    check("kanban label chips pass AA with white text", colors and not low, ", ".join(low) or "no colours")
+    # The Kanban board is an `ethos-kanban` package now, so the source only
+    # exists in a sibling checkout; CI has no packages checkout and skips it.
+    kanban = (Path(__file__).resolve().parent.parent.parent
+              / "ethos-packages" / "ethos-kanban" / "frontend" / "app.js")
+    if kanban.is_file():
+        kanban_src = kanban.read_text()
+        m = re.search(r"LABEL_COLORS = \[([^\]]+)\]", kanban_src)
+        colors = re.findall(r"#[0-9a-fA-F]{6}", m.group(1)) if m else []
+        low = [c for c in colors if contrast("#ffffff", c) < 4.5]
+        check("kanban label chips pass AA with white text", colors and not low, ", ".join(low) or "no colours")
+    else:
+        print("  [SKIP] kanban label chips (ethos-kanban package not checked out)")
 
     failed = [r for r in _results if not r[1]]
     print(f"\n{len(_results) - len(failed)}/{len(_results)} checks passed")
