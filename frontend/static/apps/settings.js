@@ -5,6 +5,7 @@ import { uiIcon } from '../core/icons.js';
 import { apiFetch, apiRequest, readErrorDetail } from '../core/api.js';
 import { addNotification } from '../core/notification-center.js';
 import { showRestartOverlay } from '../core/window-manager.js';
+import { startTask } from '../core/progress.js';
 import { skeletonRows } from '../core/states.js';
 import {
     WALLPAPER_IDS, CUSTOM_ID, DEFAULT_WALLPAPER,
@@ -161,8 +162,10 @@ async function loadSystemTab() {
                         <div id="coreUpdateStatus" data-testid="core-update-status" style="font-size:11px;color: var(--text-3);">Loading update status…</div>
                     </div>
                     <button id="coreUpdateCheck" data-testid="core-update-check" class="btn-ghost btn-sm" hidden>${uiIcon('refresh', 13)} Check for updates</button>
+                    <button id="coreUpdateApply" data-testid="core-update-apply" class="btn-primary btn-sm" hidden>${uiIcon('download', 13)} Update now</button>
                 </div>
                 <div id="coreUpdateNotes" style="display:none;margin-top:10px;font-size:11px;color:var(--text-2);white-space:pre-wrap;"></div>
+                <div id="coreUpdateResult" style="display:none;margin-top:8px;font-size:11px;color: var(--text-3);"></div>
             </div>
 
             <div class="glass-card" style="margin-top:12px;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;">
@@ -209,10 +212,13 @@ async function loadUpdateCard() {
     const versionEl = document.getElementById('coreVersion');
     const statusEl = document.getElementById('coreUpdateStatus');
     const notesEl = document.getElementById('coreUpdateNotes');
+    const resultEl = document.getElementById('coreUpdateResult');
     const btn = document.getElementById('coreUpdateCheck');
+    const applyBtn = document.getElementById('coreUpdateApply');
     if (!versionEl || !statusEl) return;
     const isAdmin = _jwtRole() === 'admin';
     if (btn) btn.hidden = !isAdmin;
+    if (applyBtn) applyBtn.hidden = true;
 
     const render = (data) => {
         const cur = data.current || {};
@@ -239,13 +245,79 @@ async function loadUpdateCard() {
             statusEl.textContent = `Not checked yet — ${checked}`;
             statusEl.style.color = 'var(--text-3)';
         }
+        if (applyBtn) {
+            applyBtn.hidden = !(isAdmin && data.enabled !== false && data.update_available === true);
+        }
+        if (resultEl) {
+            const r = data._result;
+            if (r && r.status) {
+                const when = r.at ? ` (${formatDate(r.at)})` : '';
+                const map = { ok: 'Last update succeeded', up_to_date: 'Already up to date', rolled_back: 'Last update failed — previous version restored', failed: 'Last update failed' };
+                resultEl.textContent = `${map[r.status] || ('Last update: ' + r.status)}${r.version ? ' → ' + r.version : ''}${when}${r.detail ? ' — ' + r.detail : ''}`;
+                resultEl.style.display = 'block';
+                resultEl.style.color = r.status === 'ok' ? 'var(--text-2)' : '#eab308';
+            }
+        }
+    };
+
+    const applyUpdate = async () => {
+        const latest = (await apiRequest('/api/system/update').catch(() => ({}))).latest || {};
+        const target = `v${latest.version || '?'}${latest.git_sha ? ' · ' + latest.git_sha : ''}`;
+        const ok = await window.showModalConfirm(
+            'Update EthOS NAS',
+            `Install ${target} now?\n\nA data snapshot is taken first, the service restarts and this page reloads. If the new version does not come up, the previous version is restored automatically.`,
+        );
+        if (!ok) return;
+        try {
+            await apiRequest('/api/system/update', { method: 'POST' });
+        } catch (err) {
+            window.showAlert('Update failed to start', err.detail || err.message);
+            return;
+        }
+        const task = startTask({ appId: 'system', title: 'Updating EthOS NAS', detail: 'starting the helper…', percent: null, testIdPrefix: 'sys-update' });
+        const stepPct = { fetch: 10, apply: 30, deps: 55, restart: 75, verify: 90, done: 100 };
+        const tick = async () => {
+            let st;
+            try {
+                st = await apiRequest('/api/system/update/status');
+            } catch (_) {
+                task.update({ percent: 95, detail: 'service restarting…' });
+                showRestartOverlay();
+                return;
+            }
+            const job = st.job || {};
+            if (job.status === 'running') {
+                task.update({ percent: stepPct[job.step] ?? 20, detail: `${job.step}${job.detail ? ' — ' + job.detail : ''}` });
+                setTimeout(tick, 2000);
+                return;
+            }
+            if (job.status === 'ok' || job.status === 'up_to_date') {
+                task.finish('done', { percent: 100, detail: job.detail || job.status });
+                showRestartOverlay();
+            } else if (job.status === 'rolled_back' || job.status === 'failed') {
+                task.finish('failed', { percent: 100, detail: job.detail || job.status });
+                window.showAlert('Update failed', job.detail || 'The previous version was restored.');
+            } else {
+                setTimeout(tick, 2000);
+            }
+        };
+        setTimeout(tick, 1500);
     };
 
     try {
-        render(await apiRequest('/api/system/update'));
+        const [data, st] = await Promise.all([
+            apiRequest('/api/system/update'),
+            apiRequest('/api/system/update/status').catch(() => null),
+        ]);
+        render({ ...data, _result: st && st.result ? st.result : null });
     } catch (err) {
         statusEl.textContent = `Could not read update status — ${err.detail || err.message}`;
         statusEl.style.color = '#eab308';
+    }
+
+    if (applyBtn && isAdmin && !applyBtn.dataset.wired) {
+        applyBtn.dataset.wired = '1';
+        applyBtn.addEventListener('click', applyUpdate);
     }
 
     if (btn && isAdmin && !btn.dataset.wired) {

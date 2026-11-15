@@ -1,8 +1,8 @@
-# Core updates — check (and later: apply)
+# Core updates — check and apply
 
-Status: **check-only shipped** (2026-11-15). Applying an update from the UI is
-planned; today the operator upgrades with `git pull` / the commands in
-`docs/open-source.md`.
+Status: **check + apply shipped** (2026-11-15). An admin can install the
+published release from Settings → System; the privileged helper verifies the
+signed index, applies the commit, restarts the service and rolls back on failure.
 
 ## Why
 
@@ -50,17 +50,62 @@ schema 1), holding the last result + error.
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | GET | `/api/system/update` | any user | Cached result; **never** a network request |
-| POST | `/api/system/update/check` | admin | Fetch + verify the index now (60 s-1 h cache) |
+| GET | `/api/system/update/status` | any user | Helper job/result + `helper` availability |
+| POST | `/api/system/update/check` | admin | Fetch + verify the index now (1 h cache) |
+| POST | `/api/system/update` | admin | Write `update/request.json` and start the helper |
 
 Response shape: `{enabled, index_url, key_fingerprint, current{version,git_sha,build},
 latest|null, update_available|null, checked_at, checked_at_iso, error, auto_check_hours}`.
 
+## Apply (root helper `ethos-update`)
+
+`POST /api/system/update` never runs anything privileged itself. It:
+
+1. refuses unless a check says an update is available and no job is running,
+2. takes a **pre-update data snapshot** (`config_archive.take_snapshot("pre-update")`),
+3. writes `<DATA_DIR>/update/request.json` (`{"action":"apply"}`, 0600),
+4. spawns `sudo -n /usr/local/bin/ethos-update` detached and returns `{status:"updating"}`.
+
+The helper is the only privileged piece and it takes **no arguments**. Installed
+by `setup_scripts/setup_service.sh` under one argument-free sudoers rule; its
+settings live in the root-owned `/etc/ethos-nas/update.conf` (checkout, repo
+owner, service unit, data dir, index URL, public key).
+
+Helper flow (git-checkout installs):
+
+```
+fetch signed index → verify Ed25519 (openssl) → take the signed commit
+→ git fetch → git reset --hard <sha>   (as the repo owner, never root)
+→ .venv/bin/pip install -r requirements.txt
+→ systemctl restart ethos-nas
+→ poll :9000/api/system/status for 90 s
+```
+
+Anything that fails — fetch, reset, dependencies, restart, or a service that
+does not answer within 90 s — triggers **auto-rollback**: reset to the previous
+commit, reinstall the previous requirements, restart, probe again. Progress and
+the outcome are written to `<DATA_DIR>/update/{job,result}.json`; the backend
+reports a successful/rolled-back result once after the restart through the
+Notification Center.
+
+Limits (deliberate):
+
+- Git checkouts only. Tarball/artifact installs are refused with a clear error.
+- Code and dependencies roll back; **JSON stores do not**. A release that
+  migrated a store needs the pre-update snapshot restored manually
+  (`POST /api/system/config-import`).
+- `git reset --hard` keeps untracked files; nothing in the data dir is touched.
+- One update at a time (`flock`), and the helper never accepts a URL/ref from
+  the web UI.
+
 ## UI
 
 `Settings → System → EthOS NAS` card: running version + short sha, status line
-("Up to date" / "Update available: v2.1.0 · sha" / "Check failed — …"), release
-notes when an update exists, and an admin-only **Check for updates** button.
-The card reads the cached result on open; only the button triggers a fetch.
+("Up to date" / "Update available: v2.2.0 · sha" / "Check failed — …"), release
+notes when an update exists, the last helper result, an admin-only **Check for
+updates** button and — when an update is available — **Update now** (confirm →
+progress task → restart overlay). The card reads cached data on open; only the
+buttons trigger work.
 
 ## Background check
 
@@ -95,5 +140,8 @@ git add releases && git commit -m "release: v2.1.0" && git push
 - [x] `GET /api/system/update`, `POST /api/system/update/check` (admin)
 - [x] Settings → System card with cached status and manual check
 - [x] Tests: `tests/test_update_service.py`, security invariants
-- [ ] Apply from the UI (root helper `ethos-update`: backup → git/pip → restart →
-      health probe → auto-rollback) — see the plan in `TODO.md` P5-12
+- [x] Apply from the UI: helper `deploy/ethos-update`, request file, progress,
+      auto-rollback, `POST /api/system/update`, `GET /api/system/update/status`,
+      `tests/test_update_helper.py`
+- [ ] Artifact/tarball installs (no `.git`) — refused today
+- [ ] Channels (stable/beta) and per-server fleet management

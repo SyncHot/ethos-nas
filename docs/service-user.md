@@ -69,6 +69,7 @@ installer as root (root can setfacl them); docker-compose app data dirs under
 | Host dependencies (new) | helper `/usr/local/bin/ethos-system-deps` — one exact rule per `(action, id)` pair generated from `SYSTEM_DEPS_IDS` (`install samba`, `remove samba`). The helper re-validates the id; no wildcard rule exists, so a manifest can never name an arbitrary apt package (see [`packages.md`](packages.md) → System requirements) |
 | Log read (group not sudo) | `usermod -aG adm ethos-nas` — `kern.log` (UFW BLOCK events) and `auth.log` are `root:adm 0640`, so the Firewall app can read them directly; the `cat` rules above are the fallback |
 | Host dependencies (new) | helper `/usr/local/bin/ethos-system-deps` — one exact rule per `(action, id)` pair generated from `SYSTEM_DEPS_IDS` (`install samba`, `remove samba`). The helper re-validates the id and no wildcard rule exists, so a manifest can never name an arbitrary apt package (see [`packages.md`](packages.md) → System requirements) |
+| Core updates (new) | helper `/usr/local/bin/ethos-update` (argument-free rule). It fetches and verifies the signed release index with the pinned Ed25519 key (`/etc/ethos-nas/update-pubkey.pem`), then `git reset --hard` + `pip install` **as the repo owner**, restarts the unit and rolls back on a failed health probe. The web UI can only drop an `{"action":"apply"}` request file — it never supplies a URL, ref or command. See [`updates.md`](updates.md) |
 
 ## File map
 

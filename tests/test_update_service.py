@@ -137,6 +137,83 @@ def main() -> int:
     finally:
         package_repo.get_bytes = original
 
+    print("\n[request_apply guards]")
+    import backend.services.config_archive as config_archive
+
+    original_spawn = update_service._spawn_helper
+    original_snapshot = config_archive.take_snapshot
+    spawned = {"n": 0}
+
+    def _fake_spawn():
+        spawned["n"] += 1
+
+    try:
+        config_archive.take_snapshot = lambda *a, **kw: "snapshot.zip"
+        update_service._spawn_helper = _fake_spawn
+
+        settings.UPDATE_HELPER = str(DATA_DIR / "missing-helper")
+        try:
+            asyncio.run(update_service.request_apply())
+            check("refuses when the helper is missing", False, "no exception")
+        except update_service.UpdateError as exc:
+            check("refuses when the helper is missing", exc.status == 409)
+
+        helper = DATA_DIR / "ethos-update"
+        helper.write_text("#!/bin/sh\n", encoding="utf-8")
+        helper.chmod(0o755)
+        settings.UPDATE_HELPER = str(helper)
+
+        update_service._save({"checked_at": 1, "update_available": False, "latest": None})
+        try:
+            asyncio.run(update_service.request_apply())
+            check("refuses when already up to date", False, "no exception")
+        except update_service.UpdateError as exc:
+            check("refuses when already up to date", exc.status == 409)
+
+        update_service._save({"checked_at": 1, "update_available": True,
+                              "latest": {"version": "2.2.0", "git_sha": "def5678", "build": 101}})
+        started = asyncio.run(update_service.request_apply())
+        request_file = DATA_DIR / "update" / "request.json"
+        check("writes an apply request",
+              request_file.is_file() and json.loads(request_file.read_text())["action"] == "apply")
+        check("request file is owner-only", (request_file.stat().st_mode & 0o077) == 0)
+        check("starts the helper once", spawned["n"] == 1, str(spawned))
+        check("reports updating", started.get("status") == "updating")
+
+        (DATA_DIR / "update" / "job.json").write_text(json.dumps({"status": "running"}), encoding="utf-8")
+        try:
+            asyncio.run(update_service.request_apply())
+            check("refuses while a job is running", False, "no exception")
+        except update_service.UpdateError as exc:
+            check("refuses while a job is running", exc.status == 409)
+    finally:
+        update_service._spawn_helper = original_spawn
+        config_archive.take_snapshot = original_snapshot
+
+    print("\n[reconcile]")
+    emitted: list[tuple] = []
+    original_emit = update_service.emit_event
+    update_service.emit_event = lambda *a, **kw: emitted.append((a, kw))
+    try:
+        (DATA_DIR / "update" / "result.json").write_text(
+            json.dumps({"status": "rolled_back", "at": "2026-11-15T10:00:00+00:00",
+                        "detail": "boom"}), encoding="utf-8")
+        update_service._save({"checked_at": 1})
+        update_service.reconcile_result()
+        check("reports a rolled-back result once",
+              len(emitted) == 1 and emitted[0][0][0] == "error", str(emitted))
+        update_service.reconcile_result()
+        check("does not repeat the same result", len(emitted) == 1, str(len(emitted)))
+
+        (DATA_DIR / "update" / "result.json").write_text(
+            json.dumps({"status": "ok", "at": "2026-11-15T11:00:00+00:00",
+                        "version": "2.2.0"}), encoding="utf-8")
+        update_service.reconcile_result()
+        check("reports a successful update",
+              len(emitted) == 2 and emitted[1][0][0] == "success", str(emitted))
+    finally:
+        update_service.emit_event = original_emit
+
     failed = [r for r in _results if not r[1]]
     print(f"\n{len(_results) - len(failed)}/{len(_results)} checks passed")
     return 1 if failed else 0

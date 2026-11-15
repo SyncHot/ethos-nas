@@ -158,6 +158,7 @@ def main() -> int:
             ("GET", "/api/disk-clean/scan", None, 403),
             ("GET", "/api/logs/files", None, 403),
             ("POST", "/api/system/update/check", None, 403),
+            ("POST", "/api/system/update", None, 403),
         ]:
             got = _call(base, method, path, user, body)
             check(f"{method} {path} -> {expected}", got == expected, f"got {got}")
@@ -185,6 +186,7 @@ def main() -> int:
             ("GET", "/api/logs/files", 200),
             ("GET", "/api/system/storage-usage", 200),
             ("GET", "/api/system/update", 200),
+            ("GET", "/api/system/update/status", 200),
         ]:
             got = _call(base, method, path, admin)
             check(f"{method} {path} -> {expected}", got == expected, f"got {got}")

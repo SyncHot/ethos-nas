@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -149,6 +149,8 @@ class Settings:
         "https://raw.githubusercontent.com/SyncHot/ethos-nas/master/releases/index.json",
     )
     UPDATE_PUBKEY: str = os.getenv("ETHOS_UPDATE_PUBKEY", RELEASE_PUBKEY_B64)
+    # Root helper installed by setup_scripts/setup_service.sh (argument-free sudo).
+    UPDATE_HELPER: str = os.getenv("ETHOS_UPDATE_HELPER", "/usr/local/bin/ethos-update")
     UPDATE_MAX_INDEX_BYTES: int = int(os.getenv("ETHOS_UPDATE_MAX_INDEX_BYTES", str(256 * 1024)))
     # A cached result younger than this is returned without a network round-trip.
     UPDATE_TTL_SECONDS: int = int(os.getenv("ETHOS_UPDATE_TTL_SECONDS", "3600"))

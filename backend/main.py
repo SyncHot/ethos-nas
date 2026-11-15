@@ -205,9 +205,17 @@ async def lifespan(app: FastAPI):
     # Trim caches, the recycle bin and abandoned uploads (services/retention_service.py)
     start_retention_sweeper()
 
-    # Core update check (signed release index, check-only — docs/updates.md)
-    from backend.services.update_service import start_update_checker, stop_update_checker
+    # Core update check (signed release index) + apply helper result reconcile
+    from backend.services.update_service import (
+        reconcile_result as _reconcile_update_result,
+        start_update_checker,
+        stop_update_checker,
+    )
     start_update_checker()
+    try:
+        _reconcile_update_result()
+    except Exception:
+        logger.error("Update result reconcile failed", exc_info=True)
 
     # Cameras: resume motion-detection threads for enabled cameras
     from backend.services.camera_service import start_all_motion_threads, stop_all_motion_threads

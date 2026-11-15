@@ -75,6 +75,13 @@ Station will then return 403 for it).
 
 ## 3. Upgrade
 
+**From the UI (recommended):** Settings → System → *Check for updates* → *Update now*. The backend takes
+a data snapshot, then the root helper `ethos-update` verifies the signed release index, moves the
+checkout to the signed commit, reinstalls dependencies, restarts the service and probes `:9000` for
+90 s. A failure restores the previous commit automatically. Spec: [`updates.md`](updates.md).
+
+**Manually:**
+
 ```bash
 cd /opt/ethos-nas
 sudo tar czf /mnt/backups/ethos-data-$(date +%F).tgz backend/data   # see §5

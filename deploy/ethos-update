@@ -1,0 +1,209 @@
+#!/bin/bash
+# ethos-update — privileged helper for EthOS NAS core updates.
+#
+# Installed by setup_scripts/setup_service.sh as /usr/local/bin/ethos-update,
+# invoked by the service through one ARGUMENT-FREE sudoers rule:
+#
+#   sudo -n /usr/local/bin/ethos-update
+#
+# Everything that decides *what* to install comes from the signed release index
+# and from /etc/ethos-nas/update.conf (root-owned). The web UI can only ask for
+# "apply the published release" by dropping `<DATA_DIR>/update/request.json`;
+# it cannot supply a URL, a commit or a command.
+#
+# Flow (git-checkout installs):
+#   fetch signed index -> verify Ed25519 signature (openssl) -> take the signed
+#   commit -> git fetch -> git reset --hard <sha> (as the repo owner) ->
+#   pip install -r requirements.txt -> systemctl restart -> poll :9000 for 90 s.
+#   Any failure (or an unhealthy service) restores the previous commit and
+#   dependencies and restarts again.
+#
+# Progress/result JSON files live in <DATA_DIR>/update/ so the web UI can report
+# them after the restart.
+set -euo pipefail
+
+CONF="/etc/ethos-nas/update.conf"
+LOCK="/run/ethos-update.lock"
+WORK="/var/lib/ethos-update"
+HEALTH_URL="http://127.0.0.1:9000/api/system/status"
+HEALTH_TIMEOUT=90
+
+log() { printf 'ethos-update: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit "${2:-1}"; }
+
+if [ "$(id -u)" -ne 0 ]; then
+    die "must run as root (via sudo)"
+fi
+if [ "$#" -ne 0 ]; then
+    die "this helper takes no arguments" 2
+fi
+[ -r "${CONF}" ] || die "missing ${CONF} — re-run setup_scripts/setup_service.sh"
+
+# shellcheck disable=SC1090
+. "${CONF}"
+
+for var in INSTALL_DIR REPO_OWNER SERVICE_USER SERVICE_UNIT DATA_DIR INDEX_URL PUBKEY_PEM; do
+    [ -n "${!var:-}" ] || die "${CONF} does not define ${var}"
+done
+
+STATE_DIR="${DATA_DIR}/update"
+JOB="${STATE_DIR}/job.json"
+RESULT="${STATE_DIR}/result.json"
+REQUEST="${STATE_DIR}/request.json"
+FROM_SHA=""
+TARGET_SHA=""
+TARGET_VERSION=""
+
+# ── Single instance ─────────────────────────────────────────────────────────
+exec 9>"${LOCK}" || die "cannot open ${LOCK}"
+flock -n 9 || die "another update is already running" 3
+
+mkdir -p "${WORK}" "${STATE_DIR}"
+chmod 0755 "${WORK}"
+
+# ── JSON state (fixed fields, values passed as argv — no dynamic code) ───────
+json_write() {  # <path> <status> <step> <from> <to> <version> <detail>
+    OWN_UID="$(id -u "${SERVICE_USER}")" OWN_GID="$(id -g "${SERVICE_USER}")" \
+    python3 - "$1" "$2" "$3" "$4" "$5" "$6" "$7" <<'PY'
+import json, os, sys, datetime
+
+path, status, step, frm, to, version, detail = sys.argv[1:8]
+data = {
+    "status": status,
+    "step": step,
+    "from": frm,
+    "to": to,
+    "version": version,
+    "detail": detail,
+    "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+}
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, ensure_ascii=False)
+    fh.flush()
+    os.fsync(fh.fileno())
+os.replace(tmp, path)
+os.chmod(path, 0o644)
+try:
+    os.chown(path, int(os.environ["OWN_UID"]), int(os.environ["OWN_GID"]))
+except (KeyError, PermissionError):
+    pass
+PY
+}
+
+step() {  # step <name> [detail]
+    json_write "${JOB}" "running" "$1" "${FROM_SHA}" "${TARGET_SHA}" "${TARGET_VERSION}" "${2:-}"
+    log "step: $1${2:+ ($2)}"
+}
+
+finish() {  # finish <status> [detail]
+    json_write "${RESULT}" "$1" "done" "${FROM_SHA}" "${TARGET_SHA}" "${TARGET_VERSION}" "${2:-}"
+    json_write "${JOB}" "$1" "done" "${FROM_SHA}" "${TARGET_SHA}" "${TARGET_VERSION}" "${2:-}"
+    rm -f "${REQUEST}"
+    log "result: $1 ${2:-}"
+}
+
+rollback() {  # rollback <reason>
+    local reason="$1"
+    log "rolling back: ${reason}"
+    step "rollback" "${reason}"
+    runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" reset --hard "${FROM_SHA}" >/dev/null
+    runuser -u "${REPO_OWNER}" -- "${INSTALL_DIR}/.venv/bin/pip" install \
+        --disable-pip-version-check -q -r "${INSTALL_DIR}/requirements.txt" || true
+    systemctl restart "${SERVICE_UNIT}" || true
+    for _ in $(seq 1 "${HEALTH_TIMEOUT}"); do
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "${HEALTH_URL}" || true)"
+        if [ "${code}" = "200" ] || [ "${code}" = "401" ]; then
+            finish "rolled_back" "${reason}"
+            exit 0
+        fi
+        sleep 1
+    done
+    finish "failed" "${reason}; rollback did not come back healthy"
+    exit 1
+}
+
+# ── Request gate ────────────────────────────────────────────────────────────
+[ -f "${REQUEST}" ] || die "no update requested (${REQUEST} is missing)" 4
+if ! python3 - "${REQUEST}" <<'PY'
+import json, sys
+
+with open(sys.argv[1], encoding="utf-8") as fh:
+    data = json.load(fh)
+raise SystemExit(0 if isinstance(data, dict) and data.get("action") == "apply" else 1)
+PY
+then
+    rm -f "${REQUEST}"
+    die "request file is not a valid apply request" 4
+fi
+
+# ── Signed index ────────────────────────────────────────────────────────────
+step "fetch" "release index"
+IDX="${WORK}/index.json"
+SIG="${WORK}/index.json.sig"
+rm -f "${IDX}" "${SIG}"
+curl -fsSL --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 262144 \
+    "${INDEX_URL}" -o "${IDX}" || die "could not fetch ${INDEX_URL}" 5
+curl -fsSL --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 4096 \
+    "${INDEX_URL}.sig" -o "${SIG}" || die "could not fetch the index signature" 5
+[ -s "${PUBKEY_PEM}" ] || die "missing public key: ${PUBKEY_PEM}" 5
+
+base64 -d "${SIG}" > "${WORK}/index.sig.bin" 2>/dev/null || die "signature is not base64" 5
+openssl pkeyutl -verify -pubin -inkey "${PUBKEY_PEM}" -rawin \
+    -in "${IDX}" -sigfile "${WORK}/index.sig.bin" >/dev/null 2>&1 \
+    || die "release index signature is invalid" 5
+log "signature OK"
+
+read_index_field() {  # read_index_field <sha|version>
+    python3 - "$1" "${IDX}" <<'PY'
+import json, sys
+
+field, path = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as fh:
+    data = json.load(fh)
+if data.get("schema") != 1:
+    raise SystemExit("unsupported index schema")
+latest = data.get("latest") or {}
+sha = str(latest.get("git_sha_full") or latest.get("git_sha") or "")
+if not sha or any(c not in "0123456789abcdefABCDEF" for c in sha):
+    raise SystemExit("index has no usable commit sha")
+print(sha if field == "sha" else str(latest.get("version") or ""))
+PY
+}
+TARGET_SHA="$(read_index_field sha)" || die "could not read the signed index" 5
+TARGET_VERSION="$(read_index_field version)" || die "could not read the signed index" 5
+
+# ── Git checkout only (artifact/tarball installs are not supported yet) ─────
+[ -d "${INSTALL_DIR}/.git" ] || die "${INSTALL_DIR} is not a git checkout" 6
+FROM_SHA="$(runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" rev-parse HEAD)"
+if [ "${FROM_SHA}" = "${TARGET_SHA}" ]; then
+    finish "up_to_date" "already on ${TARGET_VERSION:-$TARGET_SHA}"
+    exit 0
+fi
+
+step "apply" "git fetch + reset"
+runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --prune origin >/dev/null 2>&1 \
+    || rollback "git fetch failed"
+runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" cat-file -e "${TARGET_SHA}^{commit}" 2>/dev/null \
+    || rollback "signed commit ${TARGET_SHA} is not present after fetch"
+runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" reset --hard "${TARGET_SHA}" >/dev/null \
+    || rollback "git reset --hard failed"
+
+step "deps" "pip install"
+runuser -u "${REPO_OWNER}" -- "${INSTALL_DIR}/.venv/bin/pip" install \
+    --disable-pip-version-check -q -r "${INSTALL_DIR}/requirements.txt" \
+    || rollback "dependency install failed"
+
+step "restart" "${SERVICE_UNIT}"
+systemctl restart "${SERVICE_UNIT}" || rollback "systemctl restart failed"
+
+step "verify" "health probe"
+for _ in $(seq 1 "${HEALTH_TIMEOUT}"); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "${HEALTH_URL}" || true)"
+    if [ "${code}" = "200" ] || [ "${code}" = "401" ]; then
+        finish "ok" "updated to ${TARGET_VERSION:-$TARGET_SHA}"
+        exit 0
+    fi
+    sleep 1
+done
+rollback "service did not become healthy within ${HEALTH_TIMEOUT}s"

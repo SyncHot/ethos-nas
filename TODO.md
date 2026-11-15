@@ -382,20 +382,24 @@ and PAM password rotation; archive the old `ethosnas` repo after every checkout 
 publishing releases with the snapshot flow in `docs/open-source.md`.
 **Done when.** `docs/open-source.md` checklist is fully ticked and CI is green on the public repo.
 
-### ◐ P5-12 · Core update check (signed release index) — `M`
-**Problem.** A server could not learn that a newer EthOS release exists; `GET /api/system/version`
-existed but no UI consumed it and no release list was published.
-**Fix.** Signed `releases/index.json` (+`.sig`, offline Ed25519 key shared with the package catalog),
-`scripts/ethos-release publish|verify`, `services/update_service.py` (fetch → verify → compare build/sha →
-cache in `update/state.json` → Notification Center event), `GET /api/system/update` (any user, cached,
-no network) and `POST /api/system/update/check` (admin), Settings → System card, 24 h background checker.
-Spec: `docs/updates.md`.
-**Status 2026-11-15.** Check-only shipped: 18/18 unit checks, security invariants cover both routes,
-router smoke green.
-**Remaining.** Apply from the UI: root helper `ethos-update` (fetch the signed artifact → backup →
-`git`/`pip` as the repo owner → `systemctl restart` → health probe → auto-rollback), `POST /api/system/update`,
-progress task + schedule in the card.
-**Done when.** An admin can update from Settings and a failed update rolls back automatically.
+### ☑ P5-12 · Core update check + apply (signed release index) — `M`
+**Problem.** A server could not learn that a newer EthOS release exists, let alone install it.
+**Fix.** Signed `releases/index.json` (+`.sig`, offline Ed25519 key), `scripts/ethos-release publish|verify`,
+`services/update_service.py` (fetch → verify → compare → cache → notify → 24 h loop), root helper
+`deploy/ethos-update` (argument-free sudoers rule; verifies the index itself, `git reset --hard` + pip as
+the repo owner, restart, 90 s health probe, auto-rollback), `GET /api/system/update`, `GET …/status`,
+`POST …/check`, `POST …` (admin), Settings → System card with *Check for updates* / *Update now* +
+progress + restart overlay. Spec: `docs/updates.md`.
+**Verified.** `tests/test_update_service.py` 28/28, `tests/test_update_helper.py` 24/24, security
+invariants + router smoke green.
+**Not covered (new item).** Artifact/tarball installs; store migrations still need the pre-update
+snapshot on rollback.
+
+### ☐ P5-13 · Update transport for non-git installs — `M`
+**Problem.** `ethos-update` only supports git checkouts (`reset --hard` to the signed commit).
+**Fix.** Publish a signed tarball per release, verify its sha256 in the helper, extract to a staging dir
+and swap code paths (keeping `.venv`, `backend/data`, untracked files). Reuse the rollback flow.
+**Done when.** An install without `.git` can update from Settings and roll back on failure.
 
 # §7 · P6 — Documentation
 

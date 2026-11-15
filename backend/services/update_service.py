@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -92,7 +93,11 @@ def current_release() -> dict:
 # ── Index fetch + validation ────────────────────────────────────────────────
 
 class UpdateError(RuntimeError):
-    """A check could not be completed (bad signature, network, bad schema)."""
+    """A check or apply could not be completed (bad signature, network, state)."""
+
+    def __init__(self, message: str, status: int = 502):
+        super().__init__(message)
+        self.status = status
 
 
 def _coerce_release(raw: Any) -> dict:
@@ -258,6 +263,115 @@ async def check(force: bool = False) -> dict:
 
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+# ── Apply (root helper) ────────────────────────────────────────────────────
+
+def _state_dir() -> Path:
+    return Path(settings.DATA_DIR) / "update"
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def helper_available() -> bool:
+    path = Path(settings.UPDATE_HELPER)
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def apply_status() -> dict:
+    """Progress/result written by `ethos-update` (no network, no privileged call)."""
+    job = _read_json(_state_dir() / "job.json")
+    result = _read_json(_state_dir() / "result.json")
+    return {
+        "helper": helper_available(),
+        "running": job.get("status") == "running",
+        "job": job or None,
+        "result": result or None,
+    }
+
+
+def _spawn_helper() -> None:
+    """Start the root helper detached (returns immediately)."""
+    subprocess.Popen(
+        ["sudo", "-n", settings.UPDATE_HELPER],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        cwd="/",
+    )
+
+
+async def request_apply() -> dict:
+    """Ask the root helper to install the published release.
+
+    Only a request file is written — the helper fetches and verifies the signed
+    index itself, so a compromised backend cannot redirect the update.
+    """
+    if not settings.UPDATE_ENABLED:
+        raise UpdateError("Update checks are disabled (ETHOS_UPDATE_ENABLED=0)", 409)
+    if not helper_available():
+        raise UpdateError(
+            f"Update helper not installed ({settings.UPDATE_HELPER}). "
+            "Run: sudo bash setup_scripts/setup_service.sh", 409,
+        )
+    current = status()
+    if current.get("update_available") is not True:
+        raised = "No newer release is known — run a check first." if current.get("checked_at") is None \
+            else "This server is already up to date."
+        raise UpdateError(raised, 409)
+    if apply_status().get("running"):
+        raise UpdateError("An update is already running", 409)
+
+    # Pre-update data snapshot: the helper rolls back code, not JSON stores.
+    try:
+        from backend.services import config_archive
+
+        await asyncio.to_thread(config_archive.take_snapshot, "pre-update")
+        logger.info("Pre-update snapshot written")
+    except Exception:
+        logger.error("Pre-update snapshot failed — continuing", exc_info=True)
+
+    state_dir = _state_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
+    request = state_dir / "request.json"
+    request.write_text(json.dumps({"action": "apply", "requested_at": _iso(time.time())}),
+                       encoding="utf-8")
+    os.chmod(request, 0o600)
+
+    _spawn_helper()
+    logger.info("Core update requested — helper started (target %s)",
+                (current.get("latest") or {}).get("git_sha", "?"))
+    return {"status": "updating", "target": current.get("latest")}
+
+
+def reconcile_result() -> None:
+    """After a restart: report the helper outcome once and remember it."""
+    result = _read_json(_state_dir() / "result.json")
+    if not result:
+        return
+    stamp = str(result.get("at") or "")
+    if not stamp or stamp == _load().get("last_result_at"):
+        return
+    state = result.get("status")
+    version = result.get("version") or result.get("to", "")
+    detail = str(result.get("detail") or "")
+    dedupe = f"core-update-result:{stamp}"
+    if state == "ok":
+        emit_event("success", "EthOS NAS updated", f"Now running {version}".strip(),
+                   source="updates", dedupe_key=dedupe)
+    elif state == "rolled_back":
+        emit_event("error", "Update failed — previous version restored", detail,
+                   source="updates", dedupe_key=dedupe)
+    elif state == "failed":
+        emit_event("error", "Update failed", detail, source="updates", dedupe_key=dedupe)
+    _save({**_load(), "last_result_at": stamp})
 
 
 # ── Background checker ──────────────────────────────────────────────────────
