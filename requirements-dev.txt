@@ -1,0 +1,19 @@
+# EthOS NAS — development / test dependencies
+#
+# Install alongside the runtime requirements:
+#     pip install -r requirements.txt -r requirements-dev.txt
+#
+# Runtime deps must NOT be added here; they belong in requirements.txt.
+
+# Test runner (tests are standalone scripts; pytest is for the future suite)
+pytest>=8.0
+pytest-playwright>=0.5
+
+# Browser E2E (tests that use Playwright auto-skip when chromium is missing)
+playwright>=1.48
+
+# Used by a few API tests for multipart / session handling
+requests>=2.31
+
+# Linting — CI runs `ruff check backend tests`
+ruff>=0.6

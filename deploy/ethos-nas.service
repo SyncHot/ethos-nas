@@ -1,0 +1,33 @@
+# Installed by setup_scripts/setup_service.sh, which also creates the
+# dedicated `ethos-nas` system user and installs the consolidated narrow
+# NOPASSWD sudoers file (/etc/sudoers.d/ethos-nas). Do not run as root or
+# as a personal account — see docs/service-user.md.
+[Unit]
+Description=EthOS NAS - self-hosted NAS management UI (FastAPI on :9000)
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+User=ethos-nas
+Group=ethos-nas
+WorkingDirectory=__ETHOS_INSTALL_DIR__
+ExecStart=__ETHOS_INSTALL_DIR__/.venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 9000
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/ethos-nas/ethos.env
+# The account is a *system* user, so `useradd --system` created no home and
+# $HOME pointed at a directory that does not exist — CLIs the server spawns
+# (AI agents in the editor's CHAT tab, git, npm…) then fail with EACCES when
+# they try to write their state. systemd creates this writable state dir.
+StateDirectory=ethos-nas
+Environment=HOME=/var/lib/ethos-nas
+# Files/dirs the service creates are group-writable (664/2775), so the home
+# owner can also edit them (and inherited default-ACL masks stay rw-/rwx).
+UMask=0002
+# Optional: set a real JWT secret (recommended in production). Uncomment and edit:
+# Environment=ETHOS_JWT_SECRET=a-long-random-string
+
+[Install]
+WantedBy=multi-user.target

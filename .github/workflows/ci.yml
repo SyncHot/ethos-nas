@@ -1,0 +1,95 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Compile backend
+        run: python -m compileall -q backend
+
+      - name: Import smoke test
+        run: python -c "import backend.main; print('import OK')"
+
+      - name: Ruff (undefined names / redefinitions)
+        run: ruff check backend tests
+
+      - name: Architecture boundaries
+        run: python scripts/check_boundaries.py
+
+      - name: Logging rule (no silent failure paths)
+        run: python scripts/check_logging.py
+
+      - name: JavaScript syntax check
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            node --check "$f" || { echo "::error file=$f::syntax error"; fail=1; }
+          done < <(find frontend/static -name '*.js' -not -path '*/vendor/*')
+          exit $fail
+
+      - name: Fast test suite
+        # Every test here boots its own isolated instance or needs no server.
+        # Run them one per process — `python a.py b.py` only executes `a.py`.
+        run: |
+          set -e
+          for t in tests/test_stores.py \
+                   tests/test_store_migrations.py \
+                   tests/test_task_registry.py \
+                   tests/test_retention.py \
+                   tests/test_trash_service.py \
+                   tests/test_trash_multiuser_api.py \
+                   tests/test_logging_convention.py \
+                   tests/test_logging_ui.py \
+                   tests/test_log_service.py \
+                   tests/test_logs_api.py \
+                   tests/test_logs_ws.py \
+                   tests/test_security_invariants.py \
+                   tests/test_router_smoke.py \
+                   tests/test_config_export.py \
+                   tests/test_config_snapshot_robustness.py \
+                   tests/test_desktop_trash.py \
+                   tests/test_frontend_escaping.py \
+                   tests/test_podcast_feed.py \
+                   tests/test_music_search_service.py \
+                   tests/test_music_catalog_api.py \
+                   tests/test_pwa_assets.py \
+                   tests/test_poller.py \
+                   tests/test_downloads.py \
+                   tests/test_qb_compat.py \
+                   tests/test_bencode.py \
+                   tests/test_debrid_service.py \
+                   tests/test_download_config.py \
+                   tests/test_download_tasks.py \
+                   tests/test_download_transfer.py \
+                   tests/test_rss_service.py \
+                   tests/test_ws_contract.py \
+                   tests/test_ui_states.py \
+                   tests/test_upload_status_ui.py \
+                   tests/test_progress_ui.py \
+                   tests/test_notification_ui.py \
+                   tests/test_notifications_ws.py \
+                   tests/test_delete_ux.py \
+                   tests/test_delete_edge_cases.py \
+                   tests/test_a11y.py; do
+            echo "::group::$t"
+            python "$t"
+            echo "::endgroup::"
+          done

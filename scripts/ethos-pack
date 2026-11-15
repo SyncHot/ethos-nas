@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""ethos-pack — build and sign an EthOS package repository.
+
+Commands:
+  keygen  --out-dir DIR                 write repo.key (0600) + repo.pub
+  build   --repo DIR --base-url URL     hash local files, write manifests + index.json
+  sign    --repo DIR --key repo.key     write index.json.sig
+  verify  --repo DIR [--pub repo.pub]   verify signature + manifest/file hashes
+
+The signed payload is the raw bytes of index.json. Hashes cover every manifest,
+compose file and declared file, so a repository cannot be changed after signing
+without the private key.
+"""
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$")
+RESERVED = {"packages", "trash", "snapshots", "thumbnails", "temp_chunks", "wallpapers",
+            "git", "models", "temp", "users", "desktop_layouts", "app_events",
+            "agent-cache", "backup", "shares", "share_links"}
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+WHEEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,200}\.whl$")
+
+
+def _wheel_arch(filename: str) -> str:
+    """Infer the manifest arch key from a wheel file name."""
+    if filename.endswith("-none-any.whl"):
+        return "any"
+    if "aarch64" in filename:
+        return "aarch64"
+    if "x86_64" in filename or "amd64" in filename:
+        return "x86_64"
+    raise ValueError(
+        f"cannot infer the architecture of {filename}; set \"arch\" explicitly",
+    )
+
+
+def _sha(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_json(path: Path, value: dict) -> bytes:
+    payload = (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    path.write_bytes(payload)
+    return payload
+
+
+def cmd_keygen(args) -> int:
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    private = Ed25519PrivateKey.generate()
+    key_path = out / "repo.key"
+    pub_path = out / "repo.pub"
+    if key_path.exists() and not args.force:
+        print(f"refusing to overwrite {key_path} (use --force)", file=sys.stderr)
+        return 1
+    raw_private = private.private_bytes_raw()
+    key_path.write_bytes(base64.b64encode(raw_private) + b"\n")
+    os.chmod(key_path, 0o600)
+    pub_path.write_bytes(base64.b64encode(private.public_key().public_bytes_raw()) + b"\n")
+    print(f"wrote {key_path} (keep private) and {pub_path}")
+    return 0
+
+
+def _normalize_manifest(pkg_dir: Path, manifest: dict, base_url: str) -> tuple[dict, int]:
+    pkg_id = str(manifest.get("id") or "")
+    if not ID_RE.fullmatch(pkg_id) or pkg_id in RESERVED:
+        raise ValueError(f"invalid package id: {pkg_id!r}")
+    for field in ("name", "version", "description", "icon"):
+        if not str(manifest.get(field) or "").strip():
+            raise ValueError(f"{pkg_id}: missing {field}")
+    if manifest.get("scripts") and any(v for v in manifest["scripts"].values() if v):
+        raise ValueError(f"{pkg_id}: lifecycle scripts are not supported")
+
+    size = 0
+    compose = manifest.get("compose")
+    if isinstance(compose, str):
+        compose_path = (pkg_dir / compose).resolve()
+        if not compose_path.is_file() or pkg_dir.resolve() not in compose_path.parents:
+            raise ValueError(f"{pkg_id}: compose file not found: {compose}")
+        compose = {"url": f"{base_url}/{pkg_id}/{compose_path.name}", "sha256": _sha(compose_path)}
+        size += compose_path.stat().st_size
+    elif isinstance(compose, dict) and compose.get("url"):
+        compose = {"url": compose["url"], "sha256": str(compose.get("sha256") or "").lower()}
+        if not SHA_RE.fullmatch(compose["sha256"]):
+            raise ValueError(f"{pkg_id}: compose.sha256 is missing")
+    elif compose is not None:
+        raise ValueError(f"{pkg_id}: compose must be a local path or {{url, sha256}}")
+    if not compose and not manifest.get("files"):
+        raise ValueError(f"{pkg_id}: package needs compose or files")
+
+    files = []
+    for item in manifest.get("files") or []:
+        if isinstance(item, str):
+            path = item
+            mode = 0o644
+        elif isinstance(item, dict):
+            path = str(item.get("path") or "")
+            mode = int(item.get("mode") or 0o644)
+        else:
+            raise ValueError(f"{pkg_id}: invalid files entry")
+        pure = Path(path)
+        if pure.is_absolute() or ".." in pure.parts:
+            raise ValueError(f"{pkg_id}: file path must stay inside the package: {path}")
+        absolute = (pkg_dir / pure).resolve()
+        if not absolute.is_file() or pkg_dir.resolve() not in absolute.parents:
+            raise ValueError(f"{pkg_id}: file not found: {path}")
+        files.append({
+            "url": f"{base_url}/{pkg_id}/{pure.as_posix()}",
+            "sha256": _sha(absolute),
+            "path": pure.as_posix(),
+            "mode": mode & 0o777,
+        })
+        size += absolute.stat().st_size
+
+    normalized = {
+        **{k: v for k, v in manifest.items() if k not in ("compose", "files", "scripts", "compose_url", "python")},
+        "schema": 2,
+        "compose": compose,
+        "files": files,
+    }
+    normalized.pop("scripts", None)
+
+    python = manifest.get("python")
+    if python is not None:
+        if not isinstance(python, dict):
+            raise ValueError(f"{pkg_id}: python must be an object")
+        entry = str(python.get("entry") or "")
+        if entry not in {item["path"] for item in files}:
+            raise ValueError(f"{pkg_id}: python.entry must be listed in files[]: {entry!r}")
+        wheels = []
+        seen = set()
+        for item in python.get("wheels") or []:
+            if isinstance(item, str):
+                item = {"path": item}
+            if not isinstance(item, dict):
+                raise ValueError(f"{pkg_id}: invalid python.wheels entry")
+            if item.get("url"):
+                # Absolute, hash-pinned upstream wheel (e.g. a PyPI CDN file).
+                # Integrity still comes from the signed manifest sha256; the
+                # artifact is not copied into this repository.
+                url = str(item["url"])
+                if not url.startswith("https://"):
+                    raise ValueError(f"{pkg_id}: wheel url must be https")
+                filename = str(item.get("filename") or url.rsplit("/", 1)[-1])
+                if not WHEEL_RE.fullmatch(filename):
+                    raise ValueError(f"{pkg_id}: not a wheel: {filename}")
+                sha = str(item.get("sha256") or "").strip().lower()
+                if not SHA_RE.fullmatch(sha):
+                    raise ValueError(f"{pkg_id}: upstream wheel needs a sha256")
+                if filename in seen:
+                    raise ValueError(f"{pkg_id}: duplicate wheel: {filename}")
+                seen.add(filename)
+                arch = str(item.get("arch") or "").strip().lower() or _wheel_arch(filename)
+                wheels.append({"url": url, "sha256": sha, "arch": arch, "filename": filename})
+                continue
+            source = Path(str(item.get("path") or item.get("filename") or ""))
+            if not source.is_absolute():
+                source = pkg_dir / "wheels" / source
+            source = source.resolve()
+            if not source.is_file() or pkg_dir.resolve() not in source.parents:
+                raise ValueError(f"{pkg_id}: wheel not found: {item.get('path') or item.get('filename')}")
+            if not WHEEL_RE.fullmatch(source.name):
+                raise ValueError(f"{pkg_id}: not a wheel: {source.name}")
+            if source.name in seen:
+                raise ValueError(f"{pkg_id}: duplicate wheel: {source.name}")
+            seen.add(source.name)
+            arch = str(item.get("arch") or "").strip().lower() or _wheel_arch(source.name)
+            wheels.append({
+                "url": f"{base_url}/{pkg_id}/wheels/{source.name}",
+                "sha256": _sha(source),
+                "arch": arch,
+                "filename": source.name,
+            })
+            size += source.stat().st_size
+        if not wheels and (python.get("requirements") or []):
+            raise ValueError(f"{pkg_id}: runtime 'venv' needs python.wheels for its requirements")
+        normalized["python"] = {
+            "entry": entry,
+            "port": int(python.get("port") or 0),
+            "requirements": python.get("requirements") or [],
+            "requires_python": python.get("requires_python"),
+            "wheels": wheels,
+        }
+    return normalized, size
+
+
+def cmd_build(args) -> int:
+    repo = Path(args.repo).resolve()
+    base_url = args.base_url.rstrip("/")
+    index_path = repo / "index.json"
+    entries = []
+    for pkg_dir in sorted(p for p in repo.iterdir() if p.is_dir() and (p / "manifest.json").is_file()):
+        manifest = _read_json(pkg_dir / "manifest.json")
+        try:
+            normalized, size = _normalize_manifest(pkg_dir, manifest, base_url)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        manifest_bytes = _write_json(pkg_dir / "manifest.json", normalized)
+        entries.append({
+            "id": normalized["id"],
+            "name": normalized["name"],
+            "version": normalized["version"],
+            "description": normalized["description"],
+            "icon": normalized.get("icon") or "📦",
+            "icon_url": normalized.get("icon_url"),
+            "category": normalized.get("category") or "other",
+            "author": normalized.get("author") or "",
+            "homepage": normalized.get("homepage"),
+            "license": normalized.get("license") or "",
+            "channel": normalized.get("channel") or "stable",
+            "requires": normalized.get("requires") or [],
+            "runtime": normalized.get("runtime") or ("compose" if normalized.get("compose") else "files"),
+            "capabilities": normalized.get("capabilities") or (
+                ["compose"] if normalized.get("compose") else []
+            ),
+            # Host software the package needs (probed by services/system_deps.py).
+            # Kept in the index so cards can badge it without fetching a manifest.
+            "system_requires": list(normalized.get("system_requires") or []),
+            "screenshots": normalized.get("screenshots") or [],
+            "changelog": normalized.get("changelog") or "",
+            "manifest_url": f"{base_url}/{normalized['id']}/manifest.json",
+            "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "size_bytes": size,
+        })
+
+    published = _read_json(index_path) if index_path.exists() else {}
+    index = {
+        "schema": 2,
+        "name": published.get("name") or repo.name,
+        "publisher": published.get("publisher") or {},
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "packages": entries,
+    }
+    _write_json(index_path, index)
+    print(f"built {index_path} with {len(entries)} package(s)")
+    print("next: ethos-pack sign --repo", repo, "--key repo.key")
+    return 0
+
+
+def cmd_sign(args) -> int:
+    repo = Path(args.repo)
+    key_path = Path(args.key)
+    raw = base64.b64decode(key_path.read_bytes().strip(), validate=True)
+    private = Ed25519PrivateKey.from_private_bytes(raw)
+    payload = (repo / "index.json").read_bytes()
+    signature = private.sign(payload)
+    (repo / "index.json.sig").write_bytes(base64.b64encode(signature) + b"\n")
+    print(f"signed {repo / 'index.json'} -> index.json.sig")
+    return 0
+
+
+def cmd_verify(args) -> int:
+    repo = Path(args.repo)
+    payload = (repo / "index.json").read_bytes()
+    index = json.loads(payload)
+    if args.pub:
+        pub = base64.b64decode(Path(args.pub).read_bytes().strip(), validate=True)
+        sig = base64.b64decode((repo / "index.json.sig").read_bytes().strip(), validate=True)
+        try:
+            Ed25519PublicKey.from_public_bytes(pub).verify(sig, payload)
+        except InvalidSignature:
+            print("FAIL: index signature is invalid", file=sys.stderr)
+            return 1
+        print("OK: index signature")
+
+    failures = []
+    for entry in index.get("packages", []):
+        pkg_id = entry.get("id")
+        manifest_path = repo / pkg_id / "manifest.json"
+        if not manifest_path.is_file():
+            failures.append(f"{pkg_id}: manifest missing")
+            continue
+        actual = _sha(manifest_path)
+        expected = str(entry.get("manifest_sha256") or "")
+        if not SHA_RE.fullmatch(expected) or actual != expected:
+            failures.append(f"{pkg_id}: manifest hash mismatch")
+            continue
+        manifest = _read_json(manifest_path)
+        compose = manifest.get("compose") or {}
+        if compose.get("sha256"):
+            compose_name = str(compose.get("url") or "docker-compose.yml").rstrip("/").rsplit("/", 1)[-1]
+            compose_path = repo / pkg_id / compose_name
+            if not compose_path.is_file() or _sha(compose_path) != compose["sha256"]:
+                failures.append(f"{pkg_id}: compose hash mismatch")
+        for item in manifest.get("files") or []:
+            path = repo / pkg_id / item["path"]
+            if not path.is_file() or _sha(path) != item["sha256"]:
+                failures.append(f"{pkg_id}: file hash mismatch: {item['path']}")
+        for wheel in (manifest.get("python") or {}).get("wheels") or []:
+            wheel_path = repo / pkg_id / "wheels" / wheel["filename"]
+            if wheel_path.is_file() and _sha(wheel_path) != wheel["sha256"]:
+                failures.append(f"{pkg_id}: wheel hash mismatch: {wheel['filename']}")
+
+    if failures:
+        print("FAIL: " + "; ".join(failures), file=sys.stderr)
+        return 1
+    print(f"OK: {len(index.get('packages', []))} package(s) verified")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Build/sign EthOS package repositories.")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    keygen = sub.add_parser("keygen")
+    keygen.add_argument("--out-dir", default=".")
+    keygen.add_argument("--force", action="store_true")
+    keygen.set_defaults(func=cmd_keygen)
+
+    build = sub.add_parser("build")
+    build.add_argument("--repo", required=True)
+    build.add_argument("--base-url", required=True)
+    build.set_defaults(func=cmd_build)
+
+    sign = sub.add_parser("sign")
+    sign.add_argument("--repo", required=True)
+    sign.add_argument("--key", default="repo.key")
+    sign.set_defaults(func=cmd_sign)
+
+    verify = sub.add_parser("verify")
+    verify.add_argument("--repo", required=True)
+    verify.add_argument("--pub", default="")
+    verify.set_defaults(func=cmd_verify)
+
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

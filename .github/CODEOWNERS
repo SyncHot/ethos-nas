@@ -1,0 +1,11 @@
+# Supply-chain-critical paths — every change needs a maintainer review.
+/scripts/ethos-pack @SyncHot
+/scripts/ethos-wheels @SyncHot
+/deploy/ @SyncHot
+/setup_scripts/ @SyncHot
+/backend/services/package_repo.py @SyncHot
+/backend/services/package_installer.py @SyncHot
+/backend/services/package_runtime.py @SyncHot
+/backend/config.py @SyncHot
+/backend/main.py @SyncHot
+/SECURITY.md @SyncHot

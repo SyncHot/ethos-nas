@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# Secrets — never commit (use /etc/ethos-nas/ethos.env or a systemd drop-in)
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.kdbx
+credential*.json
+secrets*.json
+
+# Runtime user stores (PAM-seeded account metadata, API keys) — never commit
+backend/routers/users.json
+backend/users.json
+
+# Never commit real tokens
+.test_token
+tokens.json
+
+# ---------------------------------------------------------------------------
+# Backend runtime data — generated, never commit
+# ---------------------------------------------------------------------------
+backend/data/
+backend/data*/
+backend/*.db
+backend/*.sqlite
+backend/*.sqlite3
+# Runtime PID/log files
+nohup.out
+.server.pid
+*.log
+
+# ---------------------------------------------------------------------------
+# Deployed APKs (copied here by app build.sh runs; binaries, never commit)
+# ---------------------------------------------------------------------------
+apks/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# QA/agent scratch artifacts that previously leaked into history
+# ---------------------------------------------------------------------------
+qa/
+.agent/
+test_ctx_*.txt
+billion-context-*.tgz
+
+# ---------------------------------------------------------------------------
+# IDE & tools
+# ---------------------------------------------------------------------------
+.rtk/
+.opencode/
+node_modules/
+data/trash/
+
+# Local secrets (see docs/ops.md §9)
+.env

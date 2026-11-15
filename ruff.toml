@@ -1,0 +1,23 @@
+# Ruff configuration — EthOS NAS
+#
+# The enforced rule set is deliberately small: it covers real defects (undefined
+# names, redefinitions) and is kept green. Expand it rule by rule as the codebase
+# is cleaned up (TODO.md P1-01/P2-12) — a permanently red linter is ignored.
+
+target-version = "py314"
+line-length = 120
+
+[lint]
+select = [
+    "F821",  # undefined name
+    "F811",  # redefinition of an unused name
+    "F823",  # local variable referenced before assignment
+]
+ignore = []
+
+[lint.per-file-ignores]
+"tests/*" = []
+
+[format]
+quote-style = "double"
+indent-style = "space"

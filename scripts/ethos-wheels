@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Collect hash-pinned wheel entries for a `runtime: venv` package manifest.
+
+Resolves a requirements file for one or more CPU architectures, downloads the
+wheels to a temporary directory and prints the `python.wheels[]` array that
+belongs in the package manifest. The package itself does not copy the wheels
+into the repository: the signed manifest pins each file's sha256 and the
+installer downloads exactly those files, then installs with
+``pip --no-index --find-links`` (docs/packages.md).
+
+    .venv/bin/python scripts/ethos-wheels \
+        --requirements req.txt --python 3.14 --arch x86_64 --arch aarch64
+
+Output is a JSON array on stdout; paste it into `manifest.json` under
+`python.wheels`.
+"""
+
+import argparse
+import hashlib
+import json
+import platform
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+
+PLATFORMS = {
+    "x86_64": ["manylinux_2_28_x86_64", "manylinux_2_17_x86_64", "manylinux2014_x86_64"],
+    "aarch64": ["manylinux_2_28_aarch64", "manylinux_2_17_aarch64", "manylinux2014_aarch64"],
+}
+_PYPI_CACHE: dict[tuple[str, str], dict[str, tuple[str, str]]] = {}
+
+
+def wheel_arch(filename: str) -> str:
+    if filename.endswith("-none-any.whl"):
+        return "any"
+    if "aarch64" in filename:
+        return "aarch64"
+    if "x86_64" in filename:
+        return "x86_64"
+    raise SystemExit(f"cannot infer arch for {filename}")
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _pypi_files(distribution: str, version: str) -> dict[str, tuple[str, str]]:
+    """filename -> (url, sha256) for one release, straight from the PyPI API."""
+    key = (distribution.lower().replace("_", "-"), version)
+    if key in _PYPI_CACHE:
+        return _PYPI_CACHE[key]
+    url = f"https://pypi.org/pypi/{key[0]}/{version}/json"
+    with urllib.request.urlopen(url, timeout=30) as response:
+        payload = json.loads(response.read().decode())
+    files = {}
+    for item in payload.get("urls") or []:
+        digest = str((item.get("digests") or {}).get("sha256") or "")
+        if digest:
+            files[str(item["filename"])] = (str(item["url"]), digest)
+    _PYPI_CACHE[key] = files
+    return files
+
+
+def _split_wheel(filename: str) -> tuple[str, str]:
+    parts = filename[: -len(".whl")].split("-")
+    if len(parts) < 3:
+        raise SystemExit(f"cannot parse wheel name: {filename}")
+    return parts[0], parts[1]
+
+
+def resolve(requirements: Path, python_version: str, arch: str, workdir: Path) -> list[dict]:
+    major_minor = python_version.replace(".", "")
+    dest = workdir / arch
+    command = [
+        sys.executable, "-m", "pip", "download", "--only-binary", ":all:",
+        "--dest", str(dest),
+        "--python-version", python_version, "--implementation", "cp",
+        "--abi", f"cp{major_minor}", "--no-cache-dir", "--disable-pip-version-check",
+    ]
+    for platform_tag in PLATFORMS[arch]:
+        command += ["--platform", platform_tag]
+    command += ["--requirement", str(requirements)]
+    proc = subprocess.run(command, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print(proc.stdout[-2000:], file=sys.stderr)
+        print(proc.stderr[-2000:], file=sys.stderr)
+        raise SystemExit(f"pip download failed for {arch}")
+
+    entries = []
+    for wheel in sorted(dest.glob("*.whl")):
+        distribution, version = _split_wheel(wheel.name)
+        upstream = _pypi_files(distribution, version).get(wheel.name)
+        local_sha = _sha256(wheel)
+        if not upstream:
+            raise SystemExit(f"{wheel.name} is not published on PyPI")
+        url, digest = upstream
+        if digest != local_sha:
+            raise SystemExit(f"sha256 mismatch for {wheel.name} (pypi={digest}, local={local_sha})")
+        entries.append({
+            "url": url, "sha256": local_sha,
+            "arch": wheel_arch(wheel.name), "filename": wheel.name,
+        })
+    return entries
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Print python.wheels[] for a package manifest.")
+    parser.add_argument("--requirements", required=True, help="requirements file to resolve")
+    parser.add_argument("--python", default="3.14", help="target Python version (default 3.14)")
+    parser.add_argument("--arch", action="append", default=[],
+                        help="x86_64 or aarch64 (repeatable; default: this machine)")
+    args = parser.parse_args()
+
+    requirements = Path(args.requirements).resolve()
+    if not requirements.is_file():
+        raise SystemExit(f"requirements file not found: {requirements}")
+    arches = args.arch or [{"AMD64": "x86_64", "arm64": "aarch64"}.get(
+        platform.machine(), platform.machine())]
+
+    merged: list[dict] = []
+    seen: set[str] = set()
+    with tempfile.TemporaryDirectory(prefix="ethos-wheels-") as tmp:
+        workdir = Path(tmp)
+        for arch in arches:
+            if arch not in PLATFORMS:
+                raise SystemExit(f"unsupported arch: {arch}")
+            for entry in resolve(requirements, args.python, arch, workdir):
+                # A pure-Python wheel is identical for every arch: emit it once.
+                key = entry["filename"]
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(entry)
+
+    merged.sort(key=lambda item: item["filename"])
+    print(json.dumps(merged, indent=2))
+    print(f"# {len(merged)} wheel(s) for {', '.join(arches)}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

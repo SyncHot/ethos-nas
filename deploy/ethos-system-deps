@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# ethos-system-deps — privileged helper for EthOS NAS host dependencies.
+# Installed by setup_scripts/setup_service.sh to /usr/local/bin/ and reachable
+# through argument-exact sudoers rules, one per registry id:
+#
+#   ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-system-deps install samba
+#   ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-system-deps remove samba
+#
+# Contract:
+#   * exactly two arguments: <install|remove> <id>
+#   * `id` must be in the allowlist below — nothing else is ever passed to apt
+#   * no wildcard, no shell interpolation, no arbitrary package names
+#
+# Everything here runs as root, so the allowlist is duplicated on purpose: the
+# service account cannot widen it, and editing this file requires root. Keep it
+# in sync with backend/services/system_deps.py (tests/test_system_deps.py checks
+# the ids, tests/test_system_deps_helper.py executes this script).
+set -euo pipefail
+
+PROG="ethos-system-deps"
+
+die() { echo "${PROG}: $*" >&2; exit 2; }
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "${PROG}: must run as root (via sudo)" >&2
+    exit 1
+fi
+
+if [ "$#" -ne 2 ]; then
+    die "usage: ${PROG} <install|remove> <id>"
+fi
+
+ACTION="$1"
+REQ="$2"
+
+# id -> apt packages. Same ids as SYSTEM_REQUIREMENTS in
+# backend/services/system_deps.py; `docker` is intentionally absent because the
+# engine has its own fingerprint-pinned helper (ethos-docker-install).
+apt_packages() {
+    case "$1" in
+        samba) echo "samba" ;;
+        *) return 1 ;;
+    esac
+}
+
+PKGS="$(apt_packages "${REQ}")" || die "unknown requirement: ${REQ}"
+
+command -v apt-get >/dev/null 2>&1 || die "apt-get not found (Debian/Ubuntu only)"
+
+export DEBIAN_FRONTEND=noninteractive
+
+case "${ACTION}" in
+    install)
+        if dpkg -s ${PKGS} >/dev/null 2>&1; then
+            echo "${PROG}: ${REQ} already installed (${PKGS})"
+            echo "RESULT=ok"
+            exit 0
+        fi
+        echo "${PROG}: installing ${REQ} (${PKGS})"
+        apt-get update -qq
+        # Argument list only, no shell expansion, no recommends.
+        # shellcheck disable=SC2086  # PKGS is an allowlisted literal, word-split on purpose
+        apt-get install -y --no-install-recommends ${PKGS}
+        ;;
+    remove)
+        echo "${PROG}: removing ${REQ} (${PKGS})"
+        # `remove`, never `purge`: an operator's smb.conf/users survive.
+        # shellcheck disable=SC2086
+        apt-get remove -y ${PKGS}
+        apt-get autoremove -y
+        ;;
+    *)
+        die "unknown action: ${ACTION}"
+        ;;
+esac
+
+echo "RESULT=ok"

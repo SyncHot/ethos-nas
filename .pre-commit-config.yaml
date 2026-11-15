@@ -1,0 +1,21 @@
+# Pre-commit hooks — EthOS NAS
+#
+# Opt-in: install with `pip install pre-commit && pre-commit install`.
+# Kept in sync with .github/workflows/ci.yml so local and CI checks agree.
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4
+    hooks:
+      - id: ruff
+        args: [check]
+        files: ^backend/|^tests/
+
+  - repo: local
+    hooks:
+      - id: node-syntax
+        name: node --check (frontend ES modules)
+        entry: bash -c 'for f in "$@"; do node --check "$f" || exit 1; done' --
+        language: system
+        files: ^frontend/static/.*\.js$
+        pass_filenames: true
