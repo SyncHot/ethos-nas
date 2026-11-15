@@ -312,7 +312,7 @@ single tap opens items, sidebars collapse to a drawer.
 
 ### ☑ P3-14 · Add a web app manifest + service worker — `S`
 
-### ☐ P3-15 · Core app shell migration (Settings → every window) — `L`
+### ☑ P3-15 · Core app shell migration (Settings → every window) — `L`
 **Problem.** Core apps invent their own chrome: top tab strips, `glass-card` grids, inline styles and
 hardcoded colours, while package windows follow a strict 218 px rail shell. The same action looks
 different in every window, and light mode only works through `!important` hacks in `index.html`.
@@ -322,7 +322,7 @@ different in every window, and light mode only works through `!important` hacks 
 **Fix.** `frontend/static/css/ethos-ui.css` + `core/ui-shell.js`, documented in `docs/app-ui.md`
 (rule `.github/instructions/app-ui.instructions.md`, skill `app-ui`). Migrate Settings first, then the
 multi-section apps, then single-pane apps; Files/Terminal/Login keep their layouts.
-**Progress.** Done: stylesheet, helper, doc, rule, skill and guard; Settings rebuilt around the
+**Progress.** Done in `e77ad04`: stylesheet, helper, doc, rule, skill and guard; Settings rebuilt around the
 rail; Storage/Network/Security/Packages/Logs and all single-pane apps migrated; Login CSS moved out
 of JS; legacy `glass-card`/`app-tab`/light-theme hacks deleted. The guard allowlist is empty.
 **Done when.** `tests/test_app_ui.py` passes with an **empty** allowlist, `index.html` no longer needs
