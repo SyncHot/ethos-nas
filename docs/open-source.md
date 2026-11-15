@@ -31,7 +31,9 @@ Status: in progress (see `TODO.md` P5-11).
 The public repository was created from a **single clean commit** — the private
 history (runtime data, API keys, tokens) is never published. Status: done
 2026-11-15, `SyncHot/ethos-nas`, tag `v2.0.0`, MIT, secret scanning and push
-protection enabled.
+protection enabled. The JWT secret was rotated on the production host
+(`systemd` drop-in `10-jwt-secret.conf`) so the token that leaked into the old
+history can no longer be used.
 
 The two repositories have **unrelated histories**. Keep the private checkout as
 the working repo and publish each release as one additional snapshot commit:

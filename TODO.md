@@ -371,11 +371,15 @@ and transcoding still work end-to-end.
 **Fix.** Publish a clean `SyncHot/ethos-nas` from one commit; procedure and checklist in
 `docs/open-source.md`. Done in this tree: MIT `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`,
 `THIRD-PARTY.md`, `.env.example`, CODEOWNERS/Dependabot/issue templates, `/home/<user>` and
-personal LAN defaults removed, APK path leak fixed, JWT secret now fails closed, Synology-derived
-app names renamed (Files/Packages/Videos/Cameras/Downloads/Photos).
-**Remaining.** Finish the rename sweep in older prose docs (`docs/desktop-trash.md`,
-`docs/download-station.md` body, `docs/packages.md` body), rotate the leaked credentials, create the
-public repo + tag, flip visibility, archive the old repo.
+personal LAN defaults removed, APK path leak fixed, JWT secret now generated+persisted when unset,
+Synology-derived app names renamed (Files/Packages/Videos/Cameras/Downloads/Photos).
+**Status 2026-11-15.** Public repo created (`SyncHot/ethos-nas`, tag `v2.0.0`, MIT, secret scanning
++ push protection + private advisories), package catalog renamed and re-signed, JWT secret rotated
+on the production host (`10-jwt-secret.conf`), public CI fixed (legacy log archive, poller/ws/progress
+thresholds, a11y kanban path).
+**Remaining.** Branch protection (required `ci` check) once the public run is green; new admin API key
+and PAM password rotation; archive the old `ethosnas` repo after every checkout is repointed; keep
+publishing releases with the snapshot flow in `docs/open-source.md`.
 **Done when.** `docs/open-source.md` checklist is fully ticked and CI is green on the public repo.
 
 # §7 · P6 — Documentation
