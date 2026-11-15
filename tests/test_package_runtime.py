@@ -11,6 +11,7 @@ import http.client
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -302,12 +303,45 @@ def test_runtime():
         shutil.rmtree(state, ignore_errors=True)
 
 
+def test_stale_process_scan():
+    """Recovery without a pidfile: find the child by its env marker.
+
+    This is the path used after a crash of the previous image, when the old
+    child was reparented and no `run/<id>.pid` existed yet.
+    """
+    print("Stale process scan")
+    pkg_id = "ethos-scan-probe"
+    package_dir = packages_store.package_dir(pkg_id)
+    entry = package_dir / "server" / "idle.py"
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text("import time\nwhile True:\n    time.sleep(0.5)\n", encoding="utf-8")
+    env = {**os.environ, "ETHOS_PACKAGE_ID": pkg_id}
+    proc = subprocess.Popen([sys.executable, str(entry)], env=env)
+    try:
+        time.sleep(0.3)
+        found = package_runtime._find_package_processes(pkg_id, package_dir)
+        check("scan finds the process by its env marker", proc.pid in found, str(found))
+        check("cleanup without a pidfile stops it", package_runtime.cleanup_stale(pkg_id) is True)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        check("process is gone", proc.poll() is not None)
+        check("no pidfile to clean up", not package_runtime._pid_file(pkg_id).exists())
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(package_dir, ignore_errors=True)
+
+
 def main() -> int:
     try:
         test_schema()
         test_wheelhouse()
         test_client()
         test_runtime()
+        test_stale_process_scan()
     finally:
         if _OWN_DATA:
             shutil.rmtree(os.environ.get("ETHOS_DATA_DIR", ""), ignore_errors=True)
