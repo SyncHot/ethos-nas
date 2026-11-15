@@ -79,11 +79,12 @@ def main() -> int:
     check("no bespoke panel/card markup remains", not legacy, "; ".join(legacy))
 
     # ── 4. Every long-running action uses the component ────────────────────
+    # The Docker Manager UI is an `ethos-docker` package now, so its progress
+    # wiring is verified by the package's own checks, not from this checkout.
     for rel, prefix, host in (
         ("frontend/static/apps/files.js", "fm-op", None),
         ("frontend/static/core/upload-engine.js", "upload", None),
         ("frontend/static/apps/packages.js", "pkg-job", "host: banner"),
-        ("frontend/static/apps/docker.js", "docker-engine", "host: box"),
     ):
         src = _read(rel)
         check(f"{rel} imports startTask", re.search(r"import \{[^}]*startTask[^}]*\} from '\.\.?/core?/?progress\.js'", src) is not None

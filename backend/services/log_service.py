@@ -301,6 +301,10 @@ class LogService:
                 )
                 imported += 1
             archive = (self._dir or legacy.parent) / "legacy-app-events.jsonl"
+            # The store directory is created lazily, so make sure the archive
+            # target exists before replacing (otherwise the move fails silently
+            # and the legacy file stays next to DATA_DIR forever).
+            archive.parent.mkdir(parents=True, exist_ok=True)
             if archive.exists():
                 archive.unlink()
             legacy.replace(archive)

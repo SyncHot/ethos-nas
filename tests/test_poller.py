@@ -57,7 +57,10 @@ def main() -> int:
     check("no app rolls its own setInterval poller", not offenders, ", ".join(offenders))
 
     users = [p.name for p in APPS.glob("*.js") if "core/poller.js" in p.read_text()]
-    check("the shared poller is actually adopted", len(users) >= 8, f"{len(users)}: {', '.join(sorted(users))}")
+    # Twelve built-in apps used to poll; several UIs moved into packages
+    # (editor, docker, kanban, photos, video, surveillance), so the core set is
+    # smaller now. Keep the guard: any new polling app must adopt the helper.
+    check("the shared poller is actually adopted", len(users) >= 5, f"{len(users)}: {', '.join(sorted(users))}")
 
     # Window lifecycle (P3-07): focus must not rebuild the taskbar.
     focus_body = manager.split("export function focusWindow")[1].split("\nexport function")[0]

@@ -105,7 +105,8 @@ def main() -> int:
     check("legacy rows are imported",
           any(item["message"] == "legacy row" for item in imported.get(10)))
     check("legacy file is archived, not deleted",
-          (legacy_tmp / "legacy-app-events.jsonl").exists() and not legacy_file.exists())
+          (legacy_tmp / "logs" / "legacy-app-events.jsonl").exists()
+          and not legacy_file.exists())
 
     print("\n[clear]")
     cleared = service.clear()

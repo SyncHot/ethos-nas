@@ -73,7 +73,10 @@ def main() -> int:
         p.name for p in (STATIC / "apps").glob("*.js")
         if "core/ws.js" in p.read_text() or "core/log-stream.js" in p.read_text()
     )
-    check("every socket consumer uses a shared helper", len(adopters) >= 4, ", ".join(adopters))
+    # Apps with a socket: files (file events), logs (live tail) and terminal
+    # (PTY). The editor/docker sockets moved into packages; keep the guard so a
+    # new core consumer cannot open a bare WebSocket.
+    check("every socket consumer uses a shared helper", len(adopters) >= 3, ", ".join(adopters))
 
     failed = [r for r in _results if not r[1]]
     print(f"\n{len(_results) - len(failed)}/{len(_results)} checks passed")
