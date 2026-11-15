@@ -1,280 +1,306 @@
-// EthOS NAS — Network Manager App (Interfaces + Firewall)
+// EthOS NAS — Network (rail: Interfaces · Firewall)
 import { escapeHtml, formatBytes, formatSpeed } from '../core/utils.js';
-import { apiFetch } from '../core/api.js';
-import { addNotification } from '../core/notification-center.js';
+import { apiRequest } from '../core/api.js';
 import { poll } from '../core/poller.js';
-import { skeletonRows } from '../core/states.js';
+import { skeletonRows, emptyState, errorState } from '../core/states.js';
+import { logError } from '../core/logger.js';
+import { mountShell } from '../core/ui-shell.js';
 
-let _netBody = null;
-function _netActive() { return !!(_netBody && _netBody.isConnected); }
+const SECTIONS = [
+    { id: 'interfaces', label: 'Interfaces', title: 'Network Interfaces', subtitle: 'Links, addresses and throughput history.', testId: 'net-tab-interfaces' },
+    { id: 'firewall', label: 'Firewall', title: 'Raw Firewall Rules', subtitle: 'Read-only iptables view — UFW rules live in Security.', testId: 'net-tab-firewall' },
+];
+
+let shell = null;
+let navToken = 0;
+let currentSection = 'interfaces';
+let _thruStop = null;
+let _thruMinutes = 60;
+
+function _active() {
+    return Boolean(shell && shell.root.isConnected && currentSection === 'interfaces');
+}
 
 export async function renderNetworkPage(body) {
-    _netBody = body;
-    body.innerHTML = `<div style="padding:0;display:flex;flex-direction:column;height:100%;background:var(--surface-0);color: var(--text-1);font-family:system-ui,sans-serif;">
-        <div style="display:flex;border-bottom:1px solid var(--border);flex-shrink:0;">
-            <button data-testid="net-tab-interfaces" class="net-tab active" data-tab="interfaces" style="flex:1;padding:12px 20px;background:none;border:none;color: var(--text-2);font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s;">🌐 Interfaces</button>
-            <button data-testid="net-tab-firewall" class="net-tab" data-tab="firewall" style="flex:1;padding:12px 20px;background:none;border:none;color: var(--text-2);font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;transition:all 0.15s;">🛡️ Firewall</button>
-        </div>
-        <div id="netContent" style="flex:1;overflow-y:auto;padding:16px 20px;">${skeletonRows(6)}</div>
-    </div>`;
-
-    // Tab switching
-    body.querySelectorAll('.net-tab').forEach(btn => {
-        btn.onclick = () => {
-            body.querySelectorAll('.net-tab').forEach(b => { b.style.color = 'var(--text-2)'; b.style.borderBottomColor = 'transparent'; });
-            btn.style.color = 'white'; btn.style.borderBottomColor = '#3b82f6';
-            const tab = btn.dataset.tab;
-            if (tab === 'interfaces') loadInterfaces(body);
-            else if (tab === 'firewall') loadFirewall(body);
-        };
+    shell?.destroy();
+    shell = mountShell(body, {
+        idPrefix: 'network',
+        title: 'Network',
+        subtitle: 'Interfaces, throughput and the firewall.',
+        icon: '🌐',
+        sections: SECTIONS,
+        note: 'Firewall changes are made in the Security app.',
     });
-
-    loadInterfaces(body);
+    shell.onSection(_runSection);
+    shell.setActive('interfaces');
 }
 
-// Connection card — default gateway, source IP and DNS servers.
-// `st` is the (optional) payload of GET /api/network/status; renders gracefully
-// when the endpoint is unavailable or the host has no route/DNS configured.
-function renderConnectionCard(st) {
-    const gw = st && st.gateway;
-    const dns = (st && Array.isArray(st.dns_servers)) ? st.dns_servers : [];
-    let rows = '';
-    if (gw) {
-        rows += `<div style="display:flex;justify-content:space-between;gap:12px;">
-            <span style="color: var(--text-2);">Default gateway</span>
-            <span style="color:white;font-family:monospace;">${escapeHtml(gw.ip)}
-                ${gw.interface ? `<span style="color:var(--text-3);font-size:11px;">via ${escapeHtml(gw.interface)}</span>` : ''}</span></div>`;
-        if (gw.source_ip) {
-            rows += `<div style="display:flex;justify-content:space-between;gap:12px;">
-                <span style="color: var(--text-2);">Source IP</span>
-                <span style="color:white;font-family:monospace;">${escapeHtml(gw.source_ip)}</span></div>`;
-        }
-    } else {
-        rows += '<div style="font-size:12px;color:var(--text-3);">No default route found</div>';
+function _runSection(id) {
+    currentSection = id;
+    if (id !== 'interfaces' && _thruStop) {
+        _thruStop();
+        _thruStop = null;
     }
-    if (dns.length) {
-        rows += `<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;">
-            <span style="color: var(--text-2);">DNS servers</span>
-            <span style="font-family:monospace;font-size:12px;color:white;">${dns.map(d => escapeHtml(d)).join(' · ')}</span></div>`;
-    } else {
-        rows += '<div style="font-size:12px;color:var(--text-3);">No DNS servers configured</div>';
-    }
-    return `<div class="glass-card" data-testid="net-connection-card" style="padding:16px 20px;margin-bottom:16px;">
-        <div style="font-size:11px;color: var(--text-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;">🌐 Connection</div>
-        <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;">${rows}</div>
-    </div>`;
+    const token = ++navToken;
+    const isCurrent = () => token === navToken && shell && shell.root.isConnected;
+    if (id === 'interfaces') loadInterfaces(isCurrent);
+    else if (id === 'firewall') loadFirewall(isCurrent);
 }
 
-async function loadInterfaces(body) {
-    const content = body.querySelector('#netContent');
+// ── Interfaces ──────────────────────────────────────────────────────────────
+
+async function loadInterfaces(isCurrent) {
+    const content = shell.view;
+    content.innerHTML = skeletonRows(6);
+    shell.setStatus('Loading interfaces…');
+
     try {
-        // /interfaces is the canonical contract ({interfaces:[...], total});
-        // /status is best-effort — its failure must not break the table.
-        const [ifResp, stResp] = await Promise.all([
-            apiFetch('/api/network/interfaces'),
-            apiFetch('/api/network/status').catch(() => null),
+        const [data, netStatus] = await Promise.all([
+            apiRequest('/api/network/interfaces'),
+            apiRequest('/api/network/status').catch((err) => {
+                logError('Network: status unavailable', err?.detail || err?.message);
+                return {};
+            }),
         ]);
-        if (!ifResp.ok) throw new Error('HTTP ' + ifResp.status);
-        const data = await ifResp.json();
-        const ifaces = Array.isArray(data) ? data : (data.interfaces || []);
-        const netStatus = stResp && stResp.ok ? await stResp.json() : {};
+        if (!isCurrent()) return;
 
-        let html = renderThroughputCard() + renderConnectionCard(netStatus);
-        if (!ifaces.length) {
-            html += '<div style="color: var(--text-3);text-align:center;padding:20px;">No network interfaces found.</div>';
-        } else {
-            html += '<table class="app-table" data-testid="net-interfaces-table"><thead><tr><th>Interface</th><th>IP</th><th>MAC</th><th>Status</th><th>Speed</th><th>RX</th><th>TX</th></tr></thead><tbody>';
-            for (const iface of ifaces) {
-                const up = iface.status === 'up';
-                const cls = up ? 'badge-green' : 'badge-yellow';
-                const rx = iface.bytes_recv_human || (iface.rx_bytes != null ? formatBytes(iface.rx_bytes) : '—');
-                const tx = iface.bytes_sent_human || (iface.tx_bytes != null ? formatBytes(iface.tx_bytes) : '—');
-                html += `<tr><td style="font-weight:600;color:white;">${escapeHtml(iface.name || '—')}</td>
-                    <td style="color: var(--text-2);font-family:monospace;">${escapeHtml(iface.ipv4 || iface.ip || '—')}</td>
-                    <td style="color: var(--text-3);font-family:monospace;font-size:12px;">${escapeHtml(iface.mac || '—')}</td>
-                    <td><span class="${cls}" style="padding:2px 8px;border-radius:4px;font-size:11px;">${up ? 'Up' : 'Down'}</span></td>
-                    <td style="color: var(--text-2);font-size:12px;">${iface.speed_mbps ? escapeHtml(String(iface.speed_mbps)) + ' Mb/s' : '—'}</td>
-                    <td style="color: var(--text-2);font-family:monospace;font-size:12px;">${escapeHtml(rx)}</td>
-                    <td style="color: var(--text-2);font-family:monospace;font-size:12px;">${escapeHtml(tx)}</td></tr>`;
-            }
-            html += '</tbody></table>';
-        }
-        content.innerHTML = html;
-        loadThroughput();
-    } catch (e) {
-        content.innerHTML = `<div style="color:#ef4444;text-align:center;padding:20px;">❌ ${escapeHtml(e.message)}</div>`;
+        const interfaces = Array.isArray(data) ? data : (data.interfaces || []);
+        const rows = interfaces.map((iface) => {
+            const up = iface.status === 'up';
+            const rx = iface.bytes_recv_human || (iface.rx_bytes != null ? formatBytes(iface.rx_bytes) : '—');
+            const tx = iface.bytes_sent_human || (iface.tx_bytes != null ? formatBytes(iface.tx_bytes) : '—');
+            return `<tr>
+                <td>${escapeHtml(iface.name || '—')}</td>
+                <td class="path">${escapeHtml(iface.ipv4 || iface.ip || '—')}</td>
+                <td class="path">${escapeHtml(iface.mac || '—')}</td>
+                <td><span class="ui-tag ${up ? 'is-ok' : 'is-warn'}">${up ? 'Up' : 'Down'}</span></td>
+                <td>${iface.speed_mbps ? `${escapeHtml(String(iface.speed_mbps))} Mb/s` : '—'}</td>
+                <td class="num">${escapeHtml(rx)}</td>
+                <td class="num">${escapeHtml(tx)}</td>
+            </tr>`;
+        }).join('');
+
+        content.innerHTML = `
+            ${_throughputCard()}
+            ${_connectionCard(netStatus)}
+            <div class="ui-toolbar">
+                <h2>Interfaces</h2>
+                <span class="ui-tag">${interfaces.length} interface${interfaces.length === 1 ? '' : 's'}</span>
+            </div>
+            ${interfaces.length ? `<div class="ui-panel"><div class="ui-table-wrap"><table class="ui-table" data-testid="net-interfaces-table">
+                    <thead><tr><th>Interface</th><th>IP</th><th>MAC</th><th>Status</th><th>Speed</th><th class="num">RX</th><th class="num">TX</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table></div></div>`
+                : emptyState({ icon: 'network', title: 'No network interfaces found', hint: 'Check the host network configuration.' })}`;
+
+        _wireThroughputWindow(content);
+        applyBarWidths(content);
+        await loadThroughput(isCurrent);
+        if (!isCurrent()) return;
+        shell.setStatus(`${interfaces.length} interface(s)`, 'ok');
+    } catch (err) {
+        if (!isCurrent()) return;
+        content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        shell.setStatus('Could not read interfaces', 'error');
+        logError('Network: interfaces unavailable', err?.detail || err?.message);
     }
 }
 
-// ── Throughput history chart ────────────────────────────────────────────────
-let _thruStop = null; // stop() of the shared poller (core/poller.js)
-let _thruMinutes = 60;   // default window: last hour
+function _connectionCard(status) {
+    const gateway = status?.gateway;
+    const dns = Array.isArray(status?.dns_servers) ? status.dns_servers : [];
+    const rows = [];
+    if (gateway) {
+        rows.push(`<div><dt class="ui-kv-key">Default gateway</dt><dd class="ui-kv-value mono">${escapeHtml(gateway.ip)}${gateway.interface ? ` <span class="ui-tag">${escapeHtml(gateway.interface)}</span>` : ''}</dd></div>`);
+        if (gateway.source_ip) {
+            rows.push(`<div><dt class="ui-kv-key">Source IP</dt><dd class="ui-kv-value mono">${escapeHtml(gateway.source_ip)}</dd></div>`);
+        }
+    } else {
+        rows.push('<div><dt class="ui-kv-key">Default gateway</dt><dd class="ui-kv-value">No default route</dd></div>');
+    }
+    rows.push(`<div><dt class="ui-kv-key">DNS servers</dt><dd class="ui-kv-value mono">${dns.length ? dns.map((d) => escapeHtml(d)).join(' · ') : 'None configured'}</dd></div>`);
 
-function renderThroughputCard() {
-    const wins = [[30, '30 min'], [120, '2 h'], [720, '12 h']];
-    return `<div class="glass-card" data-testid="net-throughput-card" style="padding:16px 20px;margin-bottom:16px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
-            <div style="font-size:11px;color: var(--text-3);text-transform:uppercase;letter-spacing:.5px;">📈 Throughput</div>
-            <div style="display:flex;align-items:center;gap:6px;font-size:12px;flex-wrap:wrap;">
-                <span id="netThruNow" style="color:var(--text-2);font-family:monospace;margin-right:4px;">—</span>
-                ${wins.map(([m, label]) => `<button data-testid="net-thru-win-${m}" class="${m === _thruMinutes ? 'btn-primary' : 'btn-ghost'}" onclick="window._netThruWindow(${m})" style="padding:3px 10px;font-size:11px;">${label}</button>`).join('')}
+    return `<section class="ui-panel" data-testid="net-connection-card">
+        <h2>Connection</h2>
+        <div class="ui-panel-body"><dl class="ui-kv">${rows.join('')}</dl></div>
+    </section>`;
+}
+
+function _throughputCard() {
+    const windows = [[30, '30 min'], [120, '2 h'], [720, '12 h']];
+    return `<section class="ui-panel" data-testid="net-throughput-card">
+        <div class="ui-toolbar">
+            <h2>Throughput</h2>
+            <div class="ui-row">
+                <span id="netThruNow" class="ui-muted mono">—</span>
+                ${windows.map(([minutes, label]) => `<button class="ui-btn small${minutes === _thruMinutes ? ' primary' : ''}"
+                    data-window="${minutes}" data-testid="net-thru-win-${minutes}">${label}</button>`).join('')}
             </div>
         </div>
-        <canvas id="netThruCanvas" style="width:100%;height:120px;display:block;"></canvas>
-    </div>`;
+        <div class="ui-panel-body">
+            <canvas id="netThruCanvas" class="ui-canvas"></canvas>
+        </div>
+    </section>`;
+}
+
+function _wireThroughputWindow(content) {
+    content.querySelectorAll('[data-window]').forEach((button) => {
+        button.addEventListener('click', () => {
+            _thruMinutes = Number(button.dataset.window) || 60;
+            content.querySelectorAll('[data-window]').forEach((other) => {
+                other.classList.toggle('primary', other === button);
+            });
+            loadThroughput(_active);
+        });
+    });
+}
+
+function _cssToken(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
 function _drawSparkline(canvas, points) {
     if (!canvas) return;
     const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth || 600, h = canvas.clientHeight || 120;
-    canvas.width = Math.round(w * dpr);
-    canvas.height = Math.round(h * dpr);
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, w, h);
+    const width = canvas.clientWidth || 600;
+    const height = canvas.clientHeight || 120;
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    const context = canvas.getContext('2d');
+    context.scale(dpr, dpr);
+    context.clearRect(0, 0, width, height);
 
     if (!points.length) {
-        ctx.fillStyle = 'var(--text-3)';
-        ctx.font = '12px system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('Collecting samples… (one point per minute)', w / 2, h / 2);
+        context.fillStyle = _cssToken('--text-3');
+        context.font = '12px system-ui, sans-serif';
+        context.textAlign = 'center';
+        context.fillText('Collecting samples… (one point per minute)', width / 2, height / 2);
         return;
     }
 
     const padL = 8, padR = 8, padT = 10, padB = 18;
-    const maxV = Math.max(...points.map(p => Math.max(p.rx_bps, p.tx_bps)), 1);
-    const x = i => points.length === 1 ? (padL + w - padR) / 2 : padL + (w - padL - padR) * i / (points.length - 1);
-    const y = v => h - padB - (h - padT - padB) * (v / maxV);
+    const maxValue = Math.max(...points.map((point) => Math.max(point.rx_bps, point.tx_bps)), 1);
+    const x = (index) => points.length === 1
+        ? (padL + width - padR) / 2
+        : padL + (width - padL - padR) * index / (points.length - 1);
+    const y = (value) => height - padB - (height - padT - padB) * (value / maxValue);
 
-    // Baseline grid line.
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(padL, h - padB); ctx.lineTo(w - padR, h - padB);
-    ctx.stroke();
+    context.strokeStyle = _cssToken('--ui-border');
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(padL, height - padB);
+    context.lineTo(width - padR, height - padB);
+    context.stroke();
 
     const series = [
-        { key: 'tx_bps', color: '#22c55e' },  // TX green (behind)
-        { key: 'rx_bps', color: '#3b82f6' },  // RX blue (front)
+        { key: 'tx_bps', color: _cssToken('--ui-ok') },
+        { key: 'rx_bps', color: _cssToken('--ui-accent') },
     ];
-    for (const s of series) {
-        ctx.strokeStyle = s.color;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        points.forEach((p, i) => { i === 0 ? ctx.moveTo(x(i), y(p[s.key])) : ctx.lineTo(x(i), y(p[s.key])); });
-        ctx.stroke();
+    for (const line of series) {
+        context.strokeStyle = line.color;
+        context.lineWidth = 1.5;
+        context.beginPath();
+        points.forEach((point, index) => {
+            if (index === 0) context.moveTo(x(index), y(point[line.key]));
+            else context.lineTo(x(index), y(point[line.key]));
+        });
+        context.stroke();
     }
 
-    // Axis labels: max rate (top-left), time span (bottom).
-    const fmtT = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    ctx.fillStyle = 'var(--text-3)';
-    ctx.font = '10px system-ui, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(formatSpeed(maxV), padL, 8);
-    ctx.fillText(fmtT(points[0].ts), padL, h - 4);
-    ctx.textAlign = 'right';
-    ctx.fillText(fmtT(points[points.length - 1].ts), w - padR, h - 4);
+    const fmtTime = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    context.fillStyle = _cssToken('--text-3');
+    context.font = '10px system-ui, sans-serif';
+    context.textAlign = 'left';
+    context.fillText(formatSpeed(maxValue), padL, 8);
+    context.fillText(fmtTime(points[0].ts), padL, height - 4);
+    context.textAlign = 'right';
+    context.fillText(fmtTime(points[points.length - 1].ts), width - padR, height - 4);
 }
 
-async function loadThroughput() {
+async function loadThroughput(isCurrent) {
     if (_thruStop) { _thruStop(); _thruStop = null; }
+
     const draw = async () => {
-        // The poller already stops with the window; this only guards a draw that
-        // was in flight while the app switched away.
-        if (!_netActive()) return;
+        if (!_active() || (isCurrent && !isCurrent())) return;
         try {
-            const resp = await apiFetch(`/api/network/stats/history?minutes=${_thruMinutes}`);
-            if (!resp.ok || !_netActive()) return;
-            const data = await resp.json();
+            const data = await apiRequest(`/api/network/stats/history?minutes=${_thruMinutes}`);
+            if (!_active()) return;
             const points = data.samples || [];
             _drawSparkline(document.getElementById('netThruCanvas'), points);
-            const nowEl = document.getElementById('netThruNow');
-            if (nowEl) {
-                nowEl.textContent = points.length
+            const now = document.getElementById('netThruNow');
+            if (now) {
+                now.textContent = points.length
                     ? `↓ ${formatSpeed(points[points.length - 1].rx_bps)} · ↑ ${formatSpeed(points[points.length - 1].tx_bps)}`
                     : 'collecting…';
             }
-        } catch (_) { /* keep the last drawing on transient errors */ }
+        } catch (err) {
+            logError('Network: throughput history unavailable', err?.detail || err?.message);
+        }
     };
+
     await draw();
-    // Shared poller: pauses in a hidden tab, stops when the window closes.
-    if (_thruStop) _thruStop();
+    if (!_active()) return;
     _thruStop = poll(draw, 30_000, { appId: 'network', immediate: false, name: 'network-draw' });
 }
 
-window._netThruWindow = function (minutes) {
-    _thruMinutes = minutes;
-    document.querySelectorAll('[data-testid^="net-thru-win-"]').forEach(b => {
-        const m = Number(String(b.dataset.testid).split('-').pop());
-        b.className = m === _thruMinutes ? 'btn-primary' : 'btn-ghost';
-    });
-    loadThroughput();
-};
+// ── Firewall ────────────────────────────────────────────────────────────────
 
-async function loadFirewall(body) {
-    const content = body.querySelector('#netContent');
+async function loadFirewall(isCurrent) {
+    const content = shell.view;
     content.innerHTML = skeletonRows(5);
+    shell.setStatus('Loading firewall rules…');
 
     try {
-        const [statusResp, rulesResp] = await Promise.all([
-            apiFetch('/api/network/firewall/status'),
-            apiFetch('/api/network/firewall'),
+        const [status, data] = await Promise.all([
+            apiRequest('/api/network/firewall/status').catch((err) => {
+                logError('Network: firewall status unavailable', err?.detail || err?.message);
+                return {};
+            }),
+            apiRequest('/api/network/firewall').catch((err) => {
+                logError('Network: firewall rules unavailable', err?.detail || err?.message);
+                return { rules: [] };
+            }),
         ]);
-        const status = statusResp.ok ? await statusResp.json() : {};
-        const data = rulesResp.ok ? await rulesResp.json() : { rules: [], policies: {} };
+        if (!isCurrent()) return;
+
         const rules = data.rules || [];
+        const state = status.active === undefined
+            ? '<span class="ui-tag">unknown</span>'
+            : (status.active ? '<span class="ui-tag is-ok">active</span>' : '<span class="ui-tag is-warn">inactive</span>');
+        const backend = status.using_nftables ? 'nftables' : 'iptables';
 
-        let html = `<div style="color:#f59e0b;font-size:12px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-            <span>⚠️ This is a read-only view of the raw <b>iptables</b> ruleset. The firewall is managed through <b>UFW</b> — change rules, bans and logging in the Firewall &amp; Access Control app.</span>
-            <button class="btn-primary" data-testid="fw-open-security" onclick="openApp('security')" style="font-size:11px;padding:4px 12px;white-space:nowrap;">Open Firewall &amp; Access Control →</button>
-        </div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-            <div style="display:flex;align-items:center;gap:12px;">
-                <span data-testid="fw-status" style="font-size:13px;color: var(--text-2);">
-                    ${status.active !== undefined
-                        ? (status.active ? '🟢 iptables service active' : '⚪ iptables service not active')
-                        : '⏳ Unknown'}
-                    ${status.using_nftables ? '(nftables backend)' : '(iptables backend)'}
-                    · ${rules.length} raw rules · UFW state is shown in the Firewall app
-                </span>
+        const rows = rules.map((rule) => `<tr>
+            <td>${escapeHtml(rule.chain)}</td>
+            <td>${escapeHtml(rule.protocol)}</td>
+            <td class="path">${escapeHtml(rule.source)}</td>
+            <td class="path">${escapeHtml(rule.destination)}</td>
+            <td>${rule.dport || rule.sport ? escapeHtml(rule.dport || rule.sport) : '—'}</td>
+            <td><span class="ui-tag ${rule.action === 'ACCEPT' ? 'is-ok' : 'is-warn'}">${escapeHtml(rule.action)}</span></td>
+            <td class="ui-muted">${escapeHtml(rule.comment || '—')}</td>
+        </tr>`).join('');
+
+        content.innerHTML = `
+            <div class="ui-callout info" data-testid="fw-status">
+                ${state} <strong>${escapeHtml(backend)}</strong> backend · ${rules.length} raw rule(s).
+                This view is read-only — change rules, bans and logging in the Firewall &amp; Access Control app.
+                <div class="ui-row ui-panel-body">
+                    <button class="ui-btn small primary" data-action="open-security" data-testid="fw-open-security">Open Firewall &amp; Access Control →</button>
+                </div>
             </div>
-        </div>`;
+            ${rules.length ? `<div class="ui-panel"><div class="ui-table-wrap"><table class="ui-table" data-testid="fw-rules-table">
+                    <thead><tr><th>Chain</th><th>Protocol</th><th>Source</th><th>Dest</th><th>Port</th><th>Action</th><th>Comment</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table></div></div>`
+                : emptyState({ icon: 'shield', title: 'No firewall rules found', hint: 'UFW rules are managed in the Security app.' })}`;
 
-        if (rules.length === 0) {
-            html += '<div style="color: var(--text-3);text-align:center;padding:40px;">No firewall rules found.</div>';
-        } else {
-            html += `<table class="app-table" data-testid="fw-rules-table" style="width:100%;"><thead><tr>
-                <th style="text-align:left;padding:8px 10px;">Chain</th>
-                <th style="text-align:left;padding:8px 10px;">Protocol</th>
-                <th style="text-align:left;padding:8px 10px;">Source</th>
-                <th style="text-align:left;padding:8px 10px;">Dest</th>
-                <th style="text-align:left;padding:8px 10px;">Port</th>
-                <th style="text-align:left;padding:8px 10px;">Action</th>
-                <th style="text-align:left;padding:8px 10px;">Comment</th>
-            </tr></thead><tbody>`;
-            for (const rule of rules) {
-                html += `<tr>
-                    <td style="font-weight:600;color:white;padding:8px 10px;font-size:12px;">${escapeHtml(rule.chain)}</td>
-                    <td style="color: var(--text-2);padding:8px 10px;font-size:12px;">${escapeHtml(rule.protocol)}</td>
-                    <td style="color: var(--text-3);font-family:monospace;font-size:11px;padding:8px 10px;">${escapeHtml(rule.source)}</td>
-                    <td style="color: var(--text-3);font-family:monospace;font-size:11px;padding:8px 10px;">${escapeHtml(rule.destination)}</td>
-                    <td style="color: var(--text-2);padding:8px 10px;font-size:12px;">${rule.dport || rule.sport ? escapeHtml(rule.dport || rule.sport) : '—'}</td>
-                    <td style="padding:8px 10px;font-size:12px;"><span class="${rule.action === 'ACCEPT' ? 'badge-green' : 'badge-yellow'}" style="padding:2px 6px;">${escapeHtml(rule.action)}</span></td>
-                    <td style="color: var(--text-3);padding:8px 10px;font-size:11px;">${escapeHtml(rule.comment || '—')}</td>
-                </tr>`;
-            }
-            html += '</tbody></table>';
-        }
-        content.innerHTML = html;
-    } catch (e) {
-        content.innerHTML = `<div style="color:#ef4444;text-align:center;padding:20px;">❌ ${escapeHtml(e.message)}</div>`;
+        content.querySelector('[data-action="open-security"]')?.addEventListener('click', () => {
+            if (typeof window.openApp === 'function') window.openApp('security');
+        });
+        shell.setStatus(`${rules.length} raw rule(s) · ${backend}`, 'ok');
+    } catch (err) {
+        if (!isCurrent()) return;
+        content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        shell.setStatus('Could not read firewall rules', 'error');
+        logError('Network: firewall view failed', err?.detail || err?.message);
     }
 }
-
-// ── Global helpers for inline onclick handlers ──
-
-window._fwRefresh = function() {
-    const body = document.querySelector('#netContent');
-    if (body) loadFirewall(body.closest('.app-window') || body);
-};

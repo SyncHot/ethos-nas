@@ -40,6 +40,14 @@ applyTo: "frontend/static/**/*.js"
 4. `static/core/desktop-layout.js` — `DEFAULT_ORDER` (must match `APP_REGISTRY_KEYS` in
    `backend/routers/packages.py`).
 
+## Window layout (mandatory)
+Every app window is built with `mountShell()` from `core/ui-shell.js` and the
+`.ui-*` classes in `frontend/static/css/ethos-ui.css` — the same shell as the
+native package windows. No `<style>` injection, no hardcoded colours, no
+`.glass-card`/`.app-tab` in apps. Spec `docs/app-ui.md`; rule
+`.github/instructions/app-ui.instructions.md`; skill `app-ui`; guard
+`tests/test_app_ui.py`.
+
 ## Conventions
 - No build step. Plain ES modules only.
 - No new `window.*` globals; export/import instead.

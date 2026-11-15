@@ -1,274 +1,248 @@
-// EthOS NAS — Process Manager Page (with search, auto-refresh)
-import { escapeHtml, escapeAttr } from '../core/utils.js';
-import { apiFetch } from '../core/api.js';
+// EthOS NAS — Process Manager (single-pane shell)
+import { escapeAttr, escapeHtml } from '../core/utils.js';
+import { apiRequest } from '../core/api.js';
 import { poll } from '../core/poller.js';
-import { skeletonRows } from '../core/states.js';
+import { skeletonRows, emptyState, errorState } from '../core/states.js';
+import { showConfirm } from '../core/modal.js';
+import { notify } from '../core/notification-center.js';
+import { uiIcon } from '../core/icons.js';
+import { logError } from '../core/logger.js';
+import { mountShell, applyBarWidths } from '../core/ui-shell.js';
 
-let _procSort = 'mem', _procSortAsc = false;
-let _procFilter = '';
-let _procAutoRefresh = false;
+let shell = null;
+let sortKey = 'mem';
+let sortAsc = false;
+let filter = '';
+let autoRefresh = false;
+
 const AUTO_REFRESH_MS = 5000;
-const HEAVY_MB = 300;      // rows above this get a yellow tint
-const CRITICAL_MB = 1000;  // ... and this one a red tint
+const HEAVY_MB = 300;
+const CRITICAL_MB = 1000;
 
-// ── formatting helpers ───────────────────────────────────────────────
-
-function _mb(v) {
-    const n = Number(v) || 0;
+function _mb(value) {
+    const n = Number(value) || 0;
     return n >= 1024 ? `${(n / 1024).toFixed(2)} GB` : `${Math.round(n)} MB`;
 }
 
-function _bar(percent, color) {
-    const p = Math.max(0, Math.min(100, Number(percent) || 0));
-    const c = color || (p >= 90 ? '#ef4444' : p >= 75 ? '#eab308' : '#22c55e');
-    return `<div style="height:8px;border-radius:999px;background:rgba(255,255,255,0.08);overflow:hidden;">
-        <div style="height:100%;width:${p}%;background:${c};transition:width .3s;"></div>
-    </div>`;
+function _tone(percent) {
+    const value = Number(percent) || 0;
+    return value >= 90 ? 'bad' : value >= 75 ? 'warn' : 'ok';
 }
 
-function _statusBadge(status) {
-    const cls = status === 'running' ? 'badge-green'
-        : status === 'sleeping' ? 'badge-blue'
-        : status === 'zombie' ? 'badge-red' : 'badge-yellow';
-    return `<span class="${cls}" style="padding:2px 6px;border-radius:4px;font-size:10px;">${escapeHtml(status || '?')}</span>`;
+function _bar(percent) {
+    const value = Math.max(0, Math.min(100, Number(percent) || 0));
+    return `<div class="ui-bar">
+        <div class="ui-bar-fill ${_tone(value)}" data-width="${value}"></div></div>`;
 }
 
-/** RAM/swap/load header + the "what actually eats RAM" grouping. */
-function _summaryHtml(sys, groups) {
-    if (!sys) return '';
-    const memPct = sys.mem_percent || 0;
-    const swapPct = sys.swap_percent || 0;
-    // Swap saturation is the real "my NAS is choking" signal — surface it loudly.
-    const swapWarn = swapPct >= 90
-        ? `<span style="color:#ef4444;font-weight:700;">⚠ swap almost full</span>` : `${swapPct}%`;
-
-    let html = `
-        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:16px;align-items:center;">
-            <div>
-                <div style="display:flex;justify-content:space-between;font-size:12px;color: var(--text-2);margin-bottom:4px;">
-                    <span><b style="color:var(--text-1);">RAM</b> ${_mb(sys.mem_used_mb)} / ${_mb(sys.mem_total_mb)}</span>
-                    <span>${_mb(sys.mem_available_mb)} free · ${memPct}%</span>
-                </div>
-                ${_bar(memPct)}
-            </div>
-            <div>
-                <div style="display:flex;justify-content:space-between;font-size:12px;color: var(--text-2);margin-bottom:4px;">
-                    <span><b style="color:var(--text-1);">Swap</b> ${_mb(sys.swap_used_mb)} / ${_mb(sys.swap_total_mb)}</span>
-                    <span>${swapWarn}</span>
-                </div>
-                ${_bar(swapPct, swapPct >= 90 ? '#ef4444' : undefined)}
-            </div>
-            <div style="font-size:12px;color: var(--text-3);text-align:right;white-space:nowrap;">
-                <div>load <b style="color:${sys.load_1 > sys.cpu_count ? '#ef4444' : 'var(--text-1)'};">${sys.load_1}</b>
-                     <span style="opacity:.7;">/ ${sys.cpu_count} cpu</span></div>
-                <div style="opacity:.7;">${sys.load_1} · ${sys.load_5} · ${sys.load_15}</div>
-            </div>
-        </div>`;
-
-    if (groups && groups.length) {
-        const max = Math.max(...groups.map(g => g.memory_rss_mb || 0), 1);
-        const rows = groups.slice(0, 6).map(g => {
-            const pct = Math.round(((g.memory_rss_mb || 0) / max) * 100);
-            const isContainer = !!g.container;
-            return `<div style="display:flex;align-items:center;gap:10px;font-size:12px;margin-top:6px;">
-                <span style="width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-1);"
-                      title="${escapeAttr(isContainer ? 'container ' + g.container : g.name)}">
-                    ${isContainer ? '🐳' : '⚙️'} ${escapeHtml(g.name)}
-                    <span style="color: var(--text-3);">×${g.process_count}</span>
-                </span>
-                <span style="flex:1;height:8px;border-radius:999px;background:rgba(255,255,255,0.06);overflow:hidden;">
-                    <span style="display:block;height:100%;width:${pct}%;background:${isContainer ? '#5b9aff' : '#8b5cf6'};"></span>
-                </span>
-                <span style="width:82px;text-align:right;color:var(--text-1);font-weight:600;">${_mb(g.memory_rss_mb)}</span>
-            </div>`;
-        }).join('');
-        html += `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);">
-            <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color: var(--text-3);">Top RAM consumers</div>
-            ${rows}
-        </div>`;
-    }
-    return html;
+function _statusTag(status) {
+    const tone = status === 'running' ? 'is-ok'
+        : status === 'sleeping' ? 'is-info'
+            : status === 'zombie' ? 'is-bad' : 'is-warn';
+    return `<span class="ui-tag ${tone}">${escapeHtml(status || '?')}</span>`;
 }
 
 export async function renderProcessesPage(body) {
-    // One timer per window body; re-rendering must not stack intervals.
-    if (body._procTimer) { clearInterval(body._procTimer); body._procTimer = null; }
-    body.innerHTML = `
-        <div style="display:flex;flex-direction:column;height:100%;background:var(--surface-0);">
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0;">
-                <h2 style="margin:0;font-size:18px;font-weight:700;color:white;">📋 Process Manager</h2>
-                <div style="display:flex;gap:8px;align-items:center;">
-                    <input type="text" id="procSearch" placeholder="🔍 Filter processes..."
-                        style="padding:6px 12px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:8px;color: var(--text-1);font-size:13px;width:180px;outline:none;transition:border-color 0.15s;"
-                        onfocus="this.style.borderColor='#3584e4'" onblur="this.style.borderColor='rgba(255,255,255,0.08)'">
-                    <button class="btn-ghost" id="procRefreshBtn" data-testid="proc-refresh-btn" style="font-size:12px;padding:5px 12px;" onclick="_refreshProcList(this.closest('.window-body'))">↻ Refresh</button>
-                    <label title="Reload every 5 s" style="display:flex;align-items:center;gap:6px;font-size:12px;color: var(--text-3);cursor:pointer;user-select:none;padding:5px 10px;border:1px solid var(--border);border-radius:8px;">
-                        <input type="checkbox" id="procAuto" data-testid="proc-auto-refresh" style="cursor:pointer;">
-                        auto
-                    </label>
-                </div>
+    if (body._procStop) { body._procStop(); body._procStop = null; }
+    shell?.destroy();
+    shell = mountShell(body, {
+        idPrefix: 'processes',
+        title: 'Process Manager',
+        subtitle: 'Running processes and what is eating RAM.',
+        icon: '📋',
+        sections: [{ id: 'processes', label: 'Processes' }],
+        rail: false,
+        note: 'Killing a service process may break an app.',
+    });
+    shell.view.innerHTML = `
+        <div class="ui-toolbar">
+            <div class="ui-row">
+                <input id="procSearch" class="ui-input" type="search" placeholder="Filter processes…" aria-label="Filter processes">
+                <button class="ui-btn small" id="procRefreshBtn" data-testid="proc-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>
+                <label class="ui-check" title="Reload every 5 s"><input type="checkbox" id="procAuto" data-testid="proc-auto-refresh"> auto</label>
             </div>
-            <div id="procSummary" style="padding:12px 20px;border-bottom:1px solid var(--border);flex-shrink:0;"></div>
-            <div id="procTableWrap" style="flex:1;overflow:auto;padding:0;">
-                ${skeletonRows(10)}
-            </div>
-        </div>`;
-    // A real listener, not inline oninput: inline handlers run in global scope, so
-    // `_procFilter = ...` created a NEW window global and the module's own
-    // (shadowing) variable stayed '' — the filter silently never applied.
-    const search = body.querySelector('#procSearch');
-    if (search) {
-        search.value = _procFilter;
-        search.addEventListener('input', () => {
-            _procFilter = search.value.toLowerCase();
-            _refreshProcList(body);
-        });
+            <span class="ui-tag" id="procCount">—</span>
+        </div>
+        <section class="ui-panel" id="procSummary">${skeletonRows(2)}</section>
+        <section class="ui-panel" style="min-height:180px;">
+            <div id="procTableWrap">${skeletonRows(10)}</div>
+        </section>`;
+
+    const search = shell.view.querySelector('#procSearch');
+    search.value = filter;
+    search.addEventListener('input', () => {
+        filter = search.value.toLowerCase();
+        refresh();
+    });
+    shell.view.querySelector('#procRefreshBtn')?.addEventListener('click', () => refresh());
+    const auto = shell.view.querySelector('#procAuto');
+    auto.checked = autoRefresh;
+    auto.addEventListener('change', () => {
+        autoRefresh = auto.checked;
+        refresh();
+    });
+
+    shell.setStatus('Loading processes…');
+    refresh();
+
+    async function refresh() {
+        await _refreshProcList(body);
     }
-    // Checkbox listener in JS, not inline: an inline `_procAutoRefresh = ...`
-    // would set a window global while the module variable stayed false.
-    const auto = body.querySelector('#procAuto');
-    if (auto) {
-        auto.checked = _procAutoRefresh;
-        auto.addEventListener('change', () => {
-            _procAutoRefresh = auto.checked;
-            _refreshProcList(body);
-        });
-    }
-    _refreshProcList(body);
 }
 
 async function _refreshProcList(body) {
-    const wrap = body.querySelector('#procTableWrap');
+    if (!shell || !shell.root.isConnected) return;
+    const wrap = shell.view.querySelector('#procTableWrap');
+    const summary = shell.view.querySelector('#procSummary');
     if (!wrap) return;
     wrap.innerHTML = skeletonRows(10);
-    
+
     try {
-        // The API only understands cpu|mem|name|pid; other columns are ordered here.
-        const serverSort = ['cpu', 'mem', 'name', 'pid'].includes(_procSort) ? _procSort : 'mem';
-        const r = await apiFetch(`/api/processes?sort=${serverSort}&limit=300`);
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        const d = await r.json();
-        const summaryEl = body.querySelector('#procSummary');
-        if (summaryEl) summaryEl.innerHTML = _summaryHtml(d.system, d.groups || []);
-        let procs = d.processes || [];
-        
-        // Apply client-side filter
-        if (_procFilter) {
-            procs = procs.filter(p =>
-                (p.name && p.name.toLowerCase().includes(_procFilter)) ||
-                (p.display_name && p.display_name.toLowerCase().includes(_procFilter)) ||
-                (p.container && p.container.toLowerCase().includes(_procFilter)) ||
-                (p.username && p.username.toLowerCase().includes(_procFilter)) ||
-                String(p.pid).includes(_procFilter) ||
-                (p.cmdline && p.cmdline.toLowerCase().includes(_procFilter))
-            );
+        const serverSort = ['cpu', 'mem', 'name', 'pid'].includes(sortKey) ? sortKey : 'mem';
+        const data = await apiRequest(`/api/processes?sort=${serverSort}&limit=300`);
+        if (!shell.root.isConnected) return;
+
+        if (summary) {
+            summary.innerHTML = _summaryHtml(data.system, data.groups || []);
+            applyBarWidths(summary);
         }
 
-        const dir = _procSortAsc ? 1 : -1;
-        if (_procSort === 'threads') procs = [...procs].sort((a, b) => dir * ((a.threads || 0) - (b.threads || 0)));
-        else if (_procSort === 'mem_pct') procs = [...procs].sort((a, b) => dir * ((a.memory_percent || 0) - (b.memory_percent || 0)));
-        else if (_procSort === 'user') procs = [...procs].sort((a, b) => dir * String(a.username || '').localeCompare(String(b.username || '')));
-        else if (_procSort === 'status') procs = [...procs].sort((a, b) => dir * String(a.status || '').localeCompare(String(b.status || '')));
-        
-        const cols = [
-            { key: 'pid', label: 'PID' },
-            { key: 'name', label: 'Process' },
-            { key: 'user', label: 'User' },
-            { key: 'cpu', label: 'CPU' },
-            { key: 'mem', label: 'RAM' },
-            { key: 'mem_pct', label: '%MEM' },
-            { key: 'threads', label: 'Thr' },
-            { key: 'status', label: 'Status' },
-            { key: '_actions', label: '' }
-        ];
-        const thStyle = (key) => `cursor:pointer;user-select:none;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;text-align:left;${_procSort === key ? 'color:#5b9aff;' : 'color: var(--text-3);'}`;
-        const arrow = (key) => _procSort === key ? (_procSortAsc ? ' ↑' : ' ↓') : '';
-        const countInfo = _procFilter ? `${procs.length} of ${d.processes?.length || 0}` : `${procs.length}`;
+        let procs = data.processes || [];
+        if (filter) {
+            procs = procs.filter((proc) =>
+                (proc.name && proc.name.toLowerCase().includes(filter))
+                || (proc.display_name && proc.display_name.toLowerCase().includes(filter))
+                || (proc.container && proc.container.toLowerCase().includes(filter))
+                || (proc.username && proc.username.toLowerCase().includes(filter))
+                || String(proc.pid).includes(filter)
+                || (proc.cmdline && proc.cmdline.toLowerCase().includes(filter)));
+        }
 
-        if (procs.length === 0) {
-            wrap.innerHTML = `
-                <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color: var(--text-3);padding:40px;min-height:200px;">
-                    <div style="font-size:48px;margin-bottom:12px;">📋</div>
-                    <p style="font-size:16px;font-weight:600;color: var(--text-2);margin-bottom:4px;">${_procFilter ? 'No matching processes' : 'No processes found'}</p>
-                    <p style="font-size:13px;">${_procFilter ? 'Try a different search term' : 'The process list is empty'}</p>
-                </div>`;
+        const direction = sortAsc ? 1 : -1;
+        if (sortKey === 'threads') procs = [...procs].sort((a, b) => direction * ((a.threads || 0) - (b.threads || 0)));
+        else if (sortKey === 'mem_pct') procs = [...procs].sort((a, b) => direction * ((a.memory_percent || 0) - (b.memory_percent || 0)));
+        else if (sortKey === 'user') procs = [...procs].sort((a, b) => direction * String(a.username || '').localeCompare(String(b.username || '')));
+        else if (sortKey === 'status') procs = [...procs].sort((a, b) => direction * String(a.status || '').localeCompare(String(b.status || '')));
+
+        const count = shell.view.querySelector('#procCount');
+        if (count) count.textContent = `${procs.length} process${procs.length === 1 ? '' : 'es'}`;
+
+        if (!procs.length) {
+            wrap.innerHTML = emptyState({
+                icon: 'list',
+                title: filter ? 'No matching processes' : 'No processes found',
+                hint: filter ? 'Try a different search term.' : 'The process list is empty.',
+            });
+            shell.setStatus(filter ? 'No matches' : 'No processes', 'warn');
             return;
         }
 
-        let html = `<div style="padding:8px 20px;border-bottom:1px solid var(--border);font-size:12px;color: var(--text-3);display:flex;justify-content:space-between;">
-            <span>${countInfo} process${procs.length !== 1 ? 'es' : ''}</span>
-            <span style="color:#22c55e;">CPU: ${(procs.reduce((s,p) => s + (p.cpu_percent||0), 0)).toFixed(1)}%</span>
-        </div>`;
-        html += `<table class="app-table" data-testid="processes-table" style="width:100%;"><thead><tr>
-            ${cols.map(c => c.key === '_actions' ? '<th style="padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color: var(--text-3);">Actions</th>' : `<th style="${thStyle(c.key)}" onclick="window._sortProcesses('${c.key}',this.closest('.window-body'))">${c.label}${arrow(c.key)}</th>`).join('')}
-        </tr></thead><tbody>`;
-        
-        for (const p of procs) {
-            const cpu = p.cpu_percent || 0;
-            const cc = cpu > 50 ? '#ef4444' : cpu > 20 ? '#eab308' : 'var(--text-2)';
-            const memMb = p.memory_rss_mb || 0;
-            const tint = memMb >= CRITICAL_MB ? 'rgba(239,68,68,0.10)'
-                : memMb >= HEAVY_MB ? 'rgba(234,179,8,0.08)' : '';
-            const label = p.display_name || p.name;
-            html += `<tr style="${tint ? `background:${tint};` : ''}">
-                <td style="font-family:monospace;color: var(--text-3);padding:6px 10px;">${p.pid}</td>
-                <td style="padding:6px 10px;max-width:260px;">
-                    <div style="font-weight:600;color:white;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(p.cmdline || p.name)}">${escapeHtml(label)}</div>
-                    ${p.container ? `<span style="font-size:10px;color:#5b9aff;" title="Docker container">🐳 ${escapeHtml(p.container)}</span>` : ''}
+        const columns = [
+            ['pid', 'PID'], ['name', 'Process'], ['user', 'User'], ['cpu', 'CPU'], ['mem', 'RAM'],
+            ['mem_pct', '%MEM'], ['threads', 'Thr'], ['status', 'Status'], ['_actions', ''],
+        ];
+        const arrow = (key) => (sortKey === key ? (sortAsc ? ' ↑' : ' ↓') : '');
+        const rows = procs.map((proc) => {
+            const cpu = Number(proc.cpu_percent) || 0;
+            const memMb = Number(proc.memory_rss_mb) || 0;
+            const tone = memMb >= CRITICAL_MB ? 'is-bad' : memMb >= HEAVY_MB ? 'is-warn' : '';
+            const label = proc.display_name || proc.name;
+            return `<tr class="${tone ? `row-${tone.slice(3)}` : ''}">
+                <td class="path">${proc.pid}</td>
+                <td>
+                    <div title="${escapeAttr(proc.cmdline || proc.name)}">${escapeHtml(label)}</div>
+                    ${proc.container ? `<span class="ui-tag is-info">🐳 ${escapeHtml(proc.container)}</span>` : ''}
                 </td>
-                <td style="color: var(--text-3);font-size:12px;padding:6px 10px;white-space:nowrap;">${escapeHtml(p.username || '—')}</td>
-                <td style="color:${cc};font-weight:600;padding:6px 10px;white-space:nowrap;">${cpu.toFixed(1)}%</td>
-                <td style="padding:6px 10px;white-space:nowrap;font-weight:${memMb >= HEAVY_MB ? 700 : 400};color:${memMb >= HEAVY_MB ? '#eab308' : 'var(--text-1)'};">${_mb(memMb)}</td>
-                <td style="padding:6px 10px;color: var(--text-2);white-space:nowrap;">${(p.memory_percent || 0).toFixed(1)}%</td>
-                <td style="padding:6px 10px;color: var(--text-3);">${p.threads || 0}</td>
-                <td style="padding:6px 10px;">${_statusBadge(p.status)}</td>
-                <td style="padding:6px 10px;"><button class="btn-ghost" style="font-size:11px;padding:3px 8px;color:#ef4444;" data-testid="proc-kill-${p.pid}" onclick="window._killProcess(${p.pid},this.closest('.window-body'))">Kill</button></td>
+                <td>${escapeHtml(proc.username || '—')}</td>
+                <td><span class="ui-tag ${cpu > 50 ? 'is-bad' : cpu > 20 ? 'is-warn' : ''}">${cpu.toFixed(1)}%</span></td>
+                <td class="num">${_mb(memMb)}</td>
+                <td class="num">${(Number(proc.memory_percent) || 0).toFixed(1)}%</td>
+                <td class="num">${Number(proc.threads) || 0}</td>
+                <td>${_statusTag(proc.status)}</td>
+                <td class="actions"><button class="ui-btn small danger" data-kill="${proc.pid}" data-testid="proc-kill-${proc.pid}">Kill</button></td>
             </tr>`;
-        }
-        html += '</tbody></table>';
-        wrap.innerHTML = html;
-    } catch (e) {
-        wrap.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:#ef4444;padding:40px;"><div style="font-size:32px;margin-bottom:8px;">❌</div><p>${escapeHtml(e.message)}</p></div>`;
+        }).join('');
+
+        wrap.innerHTML = `<div class="ui-table-wrap"><table class="ui-table" data-testid="processes-table">
+            <thead><tr>${columns.map(([key, label]) => `<th data-sort="${key}" style="cursor:pointer;">${escapeHtml(label)}${arrow(key)}</th>`).join('')}</tr></thead>
+            <tbody>${rows}</tbody></table></div>`;
+
+        wrap.onclick = (event) => {
+            const header = event.target.closest('[data-sort]');
+            if (header) {
+                const key = header.dataset.sort;
+                if (key === '_actions') return;
+                if (sortKey === key) sortAsc = !sortAsc;
+                else { sortKey = key; sortAsc = key === 'name' || key === 'user'; }
+                _refreshProcList(body);
+                return;
+            }
+            const kill = event.target.closest('[data-kill]');
+            if (kill) _killProcess(Number(kill.dataset.kill), body);
+        };
+        shell.setStatus(`CPU ${procs.reduce((sum, proc) => sum + (Number(proc.cpu_percent) || 0), 0).toFixed(1)}%`, 'ok');
+    } catch (err) {
+        if (!shell.root.isConnected) return;
+        wrap.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        shell.setStatus('Could not read processes', 'error');
+        logError('Processes: list unavailable', err?.detail || err?.message);
     }
 
-    // Auto-refresh through the shared poller: pauses in a hidden tab, skips ticks
-    // while a fetch is in flight, and stops with the window (TODO.md P3-09).
     if (body._procStop) { body._procStop(); body._procStop = null; }
-    if (_procAutoRefresh) {
+    if (autoRefresh) {
         body._procStop = poll(() => _refreshProcList(body), AUTO_REFRESH_MS,
-                              { appId: 'processes', immediate: false, name: 'processes' });
+            { appId: 'processes', immediate: false, name: 'processes' });
     }
 }
 
-window._sortProcesses = function(col, bodyEl) {
-    if (_procSort === col) _procSortAsc = !_procSortAsc;
-    else { _procSort = col; _procSortAsc = (col === 'name' || col === 'user'); }
-    _refreshProcList(bodyEl);
-};
+function _summaryHtml(system, groups) {
+    if (!system) return emptyState({ title: 'System summary unavailable', hint: 'The process API did not return system data.' });
+    const memPercent = Number(system.mem_percent) || 0;
+    const swapPercent = Number(system.swap_percent) || 0;
+    const loadHigh = Number(system.load_1) > Number(system.cpu_count);
 
-async function _killProcess(pid, bodyEl) {
-    if (!await window.showModalConfirm('Kill Process', `Kill process PID ${pid}?`)) return;
+    const consumers = (groups || []).slice(0, 6).map((group) => {
+        const max = Math.max(...groups.map((item) => Number(item.memory_rss_mb) || 0), 1);
+        const percent = Math.round(((Number(group.memory_rss_mb) || 0) / max) * 100);
+        return `<div class="ui-list-row">
+            <span class="ui-list-row-main">${group.container ? '🐳' : '⚙️'} ${escapeHtml(group.name)}
+                <span class="ui-muted">×${Number(group.process_count) || 0}</span></span>
+            <span class="ui-bar" style="width:120px;"><span class="ui-bar-fill ${group.container ? 'ok' : 'warn'}" data-width="${percent}" style="display:block;"></span></span>
+            <span class="ui-tag">${_mb(group.memory_rss_mb)}</span>
+        </div>`;
+    }).join('');
+
+    return `
+        <div class="ui-grid ui-grid-2">
+            <div>
+                <p class="ui-muted">RAM ${_mb(system.mem_used_mb)} / ${_mb(system.mem_total_mb)} · ${_mb(system.mem_available_mb)} free · ${memPercent}%</p>
+                ${_bar(memPercent)}
+            </div>
+            <div>
+                <p class="ui-muted">Swap ${_mb(system.swap_used_mb)} / ${_mb(system.swap_total_mb)} · ${swapPercent}%${swapPercent >= 90 ? ' — almost full' : ''}</p>
+                ${_bar(swapPercent)}
+            </div>
+        </div>
+        <div class="ui-kv ui-panel-body">
+            <div><dt class="ui-kv-key">Load (1 / 5 / 15)</dt>
+                <dd class="ui-kv-value">${escapeHtml(String(system.load_1))} · ${escapeHtml(String(system.load_5))} · ${escapeHtml(String(system.load_15))}
+                    <span class="ui-tag ${loadHigh ? 'is-bad' : ''}">${escapeHtml(String(system.cpu_count))} cpu</span></dd></div>
+        </div>
+        ${consumers ? `<div class="ui-panel-body">
+            <p class="ui-label">Top RAM consumers</p>
+            <div class="ui-list">${consumers}</div>
+        </div>` : ''}`;
+}
+
+async function _killProcess(pid, body) {
+    const ok = await showConfirm('Kill process', `Kill process PID ${pid}?`, { danger: true });
+    if (!ok) return;
     try {
-        const r = await apiFetch(`/api/processes/${pid}`, { method: 'DELETE' });
-        if (r.status === 404) {
-            if (window.showToast) window.showToast('error', 'Process not found');
-            else window.showAlert('Process not found');
-        } else if (r.status === 400) {
-            const d = await r.json().catch(() => ({}));
-            if (window.showToast) window.showToast('error', d.detail || 'Cannot terminate process');
-            else window.showAlert(d.detail || 'Cannot terminate system process');
-        } else if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        else {
-            if (window.showToast) window.showToast('success', `Process ${pid} terminated`);
-        }
-        _refreshProcList(bodyEl);
-    } catch(e) {
-        if (window.showToast) window.showToast('error', e.message);
+        await apiRequest(`/api/processes/${encodeURIComponent(pid)}`, { method: 'DELETE' });
+        notify({ kind: 'success', message: `Process ${pid} terminated` });
+    } catch (err) {
+        logError(`Processes: kill ${pid} failed`, err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || 'Could not terminate the process' });
     }
+    _refreshProcList(body);
 }
-
-window._killProcess = _killProcess;
-window.renderProcessesPage = renderProcessesPage;
-// Used by the search box and the ↻ Refresh button, both inline onclick/oninput
-// attributes — without this the button and filtering were dead (ReferenceError).
-window._refreshProcList = _refreshProcList;

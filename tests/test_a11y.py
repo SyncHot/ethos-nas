@@ -99,6 +99,22 @@ def main() -> int:
                 unnamed.append(f"{path.name}: {tag[:50]}")
     check("every <select> has an accessible name", not unnamed, "; ".join(unnamed[:3]))
 
+    # ── app shell accessibility (docs/app-ui.md) ──────────────────────────
+    shell_js = (STATIC / "core" / "ui-shell.js").read_text()
+    ui_css = (STATIC / "css" / "ethos-ui.css").read_text()
+    check("app shell marks the active section", "aria-current" in shell_js)
+    check("app shell announces status changes",
+          'role="status"' in shell_js and 'aria-live="polite"' in shell_js)
+    check("app shell keeps a visible focus ring", ":focus-visible" in ui_css)
+
+    settings_src = (STATIC / "apps" / "settings.js").read_text()
+    no_hook = [tag for tag in re.findall(r"<button\b[^>]*>", settings_src)
+               if "data-testid" not in tag and "data-action" not in tag and "data-wp" not in tag]
+    check("Settings buttons have a stable hook", not no_hook, "; ".join(no_hook[:3]))
+    unnamed_inputs = [tag for tag in re.findall(r"<input\b[^>]*>", settings_src)
+                      if "aria-label" not in tag and "id=" not in tag]
+    check("Settings inputs have an accessible name", not unnamed_inputs, "; ".join(unnamed_inputs[:3]))
+
     # ── chips carry white text on AA-safe colours ─────────────────────────
     # The Kanban board is an `ethos-kanban` package now, so the source only
     # exists in a sibling checkout; CI has no packages checkout and skips it.

@@ -94,7 +94,10 @@ def main() -> int:
           "message.textContent = entry.message" in logs_app and "pre.textContent = " in logs_app)
     check("viewer caps the rendered rows", "MAX_ROWS = 2000" in logs_app and "_trimRows" in logs_app)
     for anchor in ("logs-rail", "logs-list", "logs-search", "logs-pause", "logs-export", "logs-clear"):
-        check(f"viewer exposes data-testid={anchor}", f'data-testid="{anchor}"' in logs_app)
+        # The shell sets the rail testid at runtime; the rest are in the markup.
+        present = (f'data-testid="{anchor}"' in logs_app
+                   or f"setAttribute('data-testid', '{anchor}')" in logs_app)
+        check(f"viewer exposes data-testid={anchor}", present)
 
     # ── 4. Browser reporter funnels through the logger ─────────────────────
     check("error reporter imports the shared logger", "from './logger.js'" in reporter)

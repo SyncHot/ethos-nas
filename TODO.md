@@ -291,6 +291,8 @@ package UIs that inject their own `<style>` (`ethos-photos`, `ethos-music`, `eth
 `ethos-git-diff`), `login.js:124`.
 **Fix.** `static/css/{tokens,base,layout,apps}.css`, one token file, one icon module; delete per-render
 style injection. No build step required — plain `<link>` tags.
+**Progress.** The app-layer slice is done: `frontend/static/css/ethos-ui.css` + `core/ui-shell.js`
+(see P3-15). The desktop/editor/login block still lives in `index.html`.
 **Done when.** `index.html` < 300 lines; no app creates a `<style>` element; a token change (accent
 colour) updates every app including the editor and terminal.
 
@@ -309,6 +311,22 @@ single tap opens items, sidebars collapse to a drawer.
 **Done when.** On a 390×844 viewport a user can browse files, open a photo and play a video without a mouse.
 
 ### ☑ P3-14 · Add a web app manifest + service worker — `S`
+
+### ☐ P3-15 · Core app shell migration (Settings → every window) — `L`
+**Problem.** Core apps invent their own chrome: top tab strips, `glass-card` grids, inline styles and
+hardcoded colours, while package windows follow a strict 218 px rail shell. The same action looks
+different in every window, and light mode only works through `!important` hacks in `index.html`.
+**Evidence.** `frontend/static/apps/settings.js` (4 tabs, ~40 inline style attributes),
+`storage.js`, `network.js`, `access-control.js`, `packages.js`, `logs.js` (injected `<style>`),
+`share-links.js` (injected `<style>`), `overview.js`.
+**Fix.** `frontend/static/css/ethos-ui.css` + `core/ui-shell.js`, documented in `docs/app-ui.md`
+(rule `.github/instructions/app-ui.instructions.md`, skill `app-ui`). Migrate Settings first, then the
+multi-section apps, then single-pane apps; Files/Terminal/Login keep their layouts.
+**Progress.** Done: stylesheet, helper, doc, rule, skill and guard; Settings rebuilt around the
+rail; Storage/Network/Security/Packages/Logs and all single-pane apps migrated; Login CSS moved out
+of JS; legacy `glass-card`/`app-tab`/light-theme hacks deleted. The guard allowlist is empty.
+**Done when.** `tests/test_app_ui.py` passes with an **empty** allowlist, `index.html` no longer needs
+the `color:white` / `glass-card` light-theme hacks, and every app switches cleanly between themes.
 
 ### ☑ P4-01 · Delete `task.sh` and add a real runner — `S`
 

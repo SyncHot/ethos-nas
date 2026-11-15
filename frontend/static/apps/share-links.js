@@ -1,16 +1,23 @@
-// EthOS NAS — Shared Links (public tokenized share URLs for files/folders)
+// EthOS NAS — Shared Links (single-pane shell)
+// Public tokenised share URLs for files and folders.
 import { escapeAttr, escapeHtml } from '../core/utils.js';
-import { apiFetch } from '../core/api.js';
-import { skeletonRows } from '../core/states.js';
-
-let _links = [];
-let _busy = false;
+import { apiRequest } from '../core/api.js';
+import { skeletonRows, emptyState, errorState } from '../core/states.js';
+import { showConfirm } from '../core/modal.js';
+import { notify } from '../core/notification-center.js';
+import { uiIcon } from '../core/icons.js';
+import { logError } from '../core/logger.js';
+import { mountShell } from '../core/ui-shell.js';
 
 const STATUS_META = {
-    active:          { label: 'Active',  cls: 'sl-chip-green' },
-    expired:         { label: 'Expired', cls: 'sl-chip-gray' },
-    limit_reached:   { label: 'Limit reached', cls: 'sl-chip-yellow' },
+    active: { label: 'Active', tone: 'is-ok' },
+    expired: { label: 'Expired', tone: '' },
+    limit_reached: { label: 'Limit reached', tone: 'is-warn' },
 };
+
+let shell = null;
+let links = [];
+let busy = false;
 
 function _linkUrl(token) {
     return `${location.origin}/api/share-links/public/${token}`;
@@ -19,194 +26,211 @@ function _linkUrl(token) {
 function _fmtDate(iso) {
     if (!iso) return '—';
     try {
-        const d = new Date(iso);
-        return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-    } catch (_) { return iso; }
+        return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    } catch (err) {
+        logError('Shared links: could not format a date', err?.message || String(err));
+        return String(iso);
+    }
 }
 
 export async function renderShareLinksPage(body) {
+    if (!body) return;
     // Pre-fill path when opened from Files' "Share link…" context menu.
     const ctx = window.__fmShareCtx || null;
     if (ctx && ctx.path) delete window.__fmShareCtx;
-    const prefillPath = ctx ? escapeHtml(ctx.path) : '';
-    const prefillName = ctx && ctx.name ? escapeHtml(ctx.name) : '';
+    const prefillPath = ctx ? escapeAttr(ctx.path) : '';
+    const prefillName = ctx && ctx.name ? escapeAttr(ctx.name) : '';
 
-    body.innerHTML = `
-        <div style="display:flex;flex-direction:column;height:100%;background:var(--surface-0);color: var(--text-1);font-family:system-ui,sans-serif;">
-            <style>
-                .sl-chip { display:inline-block;padding:2px 8px;border-radius:9px;font-size:11px;font-weight:600; }
-                .sl-chip-green  { background:rgba(46,160,67,.15);color:#3fb950; }
-                .sl-chip-yellow { background:rgba(210,153,34,.18);color:#d29922; }
-                .sl-chip-gray   { background:rgba(110,118,129,.18);color:var(--text-3); }
-                .sl-input { background:var(--surface-2);border:1px solid var(--border);color: var(--text-1);border-radius:6px;padding:7px 10px;font-size:13px;width:100%;box-sizing:border-box; }
-                .sl-btn { border:none;border-radius:6px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer; }
-                .sl-btn-primary { background:var(--accent);color:#fff; }
-                .sl-btn-ghost { background:transparent;color: var(--text-2);border:1px solid var(--border)!important; }
-                .sl-row-btn { background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px; }
-                .sl-row-btn:hover { background:rgba(255,255,255,.08); }
-                .sl-table { width:100%;border-collapse:collapse;font-size:13px; }
-                .sl-table th { text-align:left;padding:8px 10px;color: var(--text-3);font-size:11px;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface-0); }
-                .sl-table td { padding:9px 10px;border-bottom:1px solid var(--border);vertical-align:middle; }
-            </style>
+    shell?.destroy();
+    shell = mountShell(body, {
+        idPrefix: 'share-links',
+        title: 'Shared Links',
+        subtitle: 'Public, tokenised URLs for files and folders.',
+        icon: '🔗',
+        sections: [{ id: 'links', label: 'Links' }],
+        rail: false,
+        note: 'Anyone with the URL can download until it expires.',
+    });
 
-            <div style="padding:16px 20px 12px;border-bottom:1px solid var(--border);" data-testid="sl-create-panel">
-                <div style="font-size:14px;font-weight:700;margin-bottom:10px;">🔗 New share link</div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-                    <div style="flex:3;min-width:260px;">
-                        <label style="font-size:11px;color: var(--text-3);display:block;margin-bottom:4px;">Path (file or folder)</label>
-                        <input id="slNewPath" class="sl-input" placeholder="/home/user/photos/vacation.jpg" value="${prefillPath}" data-testid="sl-new-path">
-                    </div>
-                    <div style="flex:1;min-width:140px;">
-                        <label style="font-size:11px;color: var(--text-3);display:block;margin-bottom:4px;">Label (optional)</label>
-                        <input id="slNewName" class="sl-input" placeholder="vacation.jpg" value="${prefillName}" data-testid="sl-new-name">
-                    </div>
-                    <div style="width:120px;">
-                        <label style="font-size:11px;color: var(--text-3);display:block;margin-bottom:4px;">Expires</label>
-                        <select aria-label="Slnewexpiry" id="slNewExpiry" class="sl-input" data-testid="sl-new-expiry">
-                            <option value="">Never</option>
-                            <option value="1">1 day</option>
-                            <option value="7">7 days</option>
-                            <option value="30">30 days</option>
-                        </select>
-                    </div>
-                    <div style="width:120px;">
-                        <label style="font-size:11px;color: var(--text-3);display:block;margin-bottom:4px;">Max downloads</label>
-                        <input id="slNewMaxDl" class="sl-input" type="number" min="1" placeholder="∞" data-testid="sl-new-maxdl">
-                    </div>
-                    <button id="slCreateBtn" class="sl-btn sl-btn-primary" data-testid="sl-create-btn">Create link</button>
+    shell.view.innerHTML = `
+        <section class="ui-panel" data-testid="sl-create-panel">
+            <div class="ui-toolbar">
+                <h2>New share link</h2>
+                <span class="ui-tag is-info">public URL</span>
+            </div>
+            <div class="ui-fields ui-panel-body">
+                <div class="ui-field full">
+                    <label for="slNewPath">Path (file or folder)</label>
+                    <input id="slNewPath" class="ui-input mono" data-testid="sl-new-path" placeholder="/home/user/photos/vacation.jpg" value="${prefillPath}">
+                </div>
+                <div class="ui-field">
+                    <label for="slNewName">Label (optional)</label>
+                    <input id="slNewName" class="ui-input" data-testid="sl-new-name" placeholder="vacation.jpg" value="${prefillName}">
+                </div>
+                <div class="ui-field">
+                    <label for="slNewExpiry">Expires</label>
+                    <select id="slNewExpiry" class="ui-select" data-testid="sl-new-expiry" aria-label="Expiry">
+                        <option value="">Never</option>
+                        <option value="1">1 day</option>
+                        <option value="7">7 days</option>
+                        <option value="30">30 days</option>
+                    </select>
+                </div>
+                <div class="ui-field">
+                    <label for="slNewMaxDl">Max downloads</label>
+                    <input id="slNewMaxDl" class="ui-input" data-testid="sl-new-maxdl" type="number" min="1" placeholder="∞">
                 </div>
             </div>
+            <div class="ui-form-actions">
+                <button id="slCreateBtn" class="ui-btn primary" data-testid="sl-create-btn">${uiIcon('plus', 12)} Create link</button>
+            </div>
+        </section>
 
-            <div style="flex:1;overflow-y:auto;padding:8px 20px 20px;">
-                <table class="sl-table" data-testid="sl-table">
-                    <thead><tr>
-                        <th>Name</th><th>Path</th><th>Created</th><th>Expires</th><th>Downloads</th><th>Status</th><th style="text-align:right;">Actions</th>
-                    </tr></thead>
-                    <tbody id="slTableBody">
-                        <tr><td colspan="7" style="padding:0;">${skeletonRows(5)}</td></tr>
-                    </tbody>
+        <section class="ui-panel">
+            <div class="ui-table-wrap">
+                <table class="ui-table" data-testid="sl-table">
+                    <thead><tr><th>Name</th><th>Path</th><th>Created</th><th>Expires</th><th>Downloads</th><th>Status</th><th class="actions">Actions</th></tr></thead>
+                    <tbody id="slTableBody"><tr><td colspan="7">${skeletonRows(5)}</td></tr></tbody>
                 </table>
             </div>
-        </div>`;
+        </section>`;
 
-    body.querySelector('#slCreateBtn').addEventListener('click', () => _createLink(body));
-    await loadLinks(body);
+    shell.view.querySelector('#slCreateBtn')?.addEventListener('click', () => createLink());
+    shell.view.querySelector('#slTableBody')?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-act]');
+        if (button) handleRowAction(button);
+    });
+    shell.view.querySelector('#slNewPath')?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') createLink();
+    });
+
+    await loadLinks();
 }
 
-async function loadLinks(body) {
-    const tbody = body.querySelector('#slTableBody');
+async function loadLinks() {
+    if (!shell) return;
+    const tbody = shell.view.querySelector('#slTableBody');
     if (!tbody) return;
     try {
-        const resp = await apiFetch('/api/share-links');
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        _links = (await resp.json()).links || [];
-    } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="7" style="color:#f85149;text-align:center;padding:30px;">Failed to load links: ${escapeHtml(e.message)}</td></tr>`;
-        return;
+        const data = await apiRequest('/api/share-links');
+        if (!shell.root.isConnected) return;
+        links = data.links || [];
+
+        if (!links.length) {
+            tbody.innerHTML = `<tr><td colspan="7">${emptyState({ icon: 'folder', title: 'No share links yet', hint: 'Create one above to share a file or folder.' })}</td></tr>`;
+            shell.setStatus('No links', 'warn');
+            return;
+        }
+
+        tbody.innerHTML = links.map((link) => {
+            const status = STATUS_META[link.status] || STATUS_META.active;
+            const downloads = link.max_downloads ? `${link.downloads}/${link.max_downloads}` : String(link.downloads);
+            const multi = Array.isArray(link.files) && link.files.length > 0;
+            const pathCell = multi
+                ? `<span title="${escapeAttr(link.files.join('\n'))}">${link.files.length} photos</span>`
+                : escapeHtml(link.path);
+            return `<tr data-testid="sl-row-${escapeAttr(link.id)}">
+                <td>${escapeHtml(link.name)}</td>
+                <td class="path">${pathCell}</td>
+                <td>${escapeHtml(_fmtDate(link.created_at))}</td>
+                <td>${escapeHtml(link.expires_at ? _fmtDate(link.expires_at) : 'Never')}</td>
+                <td class="num">${escapeHtml(downloads)}</td>
+                <td><span class="ui-tag ${status.tone}">${status.label}</span></td>
+                <td class="actions"><div class="ui-row" style="justify-content:flex-end;">
+                    <button class="ui-btn small" data-act="copy" data-token="${escapeAttr(link.token)}">Copy</button>
+                    <button class="ui-btn small" data-act="open" data-token="${escapeAttr(link.token)}">Open</button>
+                    <button class="ui-btn small danger" data-act="del" data-id="${escapeAttr(link.id)}">Delete</button>
+                </div></td>
+            </tr>`;
+        }).join('');
+
+        shell.setStatus(`${links.length} link(s)`, 'ok');
+    } catch (err) {
+        if (!shell.root.isConnected) return;
+        tbody.innerHTML = `<tr><td colspan="7">${errorState({ detail: err?.detail || err?.message || 'Unknown error' })}</td></tr>`;
+        shell.setStatus('Could not read share links', 'error');
+        logError('Shared links: list unavailable', err?.detail || err?.message);
     }
-
-    if (!_links.length) {
-        tbody.innerHTML = `<tr><td colspan="7" style="color: var(--text-3);text-align:center;padding:40px;">No share links yet — create one above.</td></tr>`;
-        return;
-    }
-
-    tbody.innerHTML = _links.map(l => {
-        const st = STATUS_META[l.status] || STATUS_META.active;
-        const dl = l.max_downloads ? `${l.downloads}/${l.max_downloads}` : String(l.downloads);
-        // Multi-file links (Photo Station multi-share) have no single path —
-        // show the file count; hover reveals every shared path.
-        const isMulti = Array.isArray(l.files) && l.files.length > 0;
-        const pathCell = isMulti
-            ? `<span title="${escapeAttr(l.files.join('\n'))}" style="cursor:help;">📷 ${l.files.length} photos</span>`
-            : escapeHtml(l.path);
-        return `<tr data-testid="sl-row-${l.id}">
-            <td style="font-weight:600;">${escapeHtml(l.name)}</td>
-            <td style="color: var(--text-2);font-family:monospace;font-size:12px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${pathCell}</td>
-            <td style="color: var(--text-2);">${_fmtDate(l.created_at)}</td>
-            <td style="color: var(--text-2);">${l.expires_at ? _fmtDate(l.expires_at) : 'Never'}</td>
-            <td style="font-family:monospace;">${dl}</td>
-            <td><span class="sl-chip ${st.cls}">${st.label}</span></td>
-            <td style="text-align:right;white-space:nowrap;">
-                <button class="sl-row-btn" data-act="copy" data-token="${escapeAttr(l.token)}">Copy link</button>
-                <button class="sl-row-btn" data-act="open" data-token="${escapeAttr(l.token)}">Open</button>
-                <button class="sl-row-btn" style="color:#f85149;" data-act="del" data-id="${escapeAttr(l.id)}">Delete</button>
-            </td>
-        </tr>`;
-    }).join('');
-
-    tbody.querySelectorAll('[data-act]').forEach(btn => {
-        btn.addEventListener('click', async () => {
-            const act = btn.dataset.act;
-            if (act === 'copy') {
-                await _copyText(_linkUrl(btn.dataset.token));
-            } else if (act === 'open') {
-                window.open(_linkUrl(btn.dataset.token), '_blank');
-            } else if (act === 'del') {
-                const ok = await window.showConfirm('Delete share link', 'Anyone holding this URL will lose access. Continue?');
-                if (!ok) return;
-                try {
-                    const resp = await apiFetch(`/api/share-links/${btn.dataset.id}`, { method: 'DELETE' });
-                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                    window.addNotification('Share link deleted', 'success');
-                    loadLinks(body);
-                } catch (e) {
-                    window.addNotification(e.message, 'error');
-                }
-            }
-        });
-    });
 }
 
-async function _createLink(body) {
-    if (_busy) return;
-    const pathEl = body.querySelector('#slNewPath');
-    const path = (pathEl.value || '').trim();
-    if (!path) { window.addNotification('Enter a file or folder path first', 'warning'); return; }
+async function createLink() {
+    if (busy || !shell) return;
+    const pathEl = shell.view.querySelector('#slNewPath');
+    const path = (pathEl?.value || '').trim();
+    if (!path) {
+        notify({ kind: 'warning', message: 'Enter a file or folder path first' });
+        return;
+    }
 
-    _busy = true;
-    const btn = body.querySelector('#slCreateBtn');
-    btn.disabled = true; btn.textContent = 'Creating…';
+    busy = true;
+    const button = shell.view.querySelector('#slCreateBtn');
+    button.disabled = true;
+    button.textContent = 'Creating…';
     try {
         const payload = { path };
-        const name = (body.querySelector('#slNewName').value || '').trim();
+        const name = (shell.view.querySelector('#slNewName')?.value || '').trim();
         if (name) payload.name = name;
-        const exp = body.querySelector('#slNewExpiry').value;
-        if (exp) payload.expires_in_days = Number(exp);
-        const maxDl = parseInt(body.querySelector('#slNewMaxDl').value, 10);
-        if (maxDl > 0) payload.max_downloads = maxDl;
+        const expires = shell.view.querySelector('#slNewExpiry')?.value;
+        if (expires) payload.expires_in_days = Number(expires);
+        const maxDownloads = parseInt(shell.view.querySelector('#slNewMaxDl')?.value || '', 10);
+        if (maxDownloads > 0) payload.max_downloads = maxDownloads;
 
-        const resp = await apiFetch('/api/share-links', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        });
-        if (!resp.ok) {
-            let detail = `HTTP ${resp.status}`;
-            try { detail = (await resp.json()).detail || detail; } catch (_) {}
-            throw new Error(detail);
-        }
-        const link = await resp.json();
-        pathEl.value = ''; body.querySelector('#slNewName').value = '';
-        window.addNotification(`Share link created for "${link.name}"`, 'success');
-        loadLinks(body);
-    } catch (e) {
-        window.addNotification(e.message, 'error');
+        const link = await apiRequest('/api/share-links', { method: 'POST', body: payload });
+        pathEl.value = '';
+        shell.view.querySelector('#slNewName').value = '';
+        notify({ kind: 'success', message: `Share link created for “${link.name}”` });
+        await loadLinks();
+    } catch (err) {
+        logError('Shared links: create failed', err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || 'Could not create the link' });
     } finally {
-        _busy = false;
-        btn.disabled = false; btn.textContent = 'Create link';
+        busy = false;
+        if (button.isConnected) {
+            button.disabled = false;
+            button.innerHTML = `${uiIcon('plus', 12)} Create link`;
+        }
     }
 }
 
-async function _copyText(text) {
+async function handleRowAction(button) {
+    const action = button.dataset.act;
+    if (action === 'copy') {
+        await copyText(_linkUrl(button.dataset.token));
+    } else if (action === 'open') {
+        window.open(_linkUrl(button.dataset.token), '_blank', 'noopener');
+    } else if (action === 'del') {
+        const ok = await showConfirm('Delete share link', 'Anyone holding this URL will lose access. Continue?', { danger: true });
+        if (!ok) return;
+        try {
+            await apiRequest(`/api/share-links/${encodeURIComponent(button.dataset.id)}`, { method: 'DELETE' });
+            notify({ kind: 'success', message: 'Share link deleted' });
+            await loadLinks();
+        } catch (err) {
+            logError('Shared links: delete failed', err?.detail || err?.message);
+            notify({ kind: 'error', message: err?.detail || err?.message || 'Could not delete the link' });
+        }
+    }
+}
+
+async function copyText(text) {
     try {
         await navigator.clipboard.writeText(text);
-        window.addNotification('Link copied to clipboard', 'success');
-    } catch (_) {
-        const ta = document.createElement('textarea');
-        ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
-        document.body.appendChild(ta); ta.select();
-        try { document.execCommand('copy'); window.addNotification('Link copied to clipboard', 'success'); }
-        catch (e2) { window.addNotification('Failed to copy link', 'error'); }
-        ta.remove();
+        notify({ kind: 'success', message: 'Link copied to clipboard' });
+    } catch (err) {
+        logError('Shared links: clipboard unavailable', err?.message || String(err));
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            document.execCommand('copy');
+            notify({ kind: 'success', message: 'Link copied to clipboard' });
+        } catch (fallbackError) {
+            logError('Shared links: fallback copy failed', fallbackError?.message || String(fallbackError));
+            notify({ kind: 'error', message: 'Failed to copy link' });
+        }
+        textarea.remove();
     }
 }

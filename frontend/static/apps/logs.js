@@ -11,6 +11,8 @@ import { apiJsonFetch } from '../core/api.js';
 import { showConfirm } from '../core/modal.js';
 import { emptyState, errorState } from '../core/states.js';
 import { openWindows, focusWindow } from '../core/window-manager.js';
+import { logError } from '../core/logger.js';
+import { mountShell } from '../core/ui-shell.js';
 import {
     fetchLogs, fetchLogApps, fetchLogStats, fetchLogFiles, fetchLogContainers,
     fetchJournal, tailLogFile, clearLogs, streamLogs,
@@ -37,9 +39,10 @@ export async function renderLogsPage(body) {
     const filter = _pendingFilter || {};
     _pendingFilter = null;
 
-    body.innerHTML = `<div class="logs-app">${_shellHtml()}</div>`;
+    const shell = _buildShell(body);
     const state = {
         body,
+        shell,
         isAdmin: false,
         selection: { kind: 'app', app: '' },
         level: '',
@@ -74,6 +77,7 @@ export async function renderLogsPage(body) {
         });
         const clearBtn = body.querySelector('[data-action="clear"]');
         if (clearBtn) clearBtn.remove();
+        state.shell.setPill('offline', 'Admin only');
         return;
     }
 
@@ -97,53 +101,45 @@ export function openLogs(filter = {}) {
 
 // ── shell ───────────────────────────────────────────────────────────────────
 
-function _shellHtml() {
+function _buildShell(body) {
     const levelButtons = LEVEL_FILTERS.map((level) => {
         const label = level ? level[0].toUpperCase() + level.slice(1) : 'All';
         return `<button class="logs-chip${level === '' ? ' active' : ''}" data-action="level" data-level="${level}" data-testid="logs-level-${level || 'all'}">${label}</button>`;
     }).join('');
-    return `
-        <style>
-            .logs-app{display:flex;height:100%;min-height:0;font-size:12px;color:var(--text-2);}
-            .logs-rail{width:220px;flex:0 0 auto;border-right:1px solid var(--border);overflow:auto;padding:8px;}
-            .logs-rail h4{margin:10px 8px 4px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);}
-            .logs-src-btn{display:block;width:100%;text-align:left;padding:5px 8px;border:0;border-radius:6px;background:transparent;color:var(--text-2);font-size:12px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-            .logs-src-btn:hover{background:var(--surface-2);}
-            .logs-src-btn.active{background:var(--surface-2);color:var(--text-1);font-weight:600;}
-            .logs-badge{margin-left:6px;font-size:10px;color:var(--text-3);}
-            .logs-main{display:flex;flex-direction:column;min-width:0;flex:1;}
-            .logs-toolbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px;border-bottom:1px solid var(--border);}
-            .logs-chip{padding:3px 10px;border-radius:999px;border:1px solid var(--border);background:transparent;color:var(--text-2);font-size:11px;cursor:pointer;}
-            .logs-chip.active{background:var(--surface-2);color:var(--text-1);border-color:var(--text-3);}
-            .logs-input{font-size:12px;padding:4px 8px;background:var(--surface-1);color:var(--text-2);border:1px solid var(--border);border-radius:6px;}
-            .logs-list{flex:1;min-height:0;overflow:auto;padding:8px 10px;font-family:var(--font-mono,monospace);}
-            .logs-row{margin-bottom:6px;line-height:1.5;word-break:break-word;}
-            .logs-ts{color:var(--text-3);font-size:11px;margin-right:6px;}
-            .logs-level{display:inline-block;min-width:58px;font-weight:700;font-size:10px;margin-right:6px;}
-            .logs-level-error{color:#ef4444;} .logs-level-warning{color:#eab308;}
-            .logs-level-info{color:#3b82f6;} .logs-level-debug{color:var(--text-3);}
-            .logs-src{color:#8b5cf6;font-size:11px;margin-right:6px;}
-            .logs-count{color:var(--text-3);font-size:10px;margin-left:6px;}
-            .logs-msg{color:var(--text-1);}
-            .logs-line{white-space:pre-wrap;word-break:break-all;margin:0 0 2px;color:var(--text-2);}
-            .logs-meta{padding:4px 10px;border-top:1px solid var(--border);font-size:11px;color:var(--text-3);display:flex;gap:12px;flex-wrap:wrap;}
-            .logs-empty{color:var(--text-3);padding:16px;}
-        </style>
-        <aside class="logs-rail" data-testid="logs-rail"><div class="logs-rail-body">Loading sources…</div></aside>
-        <section class="logs-main">
-            <div class="logs-toolbar" data-testid="logs-toolbar">
-                <span>${levelButtons}</span>
-                <input class="logs-input" data-testid="logs-search" data-action="search" type="search" placeholder="Filter (message, source…)" style="width:200px;">
-                <label style="display:flex;gap:4px;align-items:center;color:var(--text-3);">
-                    <input type="checkbox" data-action="live" checked> Live
-                </label>
-                <button class="logs-chip" data-action="pause" data-testid="logs-pause">Pause</button>
-                <button class="logs-chip" data-action="export" data-testid="logs-export">Export</button>
-                <button class="logs-chip" data-action="clear" data-testid="logs-clear">Clear</button>
-            </div>
-            <div class="logs-list" data-testid="logs-list">${emptyState({ title: 'Loading logs…' })}</div>
-            <div class="logs-meta" data-testid="logs-meta"></div>
-        </section>`;
+
+    const railBody = document.createElement('div');
+    railBody.className = 'logs-rail-body';
+    railBody.setAttribute('data-testid', 'logs-rail-body');
+    railBody.innerHTML = '<div class="logs-empty">Loading sources…</div>';
+
+    const shell = mountShell(body, {
+        idPrefix: 'logs',
+        title: 'Logs',
+        subtitle: 'One viewer for every diagnostic source.',
+        icon: '📜',
+        sections: [],
+        rail: true,
+        railContent: railBody,
+        header: false,
+        flush: true,
+        note: 'Admin only — diagnostics can contain credentials.',
+    });
+
+    shell.view.innerHTML = `
+        <div class="logs-toolbar" data-testid="logs-toolbar">
+            <span>${levelButtons}</span>
+            <input class="logs-input" data-testid="logs-search" data-action="search" type="search"
+                   placeholder="Filter (message, source…)" aria-label="Filter logs">
+            <label class="ui-check"><input type="checkbox" data-action="live" checked> Live</label>
+            <button class="logs-chip" data-action="pause" data-testid="logs-pause">Pause</button>
+            <button class="logs-chip" data-action="export" data-testid="logs-export">Export</button>
+            <button class="logs-chip" data-action="clear" data-testid="logs-clear">Clear</button>
+        </div>
+        <div class="logs-list" data-testid="logs-list">${emptyState({ title: 'Loading logs…' })}</div>
+        <div class="logs-meta" data-testid="logs-meta"></div>`;
+    shell.setPill('starting', 'Loading…');
+    shell.rail?.setAttribute('data-testid', 'logs-rail');
+    return shell;
 }
 
 function _dispose(body) {
@@ -152,6 +148,7 @@ function _dispose(body) {
     try { state.stream?.close(); } catch (_) { /* already closed */ }
     if (state.onBodyClick) body.removeEventListener('click', state.onBodyClick);
     if (state.onBodyInput) body.removeEventListener('input', state.onBodyInput);
+    state.shell?.destroy();
     STATE.delete(body);
 }
 
@@ -450,9 +447,9 @@ function _entryRow(entry) {
         const details = document.createElement('details');
         const summary = document.createElement('summary');
         summary.textContent = 'detail';
-        summary.style.cssText = 'cursor:pointer;font-size:11px;color:#3b82f6;';
+        summary.className = 'logs-detail-toggle';
         const pre = document.createElement('pre');
-        pre.style.cssText = 'white-space:pre-wrap;word-break:break-all;font-size:11px;margin:4px 0 0;color:var(--text-3);';
+        pre.className = 'logs-detail';
         pre.textContent = entry.detail;
         details.append(summary, pre);
         row.appendChild(details);
@@ -564,5 +561,5 @@ async function _clear(state) {
 }
 
 // Kept for callers that resolved the renderer from the global scope.
-window.renderLogsPage = renderLogsPage;
+// (App registration lives in app.js; no window globals here.)
 

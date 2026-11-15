@@ -60,8 +60,9 @@ def make_repo(port: int) -> Path:
     (pkg / "hello.txt").write_text("hello package\n", encoding="utf-8")
     manifest = {
         "schema": 2, "id": "demo-pkg", "name": "Demo Package", "version": "1.0.0",
-        "description": "Files-only test package", "icon": "📦", "category": "tools",
+        "description": "Test package with a window UI", "icon": "📦", "category": "tools",
         "author": "Test", "icon_url": "https://example.com/demo.svg",
+        "ui": {"mode": "window", "scheme": "http", "port": 8099, "path": "/"},
         "files": [{
             "url": f"http://127.0.0.1:{port}/demo-pkg/hello.txt",
             "sha256": sha(pkg / "hello.txt"), "path": "hello.txt", "mode": 420,

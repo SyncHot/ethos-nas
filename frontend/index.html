@@ -150,9 +150,6 @@
         :root.light .topbar-dropdown { background: white; border-color: rgba(0,0,0,0.1); }
         :root.light .dd-item { color: #334155; }
         :root.light .dd-item:hover { background: rgba(37,99,235,0.08); color: #1e293b; }
-        :root.light .glass-card { background: white; border-color: rgba(0,0,0,0.06); }
-        :root.light .glass-card div[style*="color:#64748b"] { color: #64748b !important; }
-        /* Light-theme contrast fixes (white text on light surfaces) */
         :root.light .desktop-icon:hover { background: rgba(37,99,235,0.10); }
         :root.light .notification-drawer-header { color: #1e293b; }
         :root.light .task-progress-header { color: #1e293b; }
@@ -611,12 +608,6 @@
         .window-body::-webkit-scrollbar-track { background: transparent; }
         .window-body::-webkit-scrollbar-thumb { background: var(--surface-2); border-radius: 3px; }
 
-        /* ── Cards & Glass Panels ── */
-        .glass-card {
-            background: var(--surface-1); backdrop-filter: blur(12px);
-            border: 1px solid var(--border); border-radius: 12px; padding: 16px;
-        }
-
         /* ── Progress Bars ── */
         .progress-track { height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; margin-top: 6px; }
         .progress-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
@@ -661,18 +652,7 @@
         .alert-warning { background: rgba(245,158,11,0.10); color: #f59e0b; border: 1px solid rgba(245,158,11,0.30); }
         .alert-warning svg { color: #f59e0b; }
 
-        /* Tab strip shared by windowed apps (Storage, Docker, Settings…). */
-        .app-tab { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px 16px; background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-2); font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
-        .app-tab:hover { color: var(--text-1); }
-        .app-tab.active { color: var(--text-1); border-bottom-color: var(--accent); }
-
-        /* Light theme safety net.
-           App markup hardcodes `color:white` in ~125 places (headings, table
-           cells, big numbers). On light surfaces that text is invisible. Inline
-           styles can only be beaten with !important, and buttons are excluded so
-           white-on-accent buttons keep their contrast. New code should use
-           var(--text-1) instead. */
-        :root.light .app-window :not(button):not(.badge)[style*="color:white"] { color: var(--text-1) !important; }
+        /* Light theme safety net removed — every app now uses var(--text-*). */
 
         /* ── Status Badges ── */
         .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 500; }
@@ -746,7 +726,7 @@
            few apps — tracked in TODO.md P3-11. */
         .btn-primary { background: #2563eb !important; border-color: #2563eb !important; }
         .ethos-modal-btn:focus-visible, .btn-ghost:focus-visible, .btn-primary:focus-visible,
-        .btn-danger:focus-visible, .app-tab:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+        .btn-danger:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
 
         /* ── Spinner ── */
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -2803,6 +2783,9 @@
         :root.light .ed-cm .cm-s-ed-vscode ::-moz-selection { background:#b3d4fc; }
 
     </style>
+    <!-- Shared core app shell (docs/app-ui.md). Loaded after the desktop styles
+         so the .ui-* component layer can rely on the theme tokens above. -->
+    <link rel="stylesheet" href="/static/css/ethos-ui.css">
 </head>
 <body>
     <!-- Wallpaper -->

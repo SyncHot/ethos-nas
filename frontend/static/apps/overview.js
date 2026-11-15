@@ -8,8 +8,10 @@
 import { escapeHtml } from '../core/utils.js';
 import { apiFetch } from '../core/api.js';
 import { poll } from '../core/poller.js';
+import { mountShell, applyBarWidths } from '../core/ui-shell.js';
 
 const _ov = { timer: null, histTimer: null, contTimer: null, lastNet: null };
+let shell = null;
 
 function fmtBytes(n) {
     if (n === null || n === undefined || !isFinite(n)) return '—';
@@ -32,76 +34,78 @@ function fmtUptime(sec) {
     return `${m}m`;
 }
 
-function _bar(pct, color) {
-    const p = Math.max(0, Math.min(100, Number(pct) || 0));
-    return `<div style="height:8px;border-radius:4px;background:var(--surface-2);overflow:hidden;">
-        <div data-barfill style="height:100%;width:${p}%;border-radius:4px;background:${color};transition:width .6s ease;"></div>
-    </div>`;
+function _tone(percent) {
+    const value = Math.max(0, Math.min(100, Number(percent) || 0));
+    return value > 80 ? 'bad' : value > 50 ? 'warn' : 'ok';
 }
 
-function _card(title, icon) {
-    return `<div class="glass-card" style="padding:14px 16px;">
-        <div style="font-size:11px;color:var(--text-3);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">${icon} ${title}</div>
+function _bar(pct) {
+    const value = Math.max(0, Math.min(100, Number(pct) || 0));
+    return `<div class="ui-bar">
+        <div class="ui-bar-fill ${_tone(value)}" data-barfill data-width="${value}"></div>
     </div>`;
 }
 
 export async function renderOverviewPage(body) {
-    body.innerHTML = `
-        <div id="ovRoot" data-testid="overview-root" style="height:100%;overflow-y:auto;padding:16px 20px;font-family:system-ui,sans-serif;color:var(--text-1);">
-            <!-- header -->
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-                <h2 style="margin:0;font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px;"><span>📊</span> System Overview</h2>
-                <div style="font-size:12px;color:var(--text-3);">
-                    <span data-testid="overview-hostname" id="ovHostname">—</span>
-                    <span style="margin:0 6px;">·</span>
-                    up <span data-testid="overview-uptime" id="ovUptime">—</span>
-                </div>
-            </div>
+    shell?.destroy();
+    shell = mountShell(body, {
+        idPrefix: 'overview',
+        title: 'System Overview',
+        subtitle: 'Live host resources — refreshed every 2 seconds.',
+        icon: '📊',
+        sections: [{ id: 'overview', label: 'Overview' }],
+        rail: false,
+        note: 'Live data from /api/system/status.',
+    });
+    shell.view.id = 'ovRoot';
+    shell.view.innerHTML = `
+        <div class="ui-summary">
+            <div><span class="ui-summary-label">Hostname</span>
+                <span class="ui-summary-value small" data-testid="overview-hostname" id="ovHostname">—</span></div>
+            <div><span class="ui-summary-label">Uptime</span>
+                <span class="ui-summary-value small" data-testid="overview-uptime" id="ovUptime">—</span></div>
+            <div><span class="ui-summary-label">Temperature</span>
+                <span class="ui-summary-value" data-testid="overview-temp" id="ovTemp">—</span></div>
+            <div><span class="ui-summary-label">Containers</span>
+                <span class="ui-summary-value small" data-testid="overview-containers" id="ovContainers">—</span></div>
+        </div>
 
-            <!-- row 1: CPU / Memory / Temperature -->
-            <div style="display:grid;grid-template-columns:2fr 1.4fr 0.8fr;gap:12px;margin-bottom:12px;">
-                <div class="glass-card" id="ovCardCpu" style="padding:14px 16px;">
-                    <div style="font-size:11px;color:var(--text-3);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">🧠 CPU</div>
-                    <div style="display:flex;align-items:center;gap:12px;">
-                        <span data-testid="overview-cpu" id="ovCpuPct" style="font-size:26px;font-weight:700;">—</span>
-                        <div style="flex:1;display:flex;flex-direction:column;gap:3px;" id="ovCpuCores"></div>
+        <div class="ui-grid ui-grid-2">
+            <section class="ui-panel" id="ovCardCpu">
+                <h2>CPU</h2>
+                <div class="ui-panel-body ui-row" style="align-items:center;">
+                    <span data-testid="overview-cpu" id="ovCpuPct" class="ui-summary-value">—</span>
+                    <div id="ovCpuCores" class="ui-list" style="flex:1;min-width:0;"></div>
+                </div>
+            </section>
+            <section class="ui-panel" id="ovCardRam">
+                <h2>Memory</h2>
+                <div class="ui-panel-body">
+                    <p data-testid="overview-ram" id="ovRamText" class="ui-muted">—</p>
+                    ${_bar(0)}
+                </div>
+            </section>
+            <section class="ui-panel" id="ovCardDisk">
+                <h2>Disk /</h2>
+                <div class="ui-panel-body">
+                    <p data-testid="overview-disk" id="ovDiskText" class="ui-muted">—</p>
+                    ${_bar(0)}
+                </div>
+            </section>
+            <section class="ui-panel">
+                <h2>Network (live)</h2>
+                <div class="ui-panel-body">
+                    <div class="ui-row">
+                        <span data-testid="overview-net-rx" id="ovNetRx" class="ui-tag is-info">↓ —</span>
+                        <span data-testid="overview-net-tx" id="ovNetTx" class="ui-tag is-warn">↑ —</span>
                     </div>
+                    <canvas id="ovNetChart" width="560" height="48" class="ui-canvas" style="height:48px;"></canvas>
                 </div>
-                <div class="glass-card" id="ovCardRam" style="padding:14px 16px;">
-                    <div style="font-size:11px;color:var(--text-3);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">💾 Memory</div>
-                    <div data-testid="overview-ram" id="ovRamText" style="font-size:14px;font-weight:600;margin-bottom:8px;">—</div>
-                    ${_bar(0, '#3b82f6')}
-                </div>
-                <div class="glass-card" style="padding:14px 16px;display:flex;flex-direction:column;justify-content:center;">
-                    <div style="font-size:11px;color:var(--text-3);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">🌡️ Temp</div>
-                    <span data-testid="overview-temp" id="ovTemp" style="font-size:22px;font-weight:700;">—</span>
-                </div>
-            </div>
-
-            <!-- row 2: Disk / Network -->
-            <div style="display:grid;grid-template-columns:1fr 1.6fr;gap:12px;margin-bottom:12px;">
-                <div class="glass-card" id="ovCardDisk" style="padding:14px 16px;">
-                    <div style="font-size:11px;color:var(--text-3);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">💿 Disk /</div>
-                    <div data-testid="overview-disk" id="ovDiskText" style="font-size:14px;font-weight:600;margin-bottom:8px;">—</div>
-                    ${_bar(0, '#22c55e')}
-                </div>
-                <div class="glass-card" style="padding:14px 16px;">
-                    <div style="font-size:11px;color:var(--text-3);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">🌐 Network (live)</div>
-                    <div style="display:flex;align-items:center;gap:16px;font-size:14px;font-weight:600;margin-bottom:8px;">
-                        <span data-testid="overview-net-rx" id="ovNetRx" style="color:#3b82f6;">↓ —</span>
-                        <span data-testid="overview-net-tx" id="ovNetTx" style="color:#f59e0b;">↑ —</span>
-                    </div>
-                    <canvas id="ovNetChart" width="560" height="48" style="width:100%;height:48px;"></canvas>
-                </div>
-            </div>
-
-            <!-- row 3: containers -->
-            <div class="glass-card" style="padding:12px 16px;display:flex;align-items:center;justify-content:space-between;">
-                <span style="font-size:13px;color:var(--text-2);">🐳 Containers</span>
-                <span data-testid="overview-containers" id="ovContainers" style="font-size:13px;font-weight:600;">—</span>
-            </div>
+            </section>
         </div>`;
 
+    applyBarWidths(shell.view);
+    shell.setStatus('Live · 2 s refresh', 'ok');
     _startOverview();
 }
 
@@ -123,10 +127,11 @@ async function _tick() {
         if (cpuEl) cpuEl.textContent = `${Math.round(s.cpu_percent || 0)}%`;
         const coresEl = document.getElementById('ovCpuCores');
         if (coresEl && Array.isArray(s.cpu_per_core)) {
-            coresEl.innerHTML = s.cpu_per_core.slice(0, 16).map(p =>
-                `<div style="height:4px;border-radius:2px;background:var(--surface-2);overflow:hidden;flex:1;">
-                    <div style="height:100%;width:${Math.max(0, Math.min(100, p))}%;background:#3b82f6;"></div>
-                 </div>`).join('');
+            coresEl.innerHTML = s.cpu_per_core.slice(0, 16).map((p) => {
+                const value = Math.max(0, Math.min(100, Number(p) || 0));
+                return `<div class="ui-bar" style="height:4px;"><div class="ui-bar-fill ${_tone(value)}" data-width="${value}"></div></div>`;
+            }).join('');
+            applyBarWidths(coresEl);
         }
 
         // Memory
@@ -200,8 +205,9 @@ function _drawNetChart(samples) {
         ctx.lineWidth = 1.5;
         ctx.stroke();
     };
-    line('rx_bps', '#3b82f6');   // download
-    line('tx_bps', '#f59e0b');   // upload
+    const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    line('rx_bps', token('--ui-accent'));
+    line('tx_bps', token('--ui-warn'));
 }
 
 async function _loadContainers() {

@@ -1,255 +1,181 @@
-// EthOS NAS — Cron Job Manager App
-// Lists, adds, edits, and deletes cron jobs via the user crontab
-
+// EthOS NAS — Cron Jobs (single-pane shell)
 import { escapeAttr, escapeHtml } from '../core/utils.js';
-import { apiFetch } from '../core/api.js';
+import { apiRequest } from '../core/api.js';
 import { skeletonRows, emptyState, errorState, wireStateActions } from '../core/states.js';
+import { showConfirm, showFormModal } from '../core/modal.js';
+import { notify } from '../core/notification-center.js';
+import { uiIcon } from '../core/icons.js';
+import { logError } from '../core/logger.js';
+import { mountShell } from '../core/ui-shell.js';
+
+let shell = null;
+let jobs = [];
 
 export async function renderCronPage(body) {
     if (!body) return;
-
-    body.innerHTML = `
-        <div style="padding:16px;height:100%;display:flex;flex-direction:column;background:var(--bg, #0f172a);font-family:system-ui,sans-serif;color: var(--text-1);">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-                <h2 style="margin:0;font-size:18px;font-weight:700;color: var(--text-1);display:flex;align-items:center;gap:8px;">
-                    <span>⏰</span> Cron Jobs
-                </h2>
-                <div style="display:flex;gap:8px;">
-                    <button class="btn-ghost" data-testid="cron-refresh-btn" onclick="window._cronLoad()" style="padding:6px 14px;font-size:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color: var(--text-2);cursor:pointer;display:flex;align-items:center;gap:6px;">
-                        🔄 Refresh
-                    </button>
-                    <button class="btn-ghost" data-testid="cron-add-btn" onclick="window._cronShowForm()" style="padding:6px 14px;font-size:12px;border-radius:8px;background:#2563eb;color:white;border:none;cursor:pointer;display:flex;align-items:center;gap:6px;">
-                        + Add Job
-                    </button>
-                </div>
+    shell?.destroy();
+    shell = mountShell(body, {
+        idPrefix: 'cron',
+        title: 'Cron Jobs',
+        subtitle: 'Scheduled commands from the user crontab.',
+        icon: '⏰',
+        sections: [{ id: 'cron', label: 'Jobs' }],
+        rail: false,
+        note: 'Jobs run with the EthOS service user’s permissions.',
+    });
+    shell.view.innerHTML = `
+        <div class="ui-toolbar">
+            <span class="ui-tag" id="cron-total-count" data-testid="cron-total">Loading…</span>
+            <div class="ui-row">
+                <button class="ui-btn small" data-testid="cron-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>
+                <button class="ui-btn small primary" data-testid="cron-add-btn">${uiIcon('plus', 12)} Add job</button>
             </div>
-            <div id="cronFormContainer" style="display:none;margin-bottom:12px;"></div>
-            <div id="cronContent" data-testid="cron-content" style="flex:1;overflow-y:auto;">
-                ${skeletonRows(5)}
+        </div>
+        <section class="ui-panel" style="min-height:180px;">
+            <div class="ui-table-wrap">
+                <table class="ui-table" data-testid="cron-table">
+                    <thead><tr><th data-testid="cron-col-schedule">Schedule</th><th data-testid="cron-col-command">Command</th>
+                        <th data-testid="cron-col-comment">Comment</th><th data-testid="cron-col-status">Status</th>
+                        <th class="actions" data-testid="cron-col-actions">Actions</th></tr></thead>
+                    <tbody id="cronContent" data-testid="cron-content"><tr><td colspan="5">${skeletonRows(5)}</td></tr></tbody>
+                </table>
             </div>
-            <div style="margin-top:8px;padding:8px 12px;background:rgba(30,41,59,0.6);border:1px solid var(--border);border-radius:8px;display:flex;gap:16px;font-size:11px;color: var(--text-3);">
-                <span id="cron-total-count" data-testid="cron-total">Loading...</span>
-            </div>
-        </div>`;
+        </section>`;
 
-    // Expose load function globally
-    window._cronLoad = async function () {
-        const content = document.getElementById('cronContent');
-        if (!content) return;
-        content.innerHTML = skeletonRows(5);
+    shell.view.querySelector('[data-testid="cron-refresh-btn"]')?.addEventListener('click', () => loadJobs());
+    shell.view.querySelector('[data-testid="cron-add-btn"]')?.addEventListener('click', () => openJobForm());
+    shell.view.querySelector('#cronContent')?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-cron-action]');
+        if (!button) return;
+        const { cronId, cronAction } = button.dataset;
+        if (cronAction === 'toggle') toggleJob(cronId);
+        else if (cronAction === 'edit') openJobForm(cronId);
+        else if (cronAction === 'delete') deleteJob(cronId);
+    });
 
-        try {
-            const resp = await apiFetch('/api/cron');
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const jobs = await resp.json();
-
-            const totalEl = document.getElementById('cron-total-count');
-            if (totalEl) totalEl.textContent = `📊 ${jobs.length} job(s) configured`;
-
-            if (!jobs || jobs.length === 0) {
-                content.innerHTML = emptyState({
-                    icon: 'activity',
-                    title: 'No cron jobs yet',
-                    hint: 'Scheduled commands will run on the NAS and appear here with their schedule and last exit code.',
-                    action: { label: 'Add job', id: 'create', icon: 'plus' },
-                });
-                wireStateActions(content, { create: () => window._cronShowForm?.() });
-                return;
-            }
-
-            let html = `<table class="app-table" data-testid="cron-table" style="width:100%;font-size:12px;"><thead><tr>
-                <th data-testid="cron-col-schedule" style="text-align:left;padding:8px 10px;">Schedule</th>
-                <th data-testid="cron-col-command" style="text-align:left;padding:8px 10px;">Command</th>
-                <th data-testid="cron-col-comment" style="text-align:left;padding:8px 10px;">Comment</th>
-                <th data-testid="cron-col-status" style="text-align:center;padding:8px 10px;">Status</th>
-                <th data-testid="cron-col-actions" style="text-align:right;padding:8px 10px;">Actions</th>
-            </tr></thead><tbody>`;
-
-            for (const job of jobs) {
-                const safeId = escapeAttr(job.id);
-                const isEnabled = job.enabled;
-                const statusClass = isEnabled ? 'badge-green' : 'badge-yellow';
-                const statusText = isEnabled ? 'Active' : 'Disabled';
-
-                html += `<tr class="fm-list-row" data-testid="cron-row-${safeId}" style="border-bottom:1px solid var(--border);">
-                    <td style="padding:8px 10px;font-weight:600;color:white;font-family:monospace;font-size:11px;">
-                        ${escapeHtml(job.schedule)}
-                    </td>
-                    <td style="padding:8px 10px;color: var(--text-2);font-size:11px;max-width:250px;overflow:hidden;text-overflow:ellipsis;">
-                        ${escapeHtml(job.command || '—')}
-                    </td>
-                    <td style="padding:8px 10px;color: var(--text-3);font-size:11px;">
-                        ${escapeHtml(job.comment || '—')}
-                    </td>
-                    <td style="padding:8px 10px;text-align:center;">
-                        <span class="${statusClass}" data-testid="cron-status-${safeId}" style="padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;">
-                            ${escapeHtml(statusText)}
-                        </span>
-                    </td>
-                    <td style="padding:8px 10px;text-align:right;white-space:nowrap;">
-                        <button class="btn-ghost" data-testid="cron-action-${safeId}-toggle" onclick="window._cronToggle('${safeId}')" style="font-size:10px;padding:3px 8px;color:${isEnabled ? '#eab308' : '#22c55e'};" title="${isEnabled ? 'Disable' : 'Enable'}">
-                            ${isEnabled ? '⏸' : '▶'}
-                        </button>
-                        <button class="btn-ghost" data-testid="cron-action-${safeId}-edit" onclick="window._cronShowForm('${safeId}')" style="font-size:10px;padding:3px 8px;color:#3b82f6;" title="Edit">✏️</button>
-                        <button class="btn-ghost" data-testid="cron-action-${safeId}-delete" onclick="window._cronDelete('${safeId}')" style="font-size:10px;padding:3px 8px;color:#ef4444;" title="Delete">🗑</button>
-                    </td>
-                </tr>`;
-            }
-
-            html += '</tbody></table>';
-            content.innerHTML = html;
-        } catch (e) {
-            content.innerHTML = errorState({ detail: e.message });
-            wireStateActions(content, { retry: () => window._cronLoad?.() });
-        }
-    };
-
-    // ── Show Add / Edit form ──
-
-    window._cronShowForm = async function (editId) {
-        const container = document.getElementById('cronFormContainer');
-        if (!container) return;
-
-        let schedule = '', command = '', comment = '', enabled = true;
-        let isEdit = false;
-
-        if (editId) {
-            try {
-                const resp = await apiFetch('/api/cron');
-                if (resp.ok) {
-                    const jobs = await resp.json();
-                    const job = jobs.find(j => j.id === editId);
-                    if (job) {
-                        schedule = job.schedule;
-                        command = job.command;
-                        comment = job.comment || '';
-                        enabled = job.enabled;
-                        isEdit = true;
-                    }
-                }
-            } catch (_) {}
-        }
-
-        container.style.display = 'block';
-        container.innerHTML = `
-            <div style="background:rgba(30,41,59,0.8);border:1px solid var(--border);border-radius:10px;padding:16px;">
-                <div style="font-size:14px;font-weight:600;color: var(--text-1);margin-bottom:12px;">${isEdit ? '✏️ Edit Cron Job' : '➕ Add New Cron Job'}</div>
-                <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;">
-                    <div style="display:flex;flex-direction:column;gap:4px;">
-                        <label style="font-size:11px;color: var(--text-2);">Schedule *</label>
-                        <input id="cronFormSchedule" data-testid="cron-form-schedule" value="${escapeAttr(schedule)}" placeholder="0 2 * * *" style="padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;color:var(--text-1);font-family:monospace;font-size:12px;outline:none;">
-                    </div>
-                    <div style="display:flex;flex-direction:column;gap:4px;">
-                        <label style="font-size:11px;color: var(--text-2);">Command *</label>
-                        <input id="cronFormCommand" data-testid="cron-form-command" value="${escapeAttr(command)}" placeholder="/usr/bin/backup.sh" style="padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;color:var(--text-1);font-family:monospace;font-size:12px;outline:none;">
-                    </div>
-                </div>
-                <div style="display:flex;gap:12px;margin-top:12px;align-items:center;">
-                    <div style="flex:1;display:flex;flex-direction:column;gap:4px;">
-                        <label style="font-size:11px;color: var(--text-2);">Comment (optional)</label>
-                        <input id="cronFormComment" data-testid="cron-form-comment" value="${escapeAttr(comment)}" placeholder="Daily backup" style="padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:6px;color:var(--text-1);font-size:12px;outline:none;">
-                    </div>
-                    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color: var(--text-2);margin-top:16px;">
-                        <input type="checkbox" id="cronFormEnabled" data-testid="cron-form-enabled" ${enabled ? 'checked' : ''} style="width:16px;height:16px;accent-color:#3b82f6;cursor:pointer;"> Enabled
-                    </label>
-                </div>
-                <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
-                    <button class="btn-ghost" data-testid="cron-form-cancel" onclick="document.getElementById('cronFormContainer').style.display='none'" style="padding:6px 14px;font-size:12px;border-radius:6px;border:1px solid var(--border);color: var(--text-2);cursor:pointer;">Cancel</button>
-                    <button class="btn-ghost" data-testid="cron-form-submit" onclick="window._cronSave('${editId || ''}')" style="padding:6px 14px;font-size:12px;border-radius:6px;background:#2563eb;color:white;border:none;cursor:pointer;">${isEdit ? 'Update' : 'Add'} Job</button>
-                </div>
-            </div>`;
-    };
-
-    // ── Save cron job (create or update) ──
-
-    window._cronSave = async function (editId) {
-        const schedule = document.getElementById('cronFormSchedule')?.value?.trim();
-        const command = document.getElementById('cronFormCommand')?.value?.trim();
-        const comment = document.getElementById('cronFormComment')?.value?.trim() || '';
-        const enabled = document.getElementById('cronFormEnabled')?.checked ?? true;
-
-        if (!schedule) { window.addNotification?.('Schedule is required', 'error'); return; }
-        if (!command) { window.addNotification?.('Command is required', 'error'); return; }
-
-        try {
-            let resp;
-            if (editId) {
-                resp = await apiFetch(`/api/cron/${encodeURIComponent(editId)}`, {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({schedule, command, comment, enabled}),
-                });
-            } else {
-                resp = await apiFetch('/api/cron', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({schedule, command, comment, enabled}),
-                });
-            }
-
-            if (!resp.ok) {
-                const d = await resp.json().catch(() => ({}));
-                window.addNotification?.(d.detail || `HTTP ${resp.status}`, 'error');
-                return;
-            }
-
-            window.addNotification?.(editId ? 'Cron job updated' : 'Cron job added', 'success');
-            document.getElementById('cronFormContainer').style.display = 'none';
-            window._cronLoad();
-        } catch (e) {
-            window.addNotification?.(e.message, 'error');
-        }
-    };
-
-    // ── Toggle enable/disable ──
-
-    window._cronToggle = async function (jobId) {
-        try {
-            const resp = await apiFetch('/api/cron');
-            if (!resp.ok) return;
-            const jobs = await resp.json();
-            const job = jobs.find(j => j.id === jobId);
-            if (!job) return;
-
-            const resp2 = await apiFetch(`/api/cron/${encodeURIComponent(jobId)}`, {
-                method: 'PUT',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({enabled: !job.enabled}),
-            });
-
-            if (!resp2.ok) {
-                const d = await resp2.json().catch(() => ({}));
-                window.addNotification?.(d.detail || 'Failed to toggle', 'error');
-                return;
-            }
-
-            window.addNotification?.(`Cron job ${job.enabled ? 'disabled' : 'enabled'}`, 'success');
-            window._cronLoad();
-        } catch (e) {
-            window.addNotification?.(e.message, 'error');
-        }
-    };
-
-    // ── Delete cron job ──
-
-    window._cronDelete = async function (jobId) {
-        if (!await window.showModalConfirm('Delete Job', 'Delete this cron job?')) return;
-        try {
-            const resp = await apiFetch(`/api/cron/${encodeURIComponent(jobId)}`, {
-                method: 'DELETE',
-            });
-            if (!resp.ok) {
-                const d = await resp.json().catch(() => ({}));
-                window.addNotification?.(d.detail || 'Failed to delete', 'error');
-                return;
-            }
-            window.addNotification?.('Cron job deleted', 'success');
-            window._cronLoad();
-        } catch (e) {
-            window.addNotification?.(e.message, 'error');
-        }
-    };
-
-    await window._cronLoad();
+    await loadJobs();
 }
 
+async function loadJobs() {
+    if (!shell) return;
+    const content = shell.view.querySelector('#cronContent');
+    if (!content) return;
+    content.innerHTML = `<tr><td colspan="5">${skeletonRows(5)}</td></tr>`;
+
+    try {
+        jobs = await apiRequest('/api/cron');
+        if (!shell.root.isConnected) return;
+        const total = shell.view.querySelector('#cron-total-count');
+        if (total) total.textContent = `${jobs.length} job(s) configured`;
+
+        if (!jobs.length) {
+            content.innerHTML = `<tr><td colspan="5">${emptyState({
+                icon: 'activity',
+                title: 'No cron jobs yet',
+                hint: 'Scheduled commands appear here with their schedule and state.',
+                action: { label: 'Add job', id: 'create', icon: 'plus' },
+            })}</td></tr>`;
+            wireStateActions(content, { create: () => openJobForm() });
+            shell.setStatus('No jobs configured', 'warn');
+            return;
+        }
+
+        content.innerHTML = jobs.map((job) => {
+            const safe = escapeAttr(job.id);
+            const enabled = Boolean(job.enabled);
+            return `<tr data-testid="cron-row-${safe}">
+                <td class="path">${escapeHtml(job.schedule)}</td>
+                <td>${escapeHtml(job.command || '—')}</td>
+                <td class="ui-muted">${escapeHtml(job.comment || '—')}</td>
+                <td><span class="ui-tag ${enabled ? 'is-ok' : 'is-warn'}" data-testid="cron-status-${safe}">${enabled ? 'Active' : 'Disabled'}</span></td>
+                <td class="actions"><div class="ui-row" style="justify-content:flex-end;">
+                    <button class="ui-btn small" data-cron-action="toggle" data-cron-id="${safe}" data-testid="cron-action-${safe}-toggle">${enabled ? '⏸ Disable' : '▶ Enable'}</button>
+                    <button class="ui-btn small" data-cron-action="edit" data-cron-id="${safe}" data-testid="cron-action-${safe}-edit">Edit</button>
+                    <button class="ui-btn small danger" data-cron-action="delete" data-cron-id="${safe}" data-testid="cron-action-${safe}-delete">Delete</button>
+                </div></td>
+            </tr>`;
+        }).join('');
+
+        shell.setStatus(`${jobs.length} job(s) loaded`, 'ok');
+    } catch (err) {
+        if (!shell.root.isConnected) return;
+        content.innerHTML = `<tr><td colspan="5">${errorState({ detail: err?.detail || err?.message || 'Unknown error' })}</td></tr>`;
+        wireStateActions(content, { retry: () => loadJobs() });
+        shell.setStatus('Could not read cron jobs', 'error');
+        logError('Cron: job list unavailable', err?.detail || err?.message);
+    }
+}
+
+async function openJobForm(editId) {
+    const existing = editId ? jobs.find((job) => job.id === editId) : null;
+    const values = await showFormModal({
+        title: existing ? `Edit cron job` : 'Add cron job',
+        confirmLabel: existing ? 'Update job' : 'Add job',
+        bodyHtml: `
+            <div class="ui-fields">
+                <div class="ui-field"><label for="cronFormSchedule">Schedule *</label>
+                    <input id="cronFormSchedule" name="schedule" class="ui-input mono" data-testid="cron-form-schedule"
+                           placeholder="0 2 * * *" value="${escapeAttr(existing?.schedule || '')}"></div>
+                <div class="ui-field"><label for="cronFormCommand">Command *</label>
+                    <input id="cronFormCommand" name="command" class="ui-input mono" data-testid="cron-form-command"
+                           placeholder="/usr/bin/backup.sh" value="${escapeAttr(existing?.command || '')}"></div>
+                <div class="ui-field full"><label for="cronFormComment">Comment (optional)</label>
+                    <input id="cronFormComment" name="comment" class="ui-input" data-testid="cron-form-comment"
+                           placeholder="Daily backup" value="${escapeAttr(existing?.comment || '')}"></div>
+                <div class="ui-field full"><label class="ui-check">
+                    <input type="checkbox" name="enabled" data-testid="cron-form-enabled" ${existing ? (existing.enabled ? 'checked' : '') : 'checked'}> Enabled
+                </label></div>
+            </div>`,
+    });
+    if (!values) return;
+
+    const schedule = String(values.schedule || '').trim();
+    const command = String(values.command || '').trim();
+    if (!schedule) { notify({ kind: 'error', message: 'Schedule is required' }); return; }
+    if (!command) { notify({ kind: 'error', message: 'Command is required' }); return; }
+    const body = {
+        schedule,
+        command,
+        comment: String(values.comment || '').trim(),
+        enabled: values.enabled === true,
+    };
+
+    try {
+        if (existing) await apiRequest(`/api/cron/${encodeURIComponent(existing.id)}`, { method: 'PUT', body });
+        else await apiRequest('/api/cron', { method: 'POST', body });
+        notify({ kind: 'success', message: existing ? 'Cron job updated' : 'Cron job added' });
+        await loadJobs();
+    } catch (err) {
+        logError('Cron: save failed', err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || 'Could not save the job' });
+    }
+}
+
+async function toggleJob(jobId) {
+    const job = jobs.find((item) => item.id === jobId);
+    if (!job) return;
+    try {
+        await apiRequest(`/api/cron/${encodeURIComponent(jobId)}`, {
+            method: 'PUT',
+            body: { enabled: !job.enabled },
+        });
+        notify({ kind: 'success', message: `Cron job ${job.enabled ? 'disabled' : 'enabled'}` });
+        await loadJobs();
+    } catch (err) {
+        logError('Cron: toggle failed', err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || 'Could not toggle the job' });
+    }
+}
+
+async function deleteJob(jobId) {
+    const ok = await showConfirm('Delete cron job', 'Delete this cron job?', { danger: true });
+    if (!ok) return;
+    try {
+        await apiRequest(`/api/cron/${encodeURIComponent(jobId)}`, { method: 'DELETE' });
+        notify({ kind: 'success', message: 'Cron job deleted' });
+        await loadJobs();
+    } catch (err) {
+        logError('Cron: delete failed', err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || 'Could not delete the job' });
+    }
+}

@@ -1,395 +1,317 @@
-/**
- * EthOS NAS — Service Manager (unified)
- *
- * One professional view over every service on the box:
- *   • Docker containers  (GET /api/containers, actions via POST /api/containers/{name}/action)
- *   • systemd units      (GET /api/systemd,    actions via POST /api/systemd/{name}/action)
- *
- * Features: summary chips, live search, type tabs, clear status badges,
- * start/stop/restart with confirm dialogs, boot-enable toggle for units,
- * silent auto-refresh while the window is open.
- */
-
+// EthOS NAS — Service Manager (single-pane shell)
+// One view over Docker containers (compose projects) and systemd units.
 import { escapeAttr, escapeHtml } from '../core/utils.js';
-import { apiFetch } from '../core/api.js';
+import { apiRequest } from '../core/api.js';
 import { poll } from '../core/poller.js';
-import { skeletonRows } from '../core/states.js';
+import { skeletonRows, emptyState } from '../core/states.js';
+import { showConfirm } from '../core/modal.js';
+import { notify } from '../core/notification-center.js';
+import { uiIcon } from '../core/icons.js';
+import { logError } from '../core/logger.js';
+import { mountShell } from '../core/ui-shell.js';
 
 const AUTO_REFRESH_MS = 30_000;
 
 const state = {
-    containers: [],      // [{name,image,status,state,ports,compose_project,...}]
-    units: [],           // [{name,description,active_state,sub_state,enabled_state,...}]
-    dockerError: null,   // string when the Docker source failed to load
-    systemdError: null,  // string when the systemd source failed to load
-    tab: 'all',          // 'all' | 'docker' | 'systemd'
+    containers: [],
+    units: [],
+    dockerError: null,
+    systemdError: null,
+    tab: 'all',
     query: '',
     loading: false,
-    lastUpdated: null,   // Date of the last successful refresh
+    lastUpdated: null,
 };
 
-let _autoStop = null; // shared poller stop handle (core/poller.js)
+let shell = null;
+let _autoStop = null;
 
-/* ── Status helpers ─────────────────────────────────────────────────────── */
-
-function _dockerBadge(c) {
-    if (c.status === 'running') return { cls: 'badge-green', label: 'Running' };
-    if (c.status === 'exited') {
-        const m = /^Exited \((\d+)\)/.exec(c.state || '');
-        const code = m ? Number(m[1]) : 0;
-        return code === 0
-            ? { cls: 'badge-yellow', label: 'Stopped' }
-            : { cls: 'badge-red', label: `Failed (${code})` };
+function _dockerBadge(container) {
+    if (container.status === 'running') return { tone: 'is-ok', label: 'Running' };
+    if (container.status === 'exited') {
+        const match = /^Exited \((\d+)\)/.exec(container.state || '');
+        const code = match ? Number(match[1]) : 0;
+        return code === 0 ? { tone: 'is-warn', label: 'Stopped' } : { tone: 'is-bad', label: `Failed (${code})` };
     }
-    if (c.status === 'paused') return { cls: 'badge-blue', label: 'Paused' };
-    const s = c.status || 'unknown';
-    return { cls: 'badge-blue', label: s.charAt(0).toUpperCase() + s.slice(1) };
+    if (container.status === 'paused') return { tone: 'is-info', label: 'Paused' };
+    const status = container.status || 'unknown';
+    return { tone: 'is-info', label: status.charAt(0).toUpperCase() + status.slice(1) };
 }
 
-function _unitBadge(u) {
-    if (u.active_state === 'failed') return { cls: 'badge-red', label: 'Failed' };
-    if (u.active_state === 'active') {
-        // oneshot units finish with sub_state "exited" — that is a healthy state.
-        return u.sub_state === 'exited'
-            ? { cls: 'badge-green', label: 'Active' }
-            : { cls: 'badge-green', label: 'Running' };
+function _unitBadge(unit) {
+    if (unit.active_state === 'failed') return { tone: 'is-bad', label: 'Failed' };
+    if (unit.active_state === 'active') return { tone: 'is-ok', label: unit.sub_state === 'exited' ? 'Active' : 'Running' };
+    if (['activating', 'deactivating', 'reloading'].includes(unit.active_state)) {
+        return { tone: 'is-info', label: `${unit.active_state.charAt(0).toUpperCase()}${unit.active_state.slice(1)}…` };
     }
-    if (['activating', 'deactivating', 'reloading'].includes(u.active_state)) {
-        return { cls: 'badge-blue', label: u.active_state.charAt(0).toUpperCase() + u.active_state.slice(1) + '…' };
-    }
-    return { cls: 'badge-yellow', label: 'Stopped' };
+    return { tone: 'is-warn', label: 'Stopped' };
 }
 
 function _isRunning(item) {
-    if (item.kind === 'docker') return item.status === 'running';
-    return item.active_state === 'active';
+    return item.kind === 'docker' ? item.status === 'running' : item.active_state === 'active';
 }
 
 function _isFailed(item) {
     if (item.kind === 'docker') {
-        const m = /^Exited \((\d+)\)/.exec(item.state || '');
-        return item.status === 'exited' && !!m && Number(m[1]) !== 0;
+        const match = /^Exited \((\d+)\)/.exec(item.state || '');
+        return item.status === 'exited' && Boolean(match) && Number(match[1]) !== 0;
     }
     return item.active_state === 'failed';
 }
 
-/** Sort: running first, then failed (needs attention), then the rest — A→Z inside each group. */
 function _sortItems(items) {
-    const rank = it => (_isRunning(it) ? 0 : _isFailed(it) ? 1 : 2);
+    const rank = (item) => (_isRunning(item) ? 0 : _isFailed(item) ? 1 : 2);
     return [...items].sort((a, b) => (rank(a) - rank(b)) || a.name.localeCompare(b.name));
 }
 
 function _visibleItems() {
-    const q = state.query.trim().toLowerCase();
+    const query = state.query.trim().toLowerCase();
     let items;
-    if (state.tab === 'docker') {
-        items = state.containers.map(c => ({ kind: 'docker', ...c }));
-    } else if (state.tab === 'systemd') {
-        items = state.units.map(u => ({ kind: 'systemd', ...u }));
-    } else {
-        items = [
-            ...state.containers.map(c => ({ kind: 'docker', ...c })),
-            ...state.units.map(u => ({ kind: 'systemd', ...u })),
-        ];
-    }
-    if (q) {
-        items = items.filter(it => {
-            const hay = [it.name, it.image || '', it.description || '', it.ports || '', it.compose_project || '']
-                .join(' ').toLowerCase();
-            return hay.includes(q);
-        });
+    if (state.tab === 'docker') items = state.containers.map((item) => ({ kind: 'docker', ...item }));
+    else if (state.tab === 'systemd') items = state.units.map((item) => ({ kind: 'systemd', ...item }));
+    else items = [
+        ...state.containers.map((item) => ({ kind: 'docker', ...item })),
+        ...state.units.map((item) => ({ kind: 'systemd', ...item })),
+    ];
+    if (query) {
+        items = items.filter((item) => [item.name, item.image || '', item.description || '', item.ports || '', item.compose_project || '']
+            .join(' ').toLowerCase().includes(query));
     }
     return _sortItems(items);
 }
 
 function _counts() {
     const all = [
-        ...state.containers.map(c => ({ kind: 'docker', ...c })),
-        ...state.units.map(u => ({ kind: 'systemd', ...u })),
+        ...state.containers.map((item) => ({ kind: 'docker', ...item })),
+        ...state.units.map((item) => ({ kind: 'systemd', ...item })),
     ];
-    return {
-        running: all.filter(_isRunning).length,
-        failed: all.filter(_isFailed).length,
-        stopped: all.length - all.filter(_isRunning).length - all.filter(_isFailed).length,
-        total: all.length,
-    };
+    const running = all.filter(_isRunning).length;
+    const failed = all.filter(_isFailed).length;
+    return { running, failed, stopped: all.length - running - failed, total: all.length };
 }
 
-/* ── Rendering ──────────────────────────────────────────────────────────── */
+function _rowHtml(item) {
+    const safe = escapeAttr(item.name);
+    const running = _isRunning(item);
+    let icon;
+    let subLine;
+    let badge;
+    let detail;
+    let actions;
 
-function _rowHtml(it) {
-    const safe = escapeAttr(it.name);
-    let icon, subLine, badge, detail;
-
-    if (it.kind === 'docker') {
+    if (item.kind === 'docker') {
         icon = '🐳';
-        subLine = it.image || '';
-        badge = _dockerBadge(it);
-        // docker's `state` is already human-friendly ("Up 3d", "Exited (1) 2h ago")
-        detail = it.ports && it.ports !== '—' ? escapeHtml(it.ports) : '<span class="svc-muted">no published ports</span>';
+        subLine = item.image || '';
+        badge = _dockerBadge(item);
+        detail = item.ports && item.ports !== '—' ? escapeHtml(item.ports) : '<span class="ui-muted">no published ports</span>';
+        actions = running
+            ? `<button class="ui-btn small" data-service-action="stop" data-kind="docker" data-name="${safe}" data-testid="services-action-${safe}-stop">⏹ Stop</button>
+               <button class="ui-btn small" data-service-action="restart" data-kind="docker" data-name="${safe}" data-testid="services-action-${safe}-restart">↻ Restart</button>`
+            : `<button class="ui-btn small" data-service-action="start" data-kind="docker" data-name="${safe}" data-testid="services-action-${safe}-start">▶ Start</button>`;
     } else {
         icon = '⚙️';
-        subLine = it.description || '';
-        badge = _unitBadge(it);
-        const en = it.enabled_state || '';
-        if (en === 'enabled') detail = '<span style="color:#22c55e;font-size:11px;">● enabled at boot</span>';
-        else if (en === 'disabled') detail = '<span class="svc-muted">○ disabled at boot</span>';
-        else if (en) detail = `<span class="svc-muted">${escapeHtml(en)}</span>`;
-        else detail = '<span class="svc-muted">—</span>';
-    }
-
-    const running = _isRunning(it);
-    let actions;
-    if (it.kind === 'docker') {
+        subLine = item.description || '';
+        badge = _unitBadge(item);
+        const enabled = item.enabled_state || '';
+        detail = enabled === 'enabled'
+            ? '<span class="ui-tag is-ok">enabled at boot</span>'
+            : enabled ? `<span class="ui-tag">${escapeHtml(enabled)}</span>` : '<span class="ui-muted">—</span>';
         actions = running
-            ? `<button class="btn-ghost svc-btn" data-testid="services-action-${safe}-stop" onclick="window._servicesAction('docker','${safe}','stop')" title="Stop">⏹ Stop</button>
-               <button class="btn-ghost svc-btn" data-testid="services-action-${safe}-restart" onclick="window._servicesAction('docker','${safe}','restart')" title="Restart">↻ Restart</button>`
-            : `<button class="btn-ghost svc-btn" data-testid="services-action-${safe}-start" onclick="window._servicesAction('docker','${safe}','start')" title="Start">▶ Start</button>`;
-    } else {
-        const en = it.enabled_state || '';
-        const canToggle = (en === 'enabled' || en === 'disabled');
-        actions = running
-            ? `<button class="btn-ghost svc-btn" data-testid="services-action-${safe}-stop" onclick="window._servicesAction('systemd','${safe}','stop')" title="Stop">⏹ Stop</button>
-               <button class="btn-ghost svc-btn" data-testid="services-action-${safe}-restart" onclick="window._servicesAction('systemd','${safe}','restart')" title="Restart">↻ Restart</button>`
-            : `<button class="btn-ghost svc-btn" data-testid="services-action-${safe}-start" onclick="window._servicesAction('systemd','${safe}','start')" title="Start">▶ Start</button>`;
-        if (canToggle) {
-            actions += en === 'enabled'
-                ? `<button class="btn-ghost svc-btn" data-testid="services-action-${safe}-disable" onclick="window._servicesAction('systemd','${safe}','disable')" title="Disable at boot">🔕</button>`
-                : `<button class="btn-ghost svc-btn" data-testid="services-action-${safe}-enable" onclick="window._servicesAction('systemd','${safe}','enable')" title="Enable at boot">🔛</button>`;
+            ? `<button class="ui-btn small" data-service-action="stop" data-kind="systemd" data-name="${safe}" data-testid="services-action-${safe}-stop">⏹ Stop</button>
+               <button class="ui-btn small" data-service-action="restart" data-kind="systemd" data-name="${safe}" data-testid="services-action-${safe}-restart">↻ Restart</button>`
+            : `<button class="ui-btn small" data-service-action="start" data-kind="systemd" data-name="${safe}" data-testid="services-action-${safe}-start">▶ Start</button>`;
+        if (enabled === 'enabled' || enabled === 'disabled') {
+            actions += enabled === 'enabled'
+                ? `<button class="ui-btn small" data-service-action="disable" data-kind="systemd" data-name="${safe}" data-testid="services-action-${safe}-disable" title="Disable at boot">Disable</button>`
+                : `<button class="ui-btn small" data-service-action="enable" data-kind="systemd" data-name="${safe}" data-testid="services-action-${safe}-enable" title="Enable at boot">Enable</button>`;
         }
     }
 
-    return `
-        <tr data-testid="services-row-${safe}" style="border-bottom:1px solid var(--border);cursor:default;">
-            <td style="padding:9px 12px;vertical-align:top;">
-                <div style="display:flex;align-items:center;gap:8px;font-weight:600;color:var(--text-1);font-size:13px;">
-                    <span>${icon}</span>
-                    <span style="font-family:monospace;font-size:12.5px;" title="${escapeAttr(it.name)}">${escapeHtml(it.name)}</span>
-                </div>
-                ${subLine ? `<div class="svc-muted" style="margin-top:2px;padding-left:24px;max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(subLine)}">${escapeHtml(subLine)}</div>` : ''}
-            </td>
-            <td style="padding:9px 12px;vertical-align:top;white-space:nowrap;">
-                <span class="badge ${badge.cls}" data-testid="services-status-${safe}">${badge.label}</span>
-                ${it.kind === 'docker' && it.state ? `<div class="svc-muted" style="margin-top:3px;font-size:10.5px;">${escapeHtml(it.state)}</div>` : ''}
-            </td>
-            <td style="padding:9px 12px;vertical-align:top;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;color:var(--text-2);" title="${it.kind === 'docker' ? escapeAttr(it.ports || '') : ''}">${detail}</td>
-            <td style="padding:9px 12px;vertical-align:top;text-align:right;white-space:nowrap;">${actions}</td>
-        </tr>`;
+    return `<tr data-testid="services-row-${safe}">
+        <td>
+            <div>${icon} <span class="path">${escapeHtml(item.name)}</span></div>
+            ${subLine ? `<p class="ui-muted" title="${escapeAttr(subLine)}">${escapeHtml(subLine)}</p>` : ''}
+        </td>
+        <td data-testid="services-status-${safe}">
+            <span class="ui-tag ${badge.tone}">${escapeHtml(badge.label)}</span>
+            ${item.kind === 'docker' && item.state ? `<p class="ui-muted">${escapeHtml(item.state)}</p>` : ''}
+        </td>
+        <td>${detail}</td>
+        <td class="actions"><div class="ui-row" style="justify-content:flex-end;">${actions}</div></td>
+    </tr>`;
 }
 
 function _render() {
-    const tableEl = document.getElementById('servicesTable');
-    if (!tableEl) return; // window closed
-
+    if (!shell || !shell.root.isConnected) return;
     const counts = _counts();
-    const cDocker = state.containers.length;
-    const cSystemd = state.units.length;
 
-    // Summary chips
-    const chipRun = document.getElementById('services-chip-running');
-    const chipStop = document.getElementById('services-chip-stopped');
-    const chipFail = document.getElementById('services-chip-failed');
-    if (chipRun) chipRun.textContent = `● ${counts.running} running`;
-    if (chipStop) chipStop.textContent = `○ ${counts.stopped} stopped`;
-    if (chipFail) {
-        chipFail.textContent = `⚠ ${counts.failed} failed`;
-        chipFail.style.display = counts.failed > 0 ? '' : 'none';
+    const chips = {
+        running: shell.view.querySelector('#services-chip-running'),
+        stopped: shell.view.querySelector('#services-chip-stopped'),
+        failed: shell.view.querySelector('#services-chip-failed'),
+    };
+    if (chips.running) chips.running.textContent = `${counts.running} running`;
+    if (chips.stopped) chips.stopped.textContent = `${counts.stopped} stopped`;
+    if (chips.failed) {
+        chips.failed.textContent = `${counts.failed} failed`;
+        chips.failed.hidden = counts.failed === 0;
     }
 
-    // Tabs
-    const tabDefs = [
-        ['all', `All · ${cDocker + cSystemd}`],
-        ['docker', `Containers · ${cDocker}`],
-        ['systemd', `Systemd · ${cSystemd}`],
-    ];
-    for (const [id, label] of tabDefs) {
-        const el = document.getElementById(`services-tab-${id}`);
-        if (!el) continue;
-        el.textContent = label;
-        const active = state.tab === id;
-        el.style.color = active ? 'var(--text-1)' : 'var(--text-3)';
-        el.style.borderBottom = active ? '2px solid var(--accent)' : '2px solid transparent';
+    shell.view.querySelectorAll('[data-tab]').forEach((button) => {
+        button.classList.toggle('primary', button.dataset.tab === state.tab);
+    });
+
+    const banners = shell.view.querySelector('#servicesBanners');
+    if (banners) {
+        const html = [];
+        if (state.tab !== 'systemd' && state.dockerError) {
+            html.push(`<div class="ui-callout error" data-testid="services-error-docker">Docker unavailable: ${escapeHtml(state.dockerError)}</div>`);
+        }
+        if (state.tab !== 'docker' && state.systemdError) {
+            html.push(`<div class="ui-callout error" data-testid="services-error-systemd">Systemd unavailable: ${escapeHtml(state.systemdError)}</div>`);
+        }
+        banners.innerHTML = html.join('');
     }
 
-    // Source error banners (only for sources relevant to the current tab)
-    const bannerEl = document.getElementById('servicesBanners');
-    if (bannerEl) {
-        let html = '';
-        const showDocker = state.tab !== 'systemd' && state.dockerError;
-        const showSystemd = state.tab !== 'docker' && state.systemdError;
-        if (showDocker) html += `<div class="svc-banner" data-testid="services-error-docker">⚠ Docker unavailable: ${escapeHtml(state.dockerError)}</div>`;
-        if (showSystemd) html += `<div class="svc-banner" data-testid="services-error-systemd">⚠ Systemd unavailable: ${escapeHtml(state.systemdError)}</div>`;
-        bannerEl.innerHTML = html;
-    }
-
-    // Table body
+    const table = shell.view.querySelector('#servicesTable');
     const items = _visibleItems();
-    let html;
-    if (items.length === 0) {
-        const msg = state.query
-            ? `No services match “${escapeHtml(state.query)}”.`
-            : 'No services found.';
-        html = `<tr><td colspan="4" style="padding:36px;text-align:center;color:var(--text-3);font-size:13px;">${msg}</td></tr>`;
-    } else {
-        html = items.map(_rowHtml).join('');
+    if (table) {
+        table.innerHTML = `<tbody>${items.length
+            ? items.map(_rowHtml).join('')
+            : `<tr><td colspan="4">${emptyState({
+                title: state.query ? 'No matching services' : 'No services found',
+                hint: state.query ? `Nothing matches “${state.query}”.` : 'Docker and systemd returned no entries.',
+            })}</td></tr>`}</tbody>`;
     }
-    tableEl.innerHTML = `<tbody>${html}</tbody>`;
 
-    // Footer
-    const foot = document.getElementById('servicesFooter');
-    if (foot) {
+    const footer = shell.view.querySelector('#servicesFooter');
+    if (footer) {
         const when = state.lastUpdated ? state.lastUpdated.toLocaleTimeString() : '—';
-        foot.textContent = `${counts.total} services · ${cDocker} containers + ${cSystemd} units · updated ${when}`;
+        footer.textContent = `${counts.total} services · ${state.containers.length} containers + ${state.units.length} units · updated ${when}`;
     }
 }
 
-/* ── Data loading ───────────────────────────────────────────────────────── */
-
-/** Fetch JSON, throwing an Error whose message carries the server's `detail` when present. */
-async function _fetchJson(path) {
-    const res = await apiFetch(path);
-    if (!res.ok) {
-        let detail = 'HTTP ' + res.status;
-        try {
-            const d = await res.json();
-            if (d && d.detail) detail = typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail);
-        } catch (_) { /* non-JSON error body — keep the HTTP status */ }
-        throw new Error(detail);
-    }
-    return res.json();
-}
-
-async function _load(silent) {
-    if (state.loading) return;
+async function _load(silent = false) {
+    if (state.loading || !shell) return;
     state.loading = true;
-    const tableEl = document.getElementById('servicesTable');
-    if (!silent && tableEl) {
-        tableEl.innerHTML = skeletonRows(8);
-    }
+    const table = shell.view.querySelector('#servicesTable');
+    if (!silent && table) table.innerHTML = `<tbody><tr><td colspan="4">${skeletonRows(8)}</td></tr></tbody>`;
 
-    const [dockerRes, systemdRes] = await Promise.allSettled([
-        _fetchJson('/api/containers'),
-        _fetchJson('/api/systemd'),
+    const [containers, units] = await Promise.allSettled([
+        apiRequest('/api/containers'),
+        apiRequest('/api/systemd'),
     ]);
 
-    if (dockerRes.status === 'fulfilled' && dockerRes.value) {
-        state.containers = Array.isArray(dockerRes.value.containers) ? dockerRes.value.containers : [];
+    if (containers.status === 'fulfilled' && containers.value) {
+        state.containers = Array.isArray(containers.value.containers) ? containers.value.containers : [];
         state.dockerError = null;
     } else {
-        const err = dockerRes.reason || {};
-        state.dockerError = err.detail || err.message || 'request failed';
+        const error = containers.reason || {};
+        state.dockerError = error.detail || error.message || 'request failed';
+        logError('Services: Docker source unavailable', state.dockerError);
     }
 
-    if (systemdRes.status === 'fulfilled' && systemdRes.value) {
-        state.units = Array.isArray(systemdRes.value.services) ? systemdRes.value.services : [];
+    if (units.status === 'fulfilled' && units.value) {
+        state.units = Array.isArray(units.value.services) ? units.value.services : [];
         state.systemdError = null;
     } else {
-        const err = systemdRes.reason || {};
-        state.systemdError = err.detail || err.message || 'request failed';
+        const error = units.reason || {};
+        state.systemdError = error.detail || error.message || 'request failed';
+        logError('Services: systemd source unavailable', state.systemdError);
     }
 
     state.lastUpdated = new Date();
     state.loading = false;
     _render();
+    shell.setStatus(state.dockerError && state.systemdError ? 'Both sources unavailable' : 'Service list updated',
+        state.dockerError && state.systemdError ? 'error' : 'ok');
 }
-
-/* ── Public API (window globals, consistent with other apps) ───────────── */
 
 export async function renderServicesPage(body) {
     if (!body) return;
-
-    body.innerHTML = `
-        <div style="height:100%;display:flex;flex-direction:column;background:var(--bg,#0f172a);font-family:system-ui,sans-serif;color:var(--text-1);" data-testid="services-app">
-            <!-- Header: title + summary chips -->
-            <div style="padding:14px 16px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <h2 style="margin:0;font-size:17px;font-weight:700;color:var(--text-1);display:flex;align-items:center;gap:8px;">⚙️ Service Manager</h2>
-                <span id="services-chip-running" class="badge badge-green" data-testid="services-chip-running">● 0 running</span>
-                <span id="services-chip-stopped" class="badge badge-yellow" data-testid="services-chip-stopped">○ 0 stopped</span>
-                <span id="services-chip-failed" class="badge badge-red" data-testid="services-chip-failed" style="display:none;">⚠ 0 failed</span>
+    if (_autoStop) { _autoStop(); _autoStop = null; }
+    shell?.destroy();
+    shell = mountShell(body, {
+        idPrefix: 'services',
+        title: 'Service Manager',
+        subtitle: 'Docker containers and systemd units in one table.',
+        icon: '⚙️',
+        sections: [{ id: 'services', label: 'Services' }],
+        rail: false,
+        note: 'Restarting a service briefly interrupts its app.',
+    });
+    shell.view.setAttribute('data-testid', 'services-app');
+    shell.view.innerHTML = `
+        <div class="ui-toolbar">
+            <div class="ui-row">
+                <span id="services-chip-running" class="ui-tag is-ok" data-testid="services-chip-running">0 running</span>
+                <span id="services-chip-stopped" class="ui-tag is-warn" data-testid="services-chip-stopped">0 stopped</span>
+                <span id="services-chip-failed" class="ui-tag is-bad" data-testid="services-chip-failed" hidden>0 failed</span>
             </div>
-
-            <!-- Toolbar: search + refresh -->
-            <div style="padding:12px 16px;display:flex;gap:8px;align-items:center;">
-                <input id="servicesSearch" data-testid="services-search" type="text" placeholder="🔍 Search by name, image or description…"
-                    oninput="window._servicesSearch(this.value)"
-                    style="flex:1;padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:var(--surface-1);color:var(--text-1);font-size:13px;outline:none;">
-                <button class="btn-ghost" data-testid="services-refresh-btn" onclick="window._servicesLoad()" style="padding:7px 14px;font-size:12px;border-radius:8px;display:flex;align-items:center;gap:6px;" title="Refresh now">🔄 Refresh</button>
+            <div class="ui-row">
+                ${['all', 'docker', 'systemd'].map((tab) => `<button class="ui-btn small${tab === state.tab ? ' primary' : ''}" data-tab="${tab}" data-testid="services-tab-${tab}">${tab === 'all' ? 'All' : tab === 'docker' ? 'Containers' : 'Systemd'}</button>`).join('')}
             </div>
-
-            <!-- Tabs -->
-            <div style="display:flex;gap:4px;padding:0 16px;border-bottom:1px solid var(--border);">
-                ${['all', 'docker', 'systemd'].map(t => `
-                    <button id="services-tab-${t}" data-testid="services-tab-${t}" onclick="window._servicesSetTab('${t}')"
-                        style="padding:8px 14px;background:none;border:none;cursor:pointer;font-size:12.5px;font-weight:600;color:var(--text-3);border-bottom:2px solid transparent;">${t === 'all' ? 'All' : t === 'docker' ? 'Containers' : 'Systemd'} · 0</button>`).join('')}
-            </div>
-
-            <!-- Source error banners -->
-            <div id="servicesBanners" data-testid="services-banners"></div>
-
-            <!-- Table -->
-            <div style="flex:1;overflow-y:auto;">
-                <table class="app-table" id="servicesTable" data-testid="services-table" style="width:100%;font-size:12.5px;">
-                    <thead><tr>
-                        <th style="text-align:left;padding:8px 12px;min-width:260px;">Service</th>
-                        <th style="text-align:left;padding:8px 12px;width:130px;">Status</th>
-                        <th style="text-align:left;padding:8px 12px;">Details</th>
-                        <th style="text-align:right;padding:8px 12px;width:210px;">Actions</th>
-                    </tr></thead>
-                    <tbody><tr><td colspan="4" style="padding:0;">${skeletonRows(8)}</td></tr></tbody>
+        </div>
+        <div class="ui-toolbar">
+            <input id="servicesSearch" class="ui-input" data-testid="services-search" type="search" placeholder="Search by name, image or description…" aria-label="Search services">
+            <button class="ui-btn small" data-testid="services-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>
+        </div>
+        <div id="servicesBanners" data-testid="services-banners"></div>
+        <section class="ui-panel" style="min-height:180px;">
+            <div class="ui-table-wrap">
+                <table class="ui-table" id="servicesTable" data-testid="services-table">
+                    <thead><tr><th>Service</th><th>Status</th><th>Details</th><th class="actions">Actions</th></tr></thead>
+                    <tbody><tr><td colspan="4">${skeletonRows(8)}</td></tr></tbody>
                 </table>
             </div>
+        </section>
+        <p id="servicesFooter" class="ui-muted" data-testid="services-footer">Loading…</p>`;
 
-            <!-- Footer -->
-            <div id="servicesFooter" data-testid="services-footer" style="padding:8px 16px;border-top:1px solid var(--border);font-size:11px;color:var(--text-3);">Loading…</div>
-        </div>`;
+    const search = shell.view.querySelector('#servicesSearch');
+    search.value = state.query;
+    search.addEventListener('input', () => {
+        state.query = search.value || '';
+        _render();
+    });
+    shell.view.querySelector('[data-testid="services-refresh-btn"]')?.addEventListener('click', () => _load(false));
+    shell.view.querySelectorAll('[data-tab]').forEach((button) => {
+        button.addEventListener('click', () => {
+            state.tab = button.dataset.tab;
+            _render();
+        });
+    });
+    shell.view.querySelector('#servicesTable')?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-service-action]');
+        if (!button) return;
+        _action(button.dataset.kind, button.dataset.name, button.dataset.serviceAction);
+    });
 
-    // Restore search box content (e.g. after a re-render) and start auto-refresh.
-    const searchEl = document.getElementById('servicesSearch');
-    if (searchEl && state.query) searchEl.value = state.query;
-
+    shell.setStatus('Loading services…');
     await _load(false);
 
-    // Shared poller (TODO.md P3-09): one timer per app, paused while hidden and
-    // stopped when the window closes.
     if (_autoStop) _autoStop();
     _autoStop = poll(() => _load(true), AUTO_REFRESH_MS,
-                     { appId: 'services', immediate: false, name: 'services' });
+        { appId: 'services', immediate: false, name: 'services' });
 }
 
-window._servicesLoad = function () { _load(false); };
-
-window._servicesSetTab = function (tab) {
-    if (!['all', 'docker', 'systemd'].includes(tab)) return;
-    state.tab = tab;
-    _render();
-};
-
-window._servicesSearch = function (value) {
-    state.query = value || '';
-    _render();
-};
-
-window._servicesAction = async function (kind, name, action) {
-    const labels = { start: 'Start', stop: 'Stop', restart: 'Restart', enable: 'Enable at boot for', disable: 'Disable at boot for' };
-    const msg = kind === 'docker'
-        ? `${labels[action] || action} container “${name}”?`
-        : `${labels[action] || action} service “${name}”?`;
-    if (!await window.showModalConfirm('Service Manager', msg)) return;
+async function _action(kind, name, action) {
+    const labels = {
+        start: 'Start', stop: 'Stop', restart: 'Restart',
+        enable: 'Enable at boot', disable: 'Disable at boot',
+    };
+    const target = kind === 'docker' ? `container “${name}”` : `service “${name}”`;
+    const ok = await showConfirm('Service Manager', `${labels[action] || action} ${target}?`);
+    if (!ok) return;
 
     try {
         const url = kind === 'docker'
             ? `/api/containers/${encodeURIComponent(name)}/action`
             : `/api/systemd/${encodeURIComponent(name)}/action`;
-        const resp = await apiFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
-        if (!resp.ok) {
-            const d = await resp.json().catch(() => ({}));
-            window.addNotification?.(d.detail || `Failed to ${action} ${name}`, 'error');
-            return;
-        }
-        window.addNotification?.(`${labels[action] ? labels[action].replace(' at boot for', '') : action}: ${name}`, 'success');
-        await _load(true); // silent refresh — keeps the user's scroll position & search
-    } catch (e) {
-        window.addNotification?.(e.message, 'error');
+        await apiRequest(url, { method: 'POST', body: { action } });
+        notify({ kind: 'success', message: `${labels[action] || action}: ${name}` });
+        await _load(true);
+    } catch (err) {
+        logError(`Services: ${action} ${name} failed`, err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || `Failed to ${action} ${name}` });
     }
-};
-
+}

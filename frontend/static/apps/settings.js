@@ -1,371 +1,44 @@
-// EthOS NAS — Settings Page (System, Users, Security tabs)
-// Download settings live in the Download Manager package window (Packages).
-import { escapeHtml, formatBytes, formatUptime, formatDate } from '../core/utils.js';
+// EthOS NAS — Settings window
+//
+// Rail shell: Overview · Updates · Maintenance · Users · Security · Appearance ·
+// About (docs/app-ui.md). Every section loads lazily into the shared
+// `core/ui-shell.js` view; no inline styles, no window globals, no raw fetch.
+import { escapeAttr, escapeHtml, formatBytes, formatUptime } from '../core/utils.js';
 import { uiIcon } from '../core/icons.js';
-import { apiFetch, apiRequest, readErrorDetail } from '../core/api.js';
-import { addNotification } from '../core/notification-center.js';
+import { apiRequest } from '../core/api.js';
+import { notify } from '../core/notification-center.js';
+import { showAlert, showConfirm } from '../core/modal.js';
 import { showRestartOverlay } from '../core/window-manager.js';
 import { startTask } from '../core/progress.js';
-import { skeletonRows } from '../core/states.js';
+import { skeletonRows, emptyState, errorState } from '../core/states.js';
+import { logError } from '../core/logger.js';
+import { mountShell } from '../core/ui-shell.js';
+import { openLogs } from './logs.js';
 import {
     WALLPAPER_IDS, CUSTOM_ID, DEFAULT_WALLPAPER,
     saveWallpaper, uploadCustomWallpaper, resetWallpaper, customImageUrl,
 } from '../core/wallpaper.js';
 
-// Android APK downloads: the server resolves the file and exposes an
-// app-scoped URL (`/api/app/download?app=…`), so no host path is baked into
-// this bundle. The href is filled in by loadAppVersions().
-const APK_APPS = [
-    ['moments', 'appVerMoments', 'apkLinkMoments'],
-    ['music', 'appVerMusic', 'apkLinkMusic'],
-    ['video', 'appVerVideo', 'apkLinkVideo'],
+const SECTION_KEY = 'ethos-settings-section';
+
+const SECTIONS = [
+    { id: 'overview', label: 'Overview', title: 'System Overview', subtitle: 'Host, resources and health at a glance.' },
+    { id: 'updates', label: 'Updates', title: 'Updates', subtitle: 'Core releases and the Android apps.' },
+    { id: 'maintenance', label: 'Maintenance', title: 'Maintenance', subtitle: 'Caches, health thresholds and the danger zone.' },
+    { id: 'users', label: 'Users', title: 'User Accounts', subtitle: 'Accounts imported from Linux through PAM.' },
+    { id: 'security', label: 'Security', title: 'Security', subtitle: 'Your session, API key and hardening notes.' },
+    { id: 'appearance', label: 'Appearance', title: 'Appearance', subtitle: 'Desktop wallpaper for this account.' },
+    { id: 'about', label: 'About', title: 'About', subtitle: 'Build identity and environment self-check.' },
 ];
 
-function _withToken(url) {
-    const token = encodeURIComponent(localStorage.getItem('token') || '');
-    return `${url}${url.includes('?') ? '&' : '?'}token=${token}`;
-}
+// Android APK downloads: the server resolves the file and exposes an
+// app-scoped URL (`/api/app/download?app=…`), so no host path is baked in.
+const APK_APPS = [
+    { id: 'moments', label: 'EthOS Photos', icon: 'phone', linkTestId: 'apk-link-moments' },
+    { id: 'music', label: 'EthOS Music', icon: 'music', linkTestId: 'apk-link-music' },
+    { id: 'video', label: 'EthOS Video', icon: 'video', linkTestId: 'apk-link-video' },
+];
 
-// Exposed for the inline onclick handler in the System tab (module scope is not visible to HTML handlers)
-window._ethosRestartApp = async function () {
-    const ok = await window.showModalConfirm('Restart', 'Restart EthOS NAS?\n\nThe web server will restart and this page will refresh automatically.');
-    if (!ok) return;
-    try {
-        const res = await fetch('/api/system/restart', { method: 'POST' });
-        if (res.ok) showRestartOverlay();
-        else window.showAlert('Restart failed');
-    } catch (_) {
-        window.showAlert('Could not reach the server');
-    }
-};
-
-export async function renderSettingsPage(body) {
-    body.innerHTML = `
-        <div style="display:flex;flex-direction:column;height:100%;background:var(--surface-0);color: var(--text-1);font-family:system-ui,sans-serif;">
-            <div style="display:flex;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--surface-0);">
-                <button class="app-tab settings-tab active" data-tab="system">${uiIcon('settings', 15)}<span>System</span></button>
-                <button class="app-tab settings-tab" data-tab="users">${uiIcon('users', 15)}<span>Users</span></button>
-                <button class="app-tab settings-tab" data-tab="security">${uiIcon('lock', 15)}<span>Security</span></button>
-                <button class="app-tab settings-tab" data-tab="appearance">${uiIcon('palette', 15)}<span>Appearance</span></button>
-            </div>
-            <div id="settingsContent" style="flex:1;overflow-y:auto;padding:16px 20px;">
-                ${skeletonRows(6)}
-            </div>
-        </div>`;
-
-    body.querySelectorAll('.settings-tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-            body.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
-            const tabName = tab.dataset.tab;
-            if (tabName === 'system') loadSystemTab();
-            else if (tabName === 'users') loadUsersTab();
-            else if (tabName === 'security') loadSecurityTab();
-            else if (tabName === 'appearance') loadAppearanceTab();
-        });
-    });
-
-    await loadSystemTab();
-}
-
-// ════════════════════════════════════════════
-// TAB 1: System Information
-// ════════════════════════════════════════════
-
-async function loadSystemTab() {
-    const content = document.getElementById('settingsContent');
-    if (!content) return;
-    content.innerHTML = skeletonRows(6);
-
-    try {
-        const resp = await apiFetch('/api/system/status');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const sys = await resp.json();
-
-        content.innerHTML = `
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">
-                <div class="glass-card" style="padding:20px;">
-                    <div class="section-label">${uiIcon('settings', 12)} System</div>
-                    <div style="display:flex;flex-direction:column;gap:10px;">
-                        <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">Hostname</span><span style="color:white;font-weight:600;">${escapeHtml(sys.hostname || '—')}</span></div>
-                        <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">Uptime</span><span style="color:#22c55e;font-family:monospace;">${formatUptime(sys.uptime_seconds)}</span></div>
-                        <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">CPU Cores</span><span style="color:white;">${(sys.cpu_per_core || []).length} cores</span></div>
-                        <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">CPU Load</span><span style="color:${sys.cpu_percent > 80 ? '#ef4444' : sys.cpu_percent > 50 ? '#eab308' : '#22c55e'};font-weight:700;">${Math.round(sys.cpu_percent)}%</span></div>
-                        <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">Temperature</span><span style="color:white;">${sys.temperature != null ? sys.temperature + '°C' : '—'}</span></div>
-                        <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">Platform</span><span style="color: var(--text-2);font-size:12px;">Linux</span></div>
-                    </div>
-                </div>
-
-                <div class="glass-card" style="padding:20px;">
-                    <div class="section-label">${uiIcon('memory', 12)} Memory</div>
-                    <div class="progress-track" style="height:8px;margin-bottom:8px;"><div class="progress-fill" style="width:${sys.memory?.percent || 0}%;background:${sys.memory?.percent > 80 ? '#ef4444' : sys.memory?.percent > 50 ? '#eab308' : '#3b82f6'};"></div></div>
-                    <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;"><span style="color: var(--text-2);">Used</span><span style="color:white;font-family:monospace;">${formatBytes(sys.memory?.used || 0)}</span></div>
-                    <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;"><span style="color: var(--text-2);">Free</span><span style="color:white;font-family:monospace;">${formatBytes(sys.memory?.free || 0)}</span></div>
-                    <div style="display:flex;justify-content:space-between;font-size:13px;"><span style="color: var(--text-2);">Total</span><span style="color:white;font-family:monospace;">${formatBytes(sys.memory?.total || 0)}</span></div>
-                </div>
-
-                <div class="glass-card" style="padding:20px;">
-                    <div class="section-label">${uiIcon('disk', 12)} Disk (/)</div>
-                    <div class="progress-track" style="height:8px;margin-bottom:8px;"><div class="progress-fill" style="width:${sys.disk?.percent || 0}%;background:${sys.disk?.percent > 80 ? '#ef4444' : sys.disk?.percent > 50 ? '#eab308' : '#3b82f6'};"></div></div>
-                    <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;"><span style="color: var(--text-2);">Used</span><span style="color:white;font-family:monospace;">${formatBytes(sys.disk?.used || 0)}</span></div>
-                    <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;"><span style="color: var(--text-2);">Free</span><span style="color:white;font-family:monospace;">${formatBytes(sys.disk?.free || 0)}</span></div>
-                    <div style="display:flex;justify-content:space-between;font-size:13px;"><span style="color: var(--text-2);">Total</span><span style="color:white;font-family:monospace;">${formatBytes(sys.disk?.total || 0)}</span></div>
-                </div>
-
-                <div class="glass-card" style="padding:20px;">
-                    <div class="section-label">${uiIcon('network', 12)} Network</div>
-                    <div style="display:flex;flex-direction:column;gap:10px;">
-                        <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">Download</span><span style="color:white;font-family:monospace;">${formatBytes(sys.network?.bytes_recv || 0)}</span></div>
-                        <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">Upload</span><span style="color:white;font-family:monospace;">${formatBytes(sys.network?.bytes_sent || 0)}</span></div>
-                    </div>
-                </div>
-            </div>
-
-            <div id="healthMonitorCard" class="glass-card" style="margin-top:16px;padding:16px 20px;">
-                <div style="font-size:12px;color: var(--text-3);">Loading health monitor…</div>
-            </div>
-
-            <!-- Caches / retention (TODO.md P5-07): bytes per managed area + Clean now -->
-            <div id="cachesCard" class="glass-card" style="margin-top:16px;padding:16px 20px;"
-                 data-testid="settings-caches-card">
-                <div style="font-size:12px;color: var(--text-3);">Loading caches…</div>
-            </div>
-
-            <div class="glass-card" style="margin-top:16px;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;">
-                <div>
-                    <div style="font-size:13px;color:white;font-weight:600;">${uiIcon('phone', 14)} EthOS Photos — Android app <span id="appVerMoments" style="font-size:11px;color: var(--text-3);font-weight:400;">(version…)</span></div>
-                    <div style="font-size:11px;color: var(--text-3);">Download the APK and install it on your phone (allow “install unknown apps”)</div>
-                </div>
-                <a id="apkLinkMoments" href="#" aria-disabled="true" data-testid="apk-link-moments" class="btn-ghost btn-sm" style="text-decoration:none;">${uiIcon('download', 13)} Download APK</a>
-            </div>
-
-            <div class="glass-card" style="margin-top:12px;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;">
-                <div>
-                    <div style="font-size:13px;color:white;font-weight:600;">${uiIcon('music', 14)} EthOS Music — Android app <span id="appVerMusic" style="font-size:11px;color: var(--text-3);font-weight:400;">(version…)</span></div>
-                    <div style="font-size:11px;color: var(--text-3);">Download the APK and install it on your phone (allow “install unknown apps”)</div>
-                </div>
-                <a id="apkLinkMusic" href="#" aria-disabled="true" data-testid="apk-link-music" class="btn-ghost btn-sm" style="text-decoration:none;">${uiIcon('download', 13)} Download APK</a>
-            </div>
-
-            <div class="glass-card" style="margin-top:12px;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;">
-                <div>
-                    <div style="font-size:13px;color:white;font-weight:600;">${uiIcon('video', 14)} EthOS Video — Android app <span id="appVerVideo" style="font-size:11px;color: var(--text-3);font-weight:400;">(version…)</span></div>
-                    <div style="font-size:11px;color: var(--text-3);">Download the APK and install it on your phone (allow “install unknown apps”). Updates are checked in the app’s Settings.</div>
-                </div>
-                <a id="apkLinkVideo" href="#" aria-disabled="true" data-testid="apk-link-video" class="btn-ghost btn-sm" style="text-decoration:none;">${uiIcon('download', 13)} Download APK</a>
-            </div>
-
-            <div class="glass-card" id="coreUpdateCard" data-testid="core-update-card" style="margin-top:12px;padding:16px 20px;">
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-                    <div>
-                        <div style="font-size:13px;color:white;font-weight:600;">${uiIcon('settings', 14)} EthOS NAS <span id="coreVersion" style="font-size:11px;color: var(--text-3);font-weight:400;">(version…)</span></div>
-                        <div id="coreUpdateStatus" data-testid="core-update-status" style="font-size:11px;color: var(--text-3);">Loading update status…</div>
-                    </div>
-                    <button id="coreUpdateCheck" data-testid="core-update-check" class="btn-ghost btn-sm" hidden>${uiIcon('refresh', 13)} Check for updates</button>
-                    <button id="coreUpdateApply" data-testid="core-update-apply" class="btn-primary btn-sm" hidden>${uiIcon('download', 13)} Update now</button>
-                </div>
-                <div id="coreUpdateNotes" style="display:none;margin-top:10px;font-size:11px;color:var(--text-2);white-space:pre-wrap;"></div>
-                <div id="coreUpdateResult" style="display:none;margin-top:8px;font-size:11px;color: var(--text-3);"></div>
-            </div>
-
-            <div class="glass-card" style="margin-top:12px;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;">
-                <div>
-                    <div style="font-size:13px;color:white;font-weight:600;">Restart Application</div>
-                    <div style="font-size:11px;color: var(--text-3);">Gracefully restart the web server</div>
-                </div>
-                <button class="btn-ghost btn-sm" onclick="_ethosRestartApp()">${uiIcon('refresh', 13)} Restart</button>
-            </div>
-            <div class="glass-card" style="margin-top:12px;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;">
-                <div>
-                    <div style="font-size:13px;color:#ef4444;font-weight:600;">${uiIcon('alert', 14)} Reboot Server</div>
-                    <div style="font-size:11px;color: var(--text-3);">Shutdown and restart the entire server</div>
-                </div>
-                <button class="btn-danger btn-sm" onclick="window.showModalConfirm('Reboot Server','Reboot the entire server? This will disconnect all users.').then(ok=>{if(ok)fetch('/api/system/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'reboot',confirm:true})}).then(()=>window.showAlert('Server rebooting...'))})">${uiIcon('refresh', 13)} Reboot</button>
-            </div>`;
-
-    loadHealthCard();
-    loadAppVersions();
-    loadCachesCard();
-    loadUpdateCard();
-    } catch (e) {
-        content.innerHTML = `<div class="alert alert-error" style="justify-content:center;margin:20px 0;">${uiIcon('alert', 16)}<span>${escapeHtml(e.message)}</span></div>`;
-    }
-}
-
-/** Role from the JWT payload (the API enforces it; this only hides buttons). */
-function _jwtRole() {
-    try {
-        const parts = (localStorage.getItem('token') || '').split('.');
-        if (parts.length < 2) return 'user';
-        return JSON.parse(atob(parts[1])).role || 'user';
-    } catch (_) {
-        return 'user';
-    }
-}
-
-/**
- * Core update card: version of the running checkout, the last cached check and
- * (admins only) a button that refreshes the signed release index.
- * Check-only — nothing is installed from the browser (docs/updates.md).
- */
-async function loadUpdateCard() {
-    const versionEl = document.getElementById('coreVersion');
-    const statusEl = document.getElementById('coreUpdateStatus');
-    const notesEl = document.getElementById('coreUpdateNotes');
-    const resultEl = document.getElementById('coreUpdateResult');
-    const btn = document.getElementById('coreUpdateCheck');
-    const applyBtn = document.getElementById('coreUpdateApply');
-    if (!versionEl || !statusEl) return;
-    const isAdmin = _jwtRole() === 'admin';
-    if (btn) btn.hidden = !isAdmin;
-    if (applyBtn) applyBtn.hidden = true;
-
-    const render = (data) => {
-        const cur = data.current || {};
-        versionEl.textContent = `v${cur.version || '?'}${cur.git_sha ? ' · ' + cur.git_sha : ''}`;
-        const latest = data.latest || null;
-        const checked = data.checked_at_iso ? `last checked ${formatDate(data.checked_at_iso)}` : 'never checked';
-        if (notesEl) {
-            notesEl.textContent = (data.update_available === true && latest && latest.notes) ? latest.notes : '';
-            notesEl.style.display = notesEl.textContent ? 'block' : 'none';
-        }
-        if (data.enabled === false) {
-            statusEl.textContent = 'Update checks are disabled on this server';
-            statusEl.style.color = 'var(--text-3)';
-        } else if (data.error) {
-            statusEl.textContent = `Check failed — ${data.error} (${checked})`;
-            statusEl.style.color = '#eab308';
-        } else if (data.update_available === true && latest) {
-            statusEl.textContent = `Update available: v${latest.version || '?'}${latest.git_sha ? ' · ' + latest.git_sha : ''} — ${checked}`;
-            statusEl.style.color = '#eab308';
-        } else if (data.update_available === false) {
-            statusEl.textContent = `Up to date — ${checked}`;
-            statusEl.style.color = 'var(--text-2)';
-        } else {
-            statusEl.textContent = `Not checked yet — ${checked}`;
-            statusEl.style.color = 'var(--text-3)';
-        }
-        if (applyBtn) {
-            applyBtn.hidden = !(isAdmin && data.enabled !== false && data.update_available === true);
-        }
-        if (resultEl) {
-            const r = data._result;
-            if (r && r.status) {
-                const when = r.at ? ` (${formatDate(r.at)})` : '';
-                const map = { ok: 'Last update succeeded', up_to_date: 'Already up to date', rolled_back: 'Last update failed — previous version restored', failed: 'Last update failed' };
-                resultEl.textContent = `${map[r.status] || ('Last update: ' + r.status)}${r.version ? ' → ' + r.version : ''}${when}${r.detail ? ' — ' + r.detail : ''}`;
-                resultEl.style.display = 'block';
-                resultEl.style.color = r.status === 'ok' ? 'var(--text-2)' : '#eab308';
-            }
-        }
-    };
-
-    const applyUpdate = async () => {
-        const latest = (await apiRequest('/api/system/update').catch(() => ({}))).latest || {};
-        const target = `v${latest.version || '?'}${latest.git_sha ? ' · ' + latest.git_sha : ''}`;
-        const ok = await window.showModalConfirm(
-            'Update EthOS NAS',
-            `Install ${target} now?\n\nA data snapshot is taken first, the service restarts and this page reloads. If the new version does not come up, the previous version is restored automatically.`,
-        );
-        if (!ok) return;
-        try {
-            await apiRequest('/api/system/update', { method: 'POST' });
-        } catch (err) {
-            window.showAlert('Update failed to start', err.detail || err.message);
-            return;
-        }
-        const task = startTask({ appId: 'system', title: 'Updating EthOS NAS', detail: 'starting the helper…', percent: null, testIdPrefix: 'sys-update' });
-        const stepPct = { fetch: 10, apply: 30, deps: 55, restart: 75, verify: 90, done: 100 };
-        const tick = async () => {
-            let st;
-            try {
-                st = await apiRequest('/api/system/update/status');
-            } catch (_) {
-                task.update({ percent: 95, detail: 'service restarting…' });
-                showRestartOverlay();
-                return;
-            }
-            const job = st.job || {};
-            if (job.status === 'running') {
-                task.update({ percent: stepPct[job.step] ?? 20, detail: `${job.step}${job.detail ? ' — ' + job.detail : ''}` });
-                setTimeout(tick, 2000);
-                return;
-            }
-            if (job.status === 'ok' || job.status === 'up_to_date') {
-                task.finish('done', { percent: 100, detail: job.detail || job.status });
-                showRestartOverlay();
-            } else if (job.status === 'rolled_back' || job.status === 'failed') {
-                task.finish('failed', { percent: 100, detail: job.detail || job.status });
-                window.showAlert('Update failed', job.detail || 'The previous version was restored.');
-            } else {
-                setTimeout(tick, 2000);
-            }
-        };
-        setTimeout(tick, 1500);
-    };
-
-    try {
-        const [data, st] = await Promise.all([
-            apiRequest('/api/system/update'),
-            apiRequest('/api/system/update/status').catch(() => null),
-        ]);
-        render({ ...data, _result: st && st.result ? st.result : null });
-    } catch (err) {
-        statusEl.textContent = `Could not read update status — ${err.detail || err.message}`;
-        statusEl.style.color = '#eab308';
-    }
-
-    if (applyBtn && isAdmin && !applyBtn.dataset.wired) {
-        applyBtn.dataset.wired = '1';
-        applyBtn.addEventListener('click', applyUpdate);
-    }
-
-    if (btn && isAdmin && !btn.dataset.wired) {
-        btn.dataset.wired = '1';
-        btn.addEventListener('click', async () => {
-            const label = btn.innerHTML;
-            btn.disabled = true;
-            btn.textContent = 'Checking…';
-            try {
-                render(await apiRequest('/api/system/update/check', { method: 'POST' }));
-            } catch (err) {
-                statusEl.textContent = `Check failed — ${err.detail || err.message}`;
-                statusEl.style.color = '#eab308';
-            } finally {
-                btn.disabled = false;
-                btn.innerHTML = label;
-            }
-        });
-    }
-}
-
-/** Live APK versions from the update endpoint (same data the apps poll for self-updates). */
-async function loadAppVersions() {
-    await Promise.all(APK_APPS.map(async ([app, elId, linkId]) => {
-        const el = document.getElementById(elId);
-        const link = document.getElementById(linkId);
-        if (!el) return;
-        try {
-            const resp = await apiFetch(`/api/app/version?app=${app}`);
-            if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            const v = await resp.json();
-            el.textContent = `(v${v.version_name} · code ${v.version_code})`;
-            el.style.color = 'var(--text-2)';
-            if (link) {
-                link.href = _withToken(v.url || `/api/app/download?app=${app}`);
-                link.setAttribute('aria-disabled', 'false');
-            }
-        } catch (_) {
-            el.textContent = '(no update info — rebuild the APK)';
-            el.style.color = '#eab308';
-            if (link) link.setAttribute('aria-disabled', 'true');
-        }
-    }));
-}
-
-// ── Caches / retention card (System tab) ────────────────────────────────────
-
-// Friendly names for the areas `services/retention_service.py` manages.
 const CACHE_LABELS = {
     temp_chunks: 'Abandoned uploads',
     transcodes: 'Playback transcodes',
@@ -374,199 +47,643 @@ const CACHE_LABELS = {
     video_thumbs: 'Video thumbnails',
 };
 
-async function loadCachesCard() {
-    const card = document.getElementById('cachesCard');
-    if (!card) return;
+let shell = null;
+let navToken = 0;
+
+// ════════════════════════════════════════════════════════════════════════════
+// Shell + section routing
+// ════════════════════════════════════════════════════════════════════════════
+
+export async function renderSettingsPage(body) {
+    shell?.destroy();
+    shell = mountShell(body, {
+        idPrefix: 'settings',
+        title: 'Settings',
+        subtitle: SECTIONS[0].subtitle,
+        icon: '🔧',
+        sections: SECTIONS,
+        note: 'EthOS core configuration. Changes apply immediately.',
+    });
+    shell.setPill('starting', 'Loading…');
+    shell.onSection((id) => { renderSection(id); });
+    const remembered = _rememberedSection();
+    shell.setActive(SECTIONS.some((section) => section.id === remembered) ? remembered : 'overview');
+}
+
+async function renderSection(id) {
+    const section = SECTIONS.find((item) => item.id === id);
+    if (!shell || !section) return;
+    _rememberSection(id);
+
+    const token = ++navToken;
+    const isCurrent = () => token === navToken && shell && shell.root.isConnected;
+
+    shell.view.innerHTML = skeletonRows(5);
+    shell.setStatus('Loading…');
+    shell.setPill('starting', 'Loading…');
+
     try {
-        const resp = await apiFetch('/api/system/storage-usage');
-        if (!resp.ok) throw new Error(await readErrorDetail(resp));
-        const usage = await resp.json();
-        const rows = Object.entries(usage.areas || {})
-            .sort((a, b) => (b[1].bytes || 0) - (a[1].bytes || 0))
-            .map(([name, area]) => `
-                <div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;">
-                    <span style="color: var(--text-2);">${escapeHtml(CACHE_LABELS[name] || name)}</span>
-                    <span style="color:white;font-family:monospace;">${formatBytes(area.bytes || 0)}
-                        <span style="color: var(--text-3);">· ${area.files || 0} file(s)</span></span>
-                </div>`).join('');
-
-        card.innerHTML = `
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-                <div>
-                    <div style="font-size:13px;color:white;font-weight:600;">${uiIcon('disk', 14)} Caches &amp; recycle bin</div>
-                    <div style="font-size:11px;color: var(--text-3);">
-                        ${formatBytes(usage.total_bytes || 0)} in ${usage.total_files || 0} file(s) — swept automatically
-                    </div>
-                </div>
-                <button class="btn-ghost btn-sm" id="cachesCleanNow" style="white-space:nowrap;">
-                    ${uiIcon('trash', 13)} Clean now
-                </button>
-            </div>
-            ${rows || '<div style="font-size:12px;color: var(--text-3);">Nothing cached.</div>'}`;
-
-        document.getElementById('cachesCleanNow')?.addEventListener('click', async (ev) => {
-            const btn = ev.currentTarget;
-            btn.disabled = true;
-            try {
-                const res = await apiFetch('/api/system/retention/sweep', { method: 'POST' });
-                if (!res.ok) throw new Error(await readErrorDetail(res));
-                const summary = await res.json();
-                addNotification(`Freed ${formatBytes(summary.freed_bytes || 0)} ` +
-                                `(${summary.removed_files || 0} item(s))`, 'success');
-                loadCachesCard();
-            } catch (err) {
-                addNotification(err.message || 'Cleanup failed', 'error');
-                btn.disabled = false;
-            }
-        });
+        await RENDERERS[id](isCurrent);
+        if (!isCurrent()) return;
+        shell.setPill('ready', 'Ready');
     } catch (err) {
-        card.innerHTML = `<div style="font-size:12px;color:#ef4444;">
-            ${uiIcon('alert', 13)} Cannot read cache usage: ${escapeHtml(err.message || 'error')}</div>`;
+        if (!isCurrent()) return;
+        const detail = err?.detail || err?.message || 'Unknown error';
+        shell.view.innerHTML = errorState({ detail });
+        shell.setStatus('Could not load this section', 'error');
+        shell.setPill('offline', 'Error');
+        logError(`Settings: could not load ${id}`, detail);
     }
 }
 
-// ── Health Monitor card (System tab) ────────────────────────────────────────
-
-function _relTime(iso) {
-    if (!iso) return 'never';
-    const then = new Date(iso).getTime();
-    if (Number.isNaN(then)) return iso;
-    const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
-    if (s < 5) return 'just now';
-    if (s < 60) return `${s}s ago`;
-    const m = Math.floor(s / 60);
-    if (m < 60) return `${m} min ago`;
-    const h = Math.floor(m / 60);
-    if (h < 24) return `${h} h ${m % 60} min ago`;
-    return `${Math.floor(h / 24)} d ago`;
+function _rememberSection(id) {
+    try { sessionStorage.setItem(SECTION_KEY, id); } catch (err) {
+        logError('Settings: could not persist the active section', err?.message || String(err));
+    }
 }
 
-async function loadHealthCard() {
-    const card = document.getElementById('healthMonitorCard');
-    if (!card) return;
-    try {
-        const resp = await apiFetch('/api/health/status');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const h = await resp.json();
-        const mon = h.monitor || {};
-        const failed = h.failed_units || [];
-        const hotDisks = (h.disks || []).filter(d => d.percent >= (mon.disk_recover_percent ?? 85));
+function _rememberedSection() {
+    try { return sessionStorage.getItem(SECTION_KEY); } catch (err) {
+        logError('Settings: could not read the active section', err?.message || String(err));
+        return null;
+    }
+}
 
-        let rows = '';
-        for (const u of failed) {
-            rows += `<div style="font-size:12px;color:#ef4444;font-family:monospace;display:flex;align-items:center;gap:5px;">${uiIcon('close', 12)} ${escapeHtml(u.name)} — ${escapeHtml(u.description || 'failed')}</div>`;
-        }
-        for (const d of hotDisks) {
-            const color = d.percent >= (mon.disk_warn_percent ?? 90) ? '#ef4444' : '#eab308';
-            rows += `<div style="font-size:12px;color:${color};font-family:monospace;display:flex;align-items:center;gap:5px;">${uiIcon('disk', 12)} ${escapeHtml(d.mount)} — ${Math.round(d.percent)}% used (${formatBytes(d.free)} free)</div>`;
-        }
-        if (!rows) {
-            rows += `<div style="font-size:12px;color:#22c55e;display:flex;align-items:center;gap:5px;">${uiIcon('check', 12)} All disks below the warning threshold · no failed services</div>`;
-        }
-        const mem = h.memory;
-        if (mem && mem.total > 0) {
-            const mWarn = mon.memory_warn_percent ?? 90, mRec = mon.memory_recover_percent ?? 85;
-            const color = mem.percent >= mWarn ? '#ef4444' : mem.percent >= mRec ? '#eab308' : 'var(--text-2)';
-            rows += `<div style="font-size:12px;color:${color};font-family:monospace;display:flex;align-items:center;gap:5px;">${uiIcon('memory', 12)} Memory — ${Math.round(mem.percent)}% used (${formatBytes(mem.used)} of ${formatBytes(mem.total)})</div>`;
-        }
-        const temps = h.temps || [];
-        if (temps.length) {
-            const tWarn = mon.temp_warn_celsius ?? 85, tRec = tWarn - 5;
-            const hottest = temps.reduce((a, b) => (b.current > a.current ? b : a));
-            const color = hottest.current >= tWarn ? '#ef4444' : hottest.current >= tRec ? '#eab308' : 'var(--text-2)';
-            rows += `<div style="font-size:12px;color:${color};font-family:monospace;display:flex;align-items:center;gap:5px;">${uiIcon('thermometer', 12)} ${escapeHtml(hottest.label)} — ${hottest.current}°C (hottest of ${temps.length} sensors)</div>`;
-        }
-        const smart = h.smart;
-        if (smart && Array.isArray(smart.results) && smart.results.length) {
-            for (const s of smart.results) {
-                let color, text;
-                if (!s.ok) {
-                    color = 'var(--text-3)';
-                    text = `${uiIcon('disk', 12)} ${escapeHtml(s.device)} — SMART unavailable (${escapeHtml(String(s.error || 'error').slice(0, 60))})`;
-                } else if (s.passed) {
-                    color = '#22c55e';
-                    text = `${uiIcon('disk', 12)} ${escapeHtml(s.device)} — SMART OK${s.model ? ' (' + escapeHtml(String(s.model).slice(0, 40)) + ')' : ''}`;
-                } else {
-                    color = '#ef4444';
-                    text = `${uiIcon('disk', 12)} ${escapeHtml(s.device)} — ${uiIcon('alert', 12)} SMART FAILING`;
-                }
-                rows += `<div style="font-size:12px;color:${color};font-family:monospace;">${text}</div>`;
-            }
-        }
-        const trends = h.smart_trends;
-        if (trends && Array.isArray(trends.devices)) {
-            for (const t of trends.devices) {
-                const attrs = t.attrs || {};
-                const names = Object.keys(attrs);
-                if (!names.length) continue;
-                const shortName = (n) => n === 'Reallocated_Sector_Ct' ? 'Realloc'
-                    : n === 'Current_Pending_Sector' ? 'Pending'
-                    : n === 'Offline_Uncorrectable' ? 'Uncorr'
-                    : n === 'Wear_Leveling_Count' ? 'WearLvl'
-                    : n === 'Percentage_Used' ? '%Used' : n;
-                const bits = names.map((n) => {
-                    const grew = (t.changes || []).includes(n);
-                    return grew
-                        ? `<span style="color:#ef4444;">${shortName(n)} ${attrs[n]} ↑</span>`
-                        : `${shortName(n)} ${attrs[n]}`;
-                });
-                rows += `<div style="font-size:12px;color:var(--text-3);font-family:monospace;display:flex;align-items:center;gap:5px;">${uiIcon('activity', 12)} ${escapeHtml(t.device)} — ${bits.join(' · ')}</div>`;
-            }
-        }
+// ════════════════════════════════════════════════════════════════════════════
+// Overview
+// ════════════════════════════════════════════════════════════════════════════
 
-        const num = (v) => (v == null ? '' : String(v));
-        card.innerHTML = `
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:${rows ? '10px' : '0'};">
-                <div>
-                    <div style="font-size:13px;color:white;font-weight:600;display:flex;align-items:center;gap:6px;">${uiIcon('activity', 14)} Health Monitor</div>
-                    <div style="font-size:11px;color: var(--text-3);margin-top:2px;">Checks every ${mon.interval_seconds ?? '—'} s · disk warn ≥${mon.disk_warn_percent ?? '—'}% (recover &lt;${mon.disk_recover_percent ?? '—'}%) · last check ${_relTime(mon.last_check_at)} · ${mon.checks_run ?? 0} run(s)</div>
-                </div>
-                <button class="btn-ghost" onclick="window._ethosRunHealthCheck()" style="padding:6px 16px;font-size:12px;">▶️ Run check now</button>
+async function renderOverview(isCurrent) {
+    const healthPromise = apiRequest('/api/health/status').catch((err) => {
+        logError('Settings: health status unavailable', err?.detail || err?.message);
+        return null;
+    });
+    const [sys, health] = await Promise.all([apiRequest('/api/system/status'), healthPromise]);
+    if (!isCurrent()) return;
+
+    const cpu = Number(sys?.cpu_percent) || 0;
+    const memory = sys?.memory || {};
+    const disk = sys?.disk || {};
+    const network = sys?.network || {};
+
+    shell.view.innerHTML = `
+        <div class="ui-summary">
+            <div>
+                <span class="ui-summary-label">Hostname</span>
+                <span class="ui-summary-value small">${_v(sys?.hostname)}</span>
             </div>
-            <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:10px;">${rows}</div>
-            <div data-testid="health-config-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:10px;font-size:12px;">
-                <span style="color:var(--text-3);">Settings:</span>
-                <label style="color:var(--text-2);display:flex;align-items:center;gap:4px;">Warn %
-                    <input id="healthCfgWarn" type="number" min="1" max="100" value="${num(mon.disk_warn_percent)}" style="width:64px;padding:3px 6px;font-size:12px;background:var(--surface-1);border:1px solid var(--border);border-radius:4px;color:var(--text-1);"></label>
-                <label style="color:var(--text-2);display:flex;align-items:center;gap:4px;">Recover %
-                    <input id="healthCfgRecover" type="number" min="0" max="100" value="${num(mon.disk_recover_percent)}" style="width:64px;padding:3px 6px;font-size:12px;background:var(--surface-1);border:1px solid var(--border);border-radius:4px;color:var(--text-1);"></label>
-                <label style="color:var(--text-2);display:flex;align-items:center;gap:4px;">Mem warn %
-                    <input id="healthCfgMemWarn" type="number" min="1" max="100" value="${num(mon.memory_warn_percent)}" style="width:64px;padding:3px 6px;font-size:12px;background:var(--surface-1);border:1px solid var(--border);border-radius:4px;color:var(--text-1);"></label>
-                <label style="color:var(--text-2);display:flex;align-items:center;gap:4px;">Mem recover %
-                    <input id="healthCfgMemRecover" type="number" min="0" max="100" value="${num(mon.memory_recover_percent)}" style="width:64px;padding:3px 6px;font-size:12px;background:var(--surface-1);border:1px solid var(--border);border-radius:4px;color:var(--text-1);"></label>
-                <label style="color:var(--text-2);display:flex;align-items:center;gap:4px;">Temp warn °C
-                    <input id="healthCfgTempWarn" type="number" min="40" max="125" value="${num(mon.temp_warn_celsius)}" style="width:64px;padding:3px 6px;font-size:12px;background:var(--surface-1);border:1px solid var(--border);border-radius:4px;color:var(--text-1);"></label>
-                <label style="color:var(--text-2);display:flex;align-items:center;gap:4px;">Cooldown (s)
-                    <input id="healthCfgCooldown" type="number" min="60" max="604800" step="60" value="${num(mon.alert_cooldown_seconds)}" style="width:80px;padding:3px 6px;font-size:12px;background:var(--surface-1);border:1px solid var(--border);border-radius:4px;color:var(--text-1);"></label>
-                <label style="color:var(--text-2);display:flex;align-items:center;gap:4px;">Interval (s)
-                    <input id="healthCfgInterval" type="number" min="30" max="86400" step="30" value="${num(mon.interval_seconds)}" style="width:80px;padding:3px 6px;font-size:12px;background:var(--surface-1);border:1px solid var(--border);border-radius:4px;color:var(--text-1);"></label>
-                <button class="btn-primary btn-sm" data-testid="health-cfg-save" onclick="window._ethosSaveHealthConfig()">${uiIcon('check', 13)} Save</button>
-                <button class="btn-ghost btn-sm" data-testid="health-cfg-reset" onclick="window._ethosResetHealthConfig()">${uiIcon('refresh', 13)} Reset to defaults</button>
-            </div>`;
-    } catch (e) {
-        card.innerHTML = `<div style="font-size:12px;color:#ef4444;">Health monitor unavailable — ${escapeHtml(e.message)}</div>`;
+            <div>
+                <span class="ui-summary-label">Uptime</span>
+                <span class="ui-summary-value small">${escapeHtml(formatUptime(sys?.uptime_seconds || 0))}</span>
+            </div>
+            <div>
+                <span class="ui-summary-label">CPU load</span>
+                <span class="ui-summary-value">${Math.round(cpu)}%</span>
+            </div>
+            <div>
+                <span class="ui-summary-label">Memory</span>
+                <span class="ui-summary-value">${Math.round(Number(memory.percent) || 0)}%</span>
+            </div>
+        </div>
+
+        <div class="ui-grid">
+            <section class="ui-panel">
+                <h2>${uiIcon('chart', 13)} CPU</h2>
+                <div class="ui-panel-body">
+                    ${_bar('cpu', cpu, 'CPU load')}
+                    ${_kv([
+                        ['Cores', String((sys?.cpu_per_core || []).length)],
+                        ['Temperature', sys?.temperature != null ? `${escapeHtml(String(sys.temperature))}°C` : '—'],
+                        ['Platform', 'Linux'],
+                    ])}
+                </div>
+            </section>
+
+            <section class="ui-panel">
+                <h2>${uiIcon('memory', 13)} Memory</h2>
+                <div class="ui-panel-body">
+                    ${_bar('mem', Number(memory.percent) || 0, 'Memory usage')}
+                    ${_kv([
+                        ['Used', escapeHtml(formatBytes(memory.used || 0)), true],
+                        ['Free', escapeHtml(formatBytes(memory.free || 0)), true],
+                        ['Total', escapeHtml(formatBytes(memory.total || 0)), true],
+                    ])}
+                </div>
+            </section>
+
+            <section class="ui-panel">
+                <h2>${uiIcon('disk', 13)} Disk (/)</h2>
+                <div class="ui-panel-body">
+                    ${_bar('disk', Number(disk.percent) || 0, 'Root filesystem usage')}
+                    ${_kv([
+                        ['Used', escapeHtml(formatBytes(disk.used || 0)), true],
+                        ['Free', escapeHtml(formatBytes(disk.free || 0)), true],
+                        ['Total', escapeHtml(formatBytes(disk.total || 0)), true],
+                    ])}
+                </div>
+            </section>
+
+            <section class="ui-panel">
+                <h2>${uiIcon('network', 13)} Network</h2>
+                <div class="ui-panel-body">
+                    ${_kv([
+                        ['Downloaded', escapeHtml(formatBytes(network.bytes_recv || 0)), true],
+                        ['Uploaded', escapeHtml(formatBytes(network.bytes_sent || 0)), true],
+                    ])}
+                </div>
+            </section>
+        </div>
+
+        <section class="ui-panel" data-testid="settings-health-panel">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('activity', 13)} Health monitor</h2>
+                    <p class="ui-muted">${_healthSummary(health)}</p>
+                </div>
+                <button class="ui-btn small" data-action="health-run">${uiIcon('play', 12)} Run check now</button>
+            </div>
+            <div class="ui-panel-body ui-list">${_healthRows(health)}</div>
+        </section>`;
+
+    _setBar('cpu', cpu);
+    _setBar('mem', Number(memory.percent) || 0);
+    _setBar('disk', Number(disk.percent) || 0);
+
+    shell.view.querySelector('[data-action="health-run"]')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            const result = await apiRequest('/api/health/check-now', { method: 'POST' });
+            const count = (result?.emitted || []).length;
+            notify({
+                kind: count ? 'warning' : 'success',
+                title: 'Health check',
+                message: count ? `${count} new alert(s)` : 'All checks passed',
+            });
+            renderSection('overview');
+        } catch (err) {
+            logError('Settings: manual health check failed', err?.detail || err?.message);
+            notify({ kind: 'error', title: 'Health check failed', message: err?.detail || err?.message || 'Unknown error' });
+            button.disabled = false;
+        }
+    });
+
+    shell.setStatus(`Updated ${_clock()}`, 'ok');
+}
+
+function _healthSummary(health) {
+    if (!health) return 'Health monitor is not reporting.';
+    const monitor = health.monitor || {};
+    return `Checks every ${monitor.interval_seconds ?? '—'} s · last check ${_relTime(monitor.last_check_at)} · `
+        + `${monitor.checks_run ?? 0} run(s)`;
+}
+
+function _healthRows(health) {
+    if (!health) {
+        return `<div class="ui-list-row"><span class="ui-tag is-warn">offline</span>`
+            + `<span class="ui-list-row-main">No health data — the monitor did not answer.</span></div>`;
+    }
+    const monitor = health.monitor || {};
+    const rows = [];
+
+    for (const unit of health.failed_units || []) {
+        rows.push(_healthRow('bad', 'unit', `${unit.name} — ${unit.description || 'failed'}`));
+    }
+
+    const hot = (health.disks || []).filter((item) => Number(item.percent) >= (monitor.disk_warn_percent ?? 90));
+    for (const disk of hot) {
+        rows.push(_healthRow('warn', 'disk',
+            `${disk.mount} — ${Math.round(Number(disk.percent) || 0)}% used (${formatBytes(disk.free || 0)} free)`));
+    }
+
+    if (!rows.length) {
+        rows.push(_healthRow('ok', 'all', 'All disks below the warning threshold · no failed services'));
+    }
+
+    const memory = health.memory;
+    if (memory && memory.total > 0) {
+        const warn = monitor.memory_warn_percent ?? 90;
+        const tone = Number(memory.percent) >= warn ? 'bad' : 'ok';
+        rows.push(_healthRow(tone, 'memory',
+            `${Math.round(Number(memory.percent) || 0)}% used (${formatBytes(memory.used || 0)} of ${formatBytes(memory.total || 0)})`));
+    }
+
+    const temps = health.temps || [];
+    if (temps.length) {
+        const hottest = temps.reduce((a, b) => (b.current > a.current ? b : a));
+        const warn = monitor.temp_warn_celsius ?? 85;
+        rows.push(_healthRow(hottest.current >= warn ? 'bad' : 'ok', 'temp',
+            `${hottest.label} — ${hottest.current}°C (hottest of ${temps.length} sensors)`));
+    }
+
+    const smart = health.smart;
+    if (smart && Array.isArray(smart.results)) {
+        for (const entry of smart.results) {
+            if (!entry.ok) rows.push(_healthRow('warn', 'smart', `${entry.device} — SMART unavailable`));
+            else if (entry.passed) rows.push(_healthRow('ok', 'smart', `${entry.device} — SMART OK${entry.model ? ` (${entry.model})` : ''}`));
+            else rows.push(_healthRow('bad', 'smart', `${entry.device} — SMART FAILING`));
+        }
+    }
+
+    return rows.join('');
+}
+
+function _healthRow(tone, kind, text) {
+    return `<div class="ui-list-row"><span class="ui-tag is-${tone}">${escapeHtml(kind)}</span>`
+        + `<span class="ui-list-row-main">${escapeHtml(text)}</span></div>`;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Updates
+// ════════════════════════════════════════════════════════════════════════════
+
+async function renderUpdates(isCurrent) {
+    const isAdmin = _isAdmin();
+    shell.view.innerHTML = `
+        <section class="ui-panel" data-testid="core-update-card">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('download', 13)} EthOS NAS <span class="ui-tag" data-testid="core-version">…</span></h2>
+                    <p class="ui-muted" data-testid="core-update-status">Loading update status…</p>
+                </div>
+                <div class="ui-row">
+                    ${isAdmin
+                        ? `<button class="ui-btn small" data-action="update-check" data-testid="core-update-check">${uiIcon('refresh', 12)} Check for updates</button>
+                           <button class="ui-btn small primary" data-action="update-apply" data-testid="core-update-apply" hidden>${uiIcon('download', 12)} Update now</button>`
+                        : '<span class="ui-tag">Admin required</span>'}
+                </div>
+            </div>
+            <div class="ui-callout info" data-testid="core-update-notes" hidden></div>
+            <p class="ui-muted" data-testid="core-update-result" hidden></p>
+        </section>
+
+        <section class="ui-panel">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('phone', 13)} Android apps</h2>
+                    <p class="ui-muted">APK versions come from the same endpoint the apps poll for self-updates.</p>
+                </div>
+                <span class="ui-tag is-info">APK</span>
+            </div>
+            <div class="ui-panel-body ui-table-wrap">
+                <table class="ui-table">
+                    <thead><tr><th>App</th><th>Version</th><th class="actions">Download</th></tr></thead>
+                    <tbody id="settings-apk-rows"><tr><td colspan="3" class="ui-muted">Loading…</td></tr></tbody>
+                </table>
+            </div>
+        </section>`;
+
+    await Promise.all([_fillCoreUpdate(isCurrent), _fillApkRows(isCurrent)]);
+
+    shell.view.querySelector('[data-action="update-check"]')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            await apiRequest('/api/system/update/check', { method: 'POST' });
+            renderSection('updates');
+        } catch (err) {
+            logError('Settings: update check failed', err?.detail || err?.message);
+            notify({ kind: 'error', title: 'Update check failed', message: err?.detail || err?.message || 'Unknown error' });
+            button.disabled = false;
+        }
+    });
+    shell.view.querySelector('[data-action="update-apply"]')?.addEventListener('click', () => { _applyUpdate(); });
+
+    shell.setStatus('Release status loaded', 'ok');
+}
+
+async function _fillCoreUpdate(isCurrent) {
+    const versionEl = shell.view.querySelector('[data-testid="core-version"]');
+    const statusEl = shell.view.querySelector('[data-testid="core-update-status"]');
+    const notesEl = shell.view.querySelector('[data-testid="core-update-notes"]');
+    const resultEl = shell.view.querySelector('[data-testid="core-update-result"]');
+    const applyBtn = shell.view.querySelector('[data-action="update-apply"]');
+    if (!versionEl || !statusEl) return;
+
+    const status = await apiRequest('/api/system/update/status').catch((err) => {
+        logError('Settings: update status unavailable', err?.detail || err?.message);
+        return null;
+    });
+    const data = await apiRequest('/api/system/update');
+    if (!isCurrent()) return;
+
+    const current = data.current || {};
+    versionEl.textContent = `v${current.version || '?'}${current.git_sha ? ` · ${current.git_sha}` : ''}`;
+
+    const latest = data.latest || null;
+    const checked = data.checked_at_iso ? `last checked ${_fmtDate(data.checked_at_iso)}` : 'never checked';
+    let tone = '';
+    if (data.enabled === false) {
+        statusEl.textContent = 'Update checks are disabled on this server';
+    } else if (data.error) {
+        statusEl.textContent = `Check failed — ${data.error} (${checked})`;
+        tone = 'error';
+    } else if (data.update_available === true && latest) {
+        statusEl.textContent = `Update available: v${latest.version || '?'}${latest.git_sha ? ` · ${latest.git_sha}` : ''} — ${checked}`;
+        tone = 'warn';
+    } else if (data.update_available === false) {
+        statusEl.textContent = `Up to date — ${checked}`;
+    } else {
+        statusEl.textContent = `Not checked yet — ${checked}`;
+    }
+    statusEl.className = `ui-muted${tone ? ` ${tone}` : ''}`;
+
+    notesEl.textContent = (data.update_available === true && latest && latest.notes) ? latest.notes : '';
+    notesEl.hidden = !notesEl.textContent;
+
+    if (applyBtn) {
+        applyBtn.hidden = !(data.enabled !== false && data.update_available === true);
+    }
+
+    const result = status?.result;
+    if (result && result.status) {
+        const when = result.at ? ` (${_fmtDate(result.at)})` : '';
+        const labels = {
+            ok: 'Last update succeeded',
+            up_to_date: 'Already up to date',
+            rolled_back: 'Last update failed — previous version restored',
+            failed: 'Last update failed',
+        };
+        resultEl.textContent = `${labels[result.status] || `Last update: ${result.status}`}`
+            + `${result.version ? ` → ${result.version}` : ''}${when}`
+            + `${result.detail ? ` — ${result.detail}` : ''}`;
+        resultEl.hidden = false;
     }
 }
 
-window._ethosRunHealthCheck = async function () {
-    try {
-        const resp = await apiFetch('/api/health/check-now', { method: 'POST' });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const r = await resp.json();
-        const n = (r.emitted || []).length;
-        if (window.showToast) window.showToast(n ? `Health check: ${n} new alert(s)` : 'Health check: all clear', n ? 'warning' : 'success');
-    } catch (_) {
-        if (window.showToast) window.showToast('Health check failed', 'error');
-    }
-    loadHealthCard(); // refresh last-check / checks-run
-};
+async function _fillApkRows(isCurrent) {
+    const tbody = shell.view.querySelector('#settings-apk-rows');
+    if (!tbody) return;
 
-function _healthCfgBody() {
+    const results = await Promise.all(APK_APPS.map(async (app) => {
+        try {
+            return { app, data: await apiRequest(`/api/app/version?app=${app.id}`) };
+        } catch (err) {
+            logError(`Settings: version for ${app.id} unavailable`, err?.detail || err?.message);
+            return { app, data: null };
+        }
+    }));
+    if (!isCurrent()) return;
+
+    tbody.innerHTML = results.map(({ app, data }) => {
+        const version = data
+            ? `<span class="ui-tag is-ok">v${escapeHtml(data.version_name || '?')} · code ${escapeHtml(String(data.version_code ?? '?'))}</span>`
+            : '<span class="ui-tag is-warn">No build info</span>';
+        const link = data
+            ? `<a class="ui-btn small" data-testid="${escapeAttr(app.linkTestId)}"
+                    href="${escapeAttr(_withToken(data.url || `/api/app/download?app=${app.id}`))}">${uiIcon('download', 11)} Download</a>`
+            : `<span class="ui-btn small" aria-disabled="true" data-testid="${escapeAttr(app.linkTestId)}">${uiIcon('download', 11)} Download</span>`;
+        return `<tr>
+            <td>${uiIcon(app.icon, 13)} ${escapeHtml(app.label)}</td>
+            <td>${version}</td>
+            <td class="actions">${link}</td>
+        </tr>`;
+    }).join('');
+}
+
+async function _applyUpdate() {
+    const latest = (await apiRequest('/api/system/update').catch((err) => {
+        logError('Settings: could not read the target version', err?.detail || err?.message);
+        return {};
+    })).latest || {};
+    const target = `v${latest.version || '?'}${latest.git_sha ? ` · ${latest.git_sha}` : ''}`;
+    const ok = await showConfirm(
+        'Update EthOS NAS',
+        `Install ${target} now?\n\nA data snapshot is taken first, the service restarts and this page reloads. `
+        + 'If the new version does not come up, the previous version is restored automatically.',
+    );
+    if (!ok) return;
+
+    try {
+        await apiRequest('/api/system/update', { method: 'POST' });
+    } catch (err) {
+        logError('Settings: update could not start', err?.detail || err?.message);
+        showAlert('Update failed to start', err?.detail || err?.message || 'Unknown error');
+        return;
+    }
+
+    const task = startTask({
+        appId: 'system',
+        title: 'Updating EthOS NAS',
+        detail: 'starting the helper…',
+        percent: null,
+        testIdPrefix: 'sys-update',
+    });
+    const stepPct = { fetch: 10, apply: 30, deps: 55, restart: 75, verify: 90, done: 100 };
+
+    const tick = async () => {
+        let state;
+        try {
+            state = await apiRequest('/api/system/update/status');
+        } catch (err) {
+            logError('Settings: update status lost during restart', err?.detail || err?.message);
+            task.update({ percent: 95, detail: 'service restarting…' });
+            showRestartOverlay();
+            return;
+        }
+        const job = state.job || {};
+        if (job.status === 'running') {
+            task.update({ percent: stepPct[job.step] ?? 20, detail: `${job.step}${job.detail ? ` — ${job.detail}` : ''}` });
+            setTimeout(tick, 2000);
+            return;
+        }
+        if (job.status === 'ok' || job.status === 'up_to_date') {
+            task.finish('done', { percent: 100, detail: job.detail || job.status });
+            showRestartOverlay();
+        } else if (job.status === 'rolled_back' || job.status === 'failed') {
+            task.finish('failed', { percent: 100, detail: job.detail || job.status });
+            showAlert('Update failed', job.detail || 'The previous version was restored.');
+        } else {
+            setTimeout(tick, 2000);
+        }
+    };
+    setTimeout(tick, 1500);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Maintenance
+// ════════════════════════════════════════════════════════════════════════════
+
+async function renderMaintenance(isCurrent) {
+    const [usage, health] = await Promise.all([
+        apiRequest('/api/system/storage-usage').catch((err) => {
+            logError('Settings: cache usage unavailable', err?.detail || err?.message);
+            return null;
+        }),
+        apiRequest('/api/health/status').catch((err) => {
+            logError('Settings: health thresholds unavailable', err?.detail || err?.message);
+            return null;
+        }),
+    ]);
+    if (!isCurrent()) return;
+
+    const isAdmin = _isAdmin();
+    const monitor = health?.monitor || {};
+    const areas = Object.entries(usage?.areas || {})
+        .sort((a, b) => (Number(b[1]?.bytes) || 0) - (Number(a[1]?.bytes) || 0));
+
+    const cacheRows = areas.length
+        ? areas.map(([name, area]) => `<tr>
+                <td>${escapeHtml(CACHE_LABELS[name] || name)}</td>
+                <td class="num">${escapeHtml(formatBytes(area.bytes || 0))}</td>
+                <td class="num">${Number(area.files) || 0}</td>
+            </tr>`).join('')
+        : `<tr><td colspan="3">${emptyState({ title: 'Nothing cached', hint: 'Caches and the recycle bin are empty.' })}</td></tr>`;
+
+    shell.view.innerHTML = `
+        <section class="ui-panel" data-testid="settings-caches-card">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('disk', 13)} Caches &amp; recycle bin</h2>
+                    <p class="ui-muted">${usage
+                        ? `${escapeHtml(formatBytes(usage.total_bytes || 0))} in ${Number(usage.total_files) || 0} file(s) — swept automatically`
+                        : 'Cache usage is unavailable.'}</p>
+                </div>
+                <div class="ui-row">
+                    ${isAdmin
+                        ? `<button class="ui-btn small" data-action="cache-sweep">${uiIcon('trash', 12)} Clean now</button>`
+                        : '<span class="ui-tag">Admin required</span>'}
+                </div>
+            </div>
+            <div class="ui-panel-body ui-table-wrap">
+                <table class="ui-table">
+                    <thead><tr><th>Area</th><th class="num">Size</th><th class="num">Files</th></tr></thead>
+                    <tbody>${usage ? cacheRows : `<tr><td colspan="3">${emptyState({ title: 'Storage usage unavailable', hint: 'Check the Logs app for the backend error.' })}</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="ui-panel" data-testid="health-config-row">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('activity', 13)} Health thresholds</h2>
+                    <p class="ui-muted">Warnings are raised and cleared at these values. Cooldown suppresses repeats.</p>
+                </div>
+            </div>
+            <div class="ui-panel-body">
+                <div class="ui-fields">
+                    ${_numberField('healthCfgWarn', 'Disk warn %', monitor.disk_warn_percent, 1, 100)}
+                    ${_numberField('healthCfgRecover', 'Disk recover %', monitor.disk_recover_percent, 0, 100)}
+                    ${_numberField('healthCfgMemWarn', 'Memory warn %', monitor.memory_warn_percent, 1, 100)}
+                    ${_numberField('healthCfgMemRecover', 'Memory recover %', monitor.memory_recover_percent, 0, 100)}
+                    ${_numberField('healthCfgTempWarn', 'Temperature warn °C', monitor.temp_warn_celsius, 40, 125)}
+                    ${_numberField('healthCfgCooldown', 'Alert cooldown (s)', monitor.alert_cooldown_seconds, 60, 604800, 60)}
+                    ${_numberField('healthCfgInterval', 'Check interval (s)', monitor.interval_seconds, 30, 86400, 30)}
+                </div>
+                <div class="ui-form-actions">
+                    <button class="ui-btn" data-action="health-reset">${uiIcon('refresh', 12)} Reset to defaults</button>
+                    <button class="ui-btn primary" data-testid="health-cfg-save" data-action="health-save">${uiIcon('check', 12)} Save</button>
+                </div>
+            </div>
+        </section>
+
+        <section class="ui-panel">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('alert', 13)} Danger zone</h2>
+                    <p class="ui-muted">These actions interrupt everyone using the NAS. Settings stay saved.</p>
+                </div>
+                ${isAdmin ? '' : '<span class="ui-tag">Admin required</span>'}
+            </div>
+            <div class="ui-panel-body ui-row">
+                <button class="ui-btn" data-action="restart" ${isAdmin ? '' : 'disabled'}>${uiIcon('refresh', 12)} Restart application</button>
+                <button class="ui-btn danger" data-action="reboot" ${isAdmin ? '' : 'disabled'}>${uiIcon('refresh', 12)} Reboot server</button>
+            </div>
+        </section>`;
+
+    shell.view.querySelector('[data-action="cache-sweep"]')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            const summary = await apiRequest('/api/system/retention/sweep', { method: 'POST' });
+            notify({
+                kind: 'success',
+                title: 'Caches cleaned',
+                message: `Freed ${formatBytes(summary?.freed_bytes || 0)} (${summary?.removed_files || 0} item(s))`,
+            });
+            renderSection('maintenance');
+        } catch (err) {
+            logError('Settings: cache sweep failed', err?.detail || err?.message);
+            notify({ kind: 'error', title: 'Cleanup failed', message: err?.detail || err?.message || 'Unknown error' });
+            button.disabled = false;
+        }
+    });
+
+    shell.view.querySelector('[data-action="health-save"]')?.addEventListener('click', async (event) => {
+        const body = _healthConfigBody();
+        if (!Object.keys(body).length) {
+            notify({ kind: 'info', message: 'Nothing to save' });
+            return;
+        }
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            await apiRequest('/api/health/config', { method: 'PUT', body });
+            notify({ kind: 'success', title: 'Health monitor', message: 'Thresholds saved' });
+            renderSection('maintenance');
+        } catch (err) {
+            logError('Settings: health thresholds save failed', err?.detail || err?.message);
+            notify({ kind: 'error', title: 'Save failed', message: err?.detail || err?.message || 'Unknown error' });
+            button.disabled = false;
+        }
+    });
+
+    shell.view.querySelector('[data-action="health-reset"]')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            await apiRequest('/api/health/config', { method: 'DELETE' });
+            notify({ kind: 'success', title: 'Health monitor', message: 'Reset to defaults' });
+            renderSection('maintenance');
+        } catch (err) {
+            logError('Settings: health thresholds reset failed', err?.detail || err?.message);
+            notify({ kind: 'error', title: 'Reset failed', message: err?.detail || err?.message || 'Unknown error' });
+            button.disabled = false;
+        }
+    });
+
+    shell.view.querySelector('[data-action="restart"]')?.addEventListener('click', async () => {
+        const ok = await showConfirm('Restart EthOS NAS', 'Restart the web server? This page reconnects automatically.');
+        if (!ok) return;
+        try {
+            await apiRequest('/api/system/restart', { method: 'POST' });
+            showRestartOverlay();
+        } catch (err) {
+            logError('Settings: restart failed', err?.detail || err?.message);
+            showAlert('Restart failed', err?.detail || err?.message || 'Could not reach the server');
+        }
+    });
+
+    shell.view.querySelector('[data-action="reboot"]')?.addEventListener('click', async () => {
+        const ok = await showConfirm('Reboot server', 'Reboot the entire server? This disconnects all users.', { danger: true });
+        if (!ok) return;
+        try {
+            await apiRequest('/api/system/shutdown', { method: 'POST', body: { action: 'reboot', confirm: true } });
+            notify({ kind: 'info', title: 'Reboot', message: 'The server is rebooting…' });
+        } catch (err) {
+            logError('Settings: reboot failed', err?.detail || err?.message);
+            showAlert('Reboot failed', err?.detail || err?.message || 'Could not reach the server');
+        }
+    });
+
+    shell.setStatus(`Caches are ${usage ? 'reported' : 'unavailable'} · thresholds ${health ? 'loaded' : 'unavailable'}`,
+        usage && health ? 'ok' : 'warn');
+}
+
+function _numberField(id, label, value, min, max, step = 1) {
+    const text = value == null ? '' : escapeAttr(String(value));
+    return `<div class="ui-field">
+        <label for="${escapeAttr(id)}">${escapeHtml(label)}</label>
+        <input class="ui-input" id="${escapeAttr(id)}" type="number" min="${min}" max="${max}" step="${step}" value="${text}">
+    </div>`;
+}
+
+function _healthConfigBody() {
     const read = (id, field) => {
-        const el = document.getElementById(id);
-        if (!el || el.value === '') return null;
-        const v = Number(el.value);
-        return Number.isFinite(v) ? { [field]: v } : null;
+        const input = document.getElementById(id);
+        if (!input || input.value === '') return null;
+        const value = Number(input.value);
+        return Number.isFinite(value) ? { [field]: value } : null;
     };
     const body = {};
     for (const part of [
@@ -583,293 +700,406 @@ function _healthCfgBody() {
     return body;
 }
 
-window._ethosSaveHealthConfig = async function () {
-    const body = _healthCfgBody();
-    if (!Object.keys(body).length) {
-        if (window.showToast) window.showToast('Nothing to save', 'info');
+// ════════════════════════════════════════════════════════════════════════════
+// Users
+// ════════════════════════════════════════════════════════════════════════════
+
+async function renderUsers(isCurrent) {
+    const data = await apiRequest('/api/users');
+    if (!isCurrent()) return;
+
+    const users = data.users || [];
+    const rows = users.length
+        ? users.map((user) => {
+            const roleTone = user.role === 'admin' ? 'is-warn' : 'is-info';
+            return `<tr>
+                <td>${uiIcon('users', 13)} ${escapeHtml(user.username || '—')}</td>
+                <td><span class="ui-tag ${roleTone}">${escapeHtml(user.role || 'user')}</span></td>
+                <td>${user.created_at ? escapeHtml(new Date(user.created_at).toLocaleDateString()) : '—'}</td>
+                <td>${user.last_login ? escapeHtml(new Date(user.last_login).toLocaleString()) : '—'}</td>
+            </tr>`;
+        }).join('')
+        : `<tr><td colspan="4">${emptyState({ title: 'No users configured', hint: 'Accounts appear after the first PAM login.' })}</td></tr>`;
+
+    shell.view.innerHTML = `
+        <section class="ui-panel">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('users', 13)} Accounts</h2>
+                    <p class="ui-muted">${users.length} user${users.length === 1 ? '' : 's'} registered</p>
+                </div>
+            </div>
+            <div class="ui-panel-body ui-table-wrap">
+                <table class="ui-table">
+                    <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Last login</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="ui-panel">
+            <h2>${uiIcon('info', 13)} How accounts work</h2>
+            <p class="ui-muted ui-panel-body">Users are imported automatically from Linux system accounts through PAM.
+                The first successful login registers the account with the <code class="ui-code">user</code> role;
+                promote it to <code class="ui-code">admin</code> in the users store if it needs privileged actions.</p>
+        </section>`;
+
+    shell.setStatus(`${users.length} account(s)`, 'ok');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Security
+// ════════════════════════════════════════════════════════════════════════════
+
+async function renderSecurity(isCurrent) {
+    const session = _tokenInfo();
+    shell.view.innerHTML = `
+        <div class="ui-grid ui-grid-2">
+            <section class="ui-panel">
+                <h2>${uiIcon('lock', 13)} Session</h2>
+                <div class="ui-panel-body">
+                    ${_kv([
+                        ['Authenticated', `<span class="ui-tag ${session.valid ? 'is-ok' : 'is-bad'}">${session.valid ? 'Yes' : 'No'}</span>`],
+                        ['User', escapeHtml(session.username)],
+                        ['Role', escapeHtml(session.role)],
+                        ['Token expires', escapeHtml(session.expires)],
+                    ])}
+                </div>
+            </section>
+
+            <section class="ui-panel">
+                <h2>${uiIcon('phone', 13)} API key</h2>
+                <div class="ui-panel-body" data-testid="api-key-card">
+                    <p class="ui-muted">Loading…</p>
+                </div>
+            </section>
+        </div>
+
+        <section class="ui-panel">
+            <h2>${uiIcon('alert', 13)} Security notes</h2>
+            <div class="ui-panel-body ui-list">
+                <div class="ui-list-row"><span class="ui-tag is-warn">secret</span><span class="ui-list-row-main">Set <code class="ui-code">ETHOS_JWT_SECRET</code> to a strong random value in production.</span></div>
+                <div class="ui-list-row"><span class="ui-tag is-info">cors</span><span class="ui-list-row-main">Restrict origins with <code class="ui-code">ETHOS_CORS_ORIGINS</code>.</span></div>
+                <div class="ui-list-row"><span class="ui-tag is-info">tls</span><span class="ui-list-row-main">Never expose the NAS to the public internet without TLS.</span></div>
+                <div class="ui-list-row"><span class="ui-tag is-ok">paths</span><span class="ui-list-row-main">File operations are validated by <code class="ui-code">path_scope.sanitize()</code>.</span></div>
+            </div>
+        </section>`;
+
+    await _fillApiKey(isCurrent);
+    shell.setStatus(`Signed in as ${session.username}`, session.valid ? 'ok' : 'warn');
+}
+
+async function _fillApiKey(isCurrent) {
+    const card = shell.view.querySelector('[data-testid="api-key-card"]');
+    if (!card) return;
+
+    let data;
+    try {
+        data = await apiRequest('/api/auth/api-key');
+    } catch (err) {
+        logError('Settings: API key unavailable', err?.detail || err?.message);
+        if (isCurrent()) card.innerHTML = `<p class="ui-muted">Could not load the API key — ${escapeHtml(err?.detail || err?.message || 'unknown error')}</p>`;
         return;
     }
-    try {
-        const resp = await apiFetch('/api/health/config', { method: 'PUT', body: JSON.stringify(body) });
-        const data = resp.ok ? null : await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error((data && data.detail) || ('HTTP ' + resp.status));
-        if (window.showToast) window.showToast('Health monitor settings saved', 'success');
-    } catch (e) {
-        if (window.showToast) window.showToast('Save failed: ' + e.message, 'error');
-    }
-    loadHealthCard(); // refresh effective values
-};
+    if (!isCurrent()) return;
 
-window._ethosResetHealthConfig = async function () {
-    try {
-        const resp = await apiFetch('/api/health/config', { method: 'DELETE' });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        if (window.showToast) window.showToast('Health monitor reset to defaults', 'success');
-    } catch (_) {
-        if (window.showToast) window.showToast('Reset failed', 'error');
-    }
-    loadHealthCard();
-};
+    card.innerHTML = `
+        <p class="ui-muted">Use this key in the EthOS Photos or EthOS Music Android app
+            (Settings → Server → API key). It belongs to your account.</p>
+        <div class="ui-row ui-panel-body">
+            <input class="ui-input mono" readonly aria-label="API key" value="${escapeAttr(data.api_key || '')}">
+        </div>
+        <div class="ui-row ui-panel-body">
+            <button class="ui-btn small" data-action="api-copy">${uiIcon('edit', 12)} Copy</button>
+            <button class="ui-btn small danger" data-action="api-regen">${uiIcon('refresh', 12)} Regenerate</button>
+        </div>`;
 
-// ════════════════════════════════════════════
-// TAB 2: Users
-// ════════════════════════════════════════════
-
-async function loadUsersTab() {
-    const content = document.getElementById('settingsContent');
-    if (!content) return;
-    content.innerHTML = skeletonRows(5);
-
-    try {
-        const resp = await apiFetch('/api/users');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
-        const users = data.users || [];
-
-        let html = `
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-                <h3 class="section-title" style="font-size:16px;">${uiIcon('users', 16)} User Accounts</h3>
-                <span style="font-size:12px;color: var(--text-3);">${users.length} user${users.length !== 1 ? 's' : ''}</span>
-            </div>`;
-
-        if (users.length === 0) {
-            html += '<div class="glass-card" style="text-align:center;padding:24px;color: var(--text-3);">No users configured.</div>';
-        } else {
-            html += `<table class="app-table" style="width:100%;">
-                <thead><tr>
-                    <th style="padding:8px 12px;">Username</th>
-                    <th style="padding:8px 12px;">Role</th>
-                    <th style="padding:8px 12px;">Created</th>
-                    <th style="padding:8px 12px;">Last Login</th>
-                </tr></thead><tbody>`;
-            for (const u of users) {
-                const roleClass = u.role === 'admin' ? 'badge-yellow' : 'badge-blue';
-                html += `<tr>
-                    <td style="font-weight:600;color:white;padding:8px 12px;">
-                        <span style="display:flex;align-items:center;gap:8px;"><span style="display:flex;color:var(--text-3);">${uiIcon('users', 14)}</span> ${escapeHtml(u.username)}</span>
-                    </td>
-                    <td style="padding:8px 12px;"><span class="${roleClass}" style="padding:2px 8px;border-radius:4px;font-size:11px;">${escapeHtml(u.role)}</span></td>
-                    <td style="color: var(--text-2);padding:8px 12px;font-size:12px;">${u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</td>
-                    <td style="color: var(--text-2);padding:8px 12px;font-size:12px;">${u.last_login ? new Date(u.last_login).toLocaleString() : '—'}</td>
-                </tr>`;
-            }
-            html += '</tbody></table>';
-        }
-
-        html += `
-            <div class="glass-card" style="margin-top:16px;padding:16px 20px;">
-                <div style="font-size:13px;color: var(--text-2);margin-bottom:4px;display:flex;align-items:center;gap:6px;">${uiIcon('info', 14)} Users are automatically imported from Linux system users (PAM).</div>
-                <div style="font-size:12px;color: var(--text-3);">New users logging in via PAM are registered automatically with "user" role.</div>
-            </div>`;
-
-        content.innerHTML = html;
-    } catch (e) {
-        content.innerHTML = `<div class="alert alert-error" style="justify-content:center;margin:20px 0;">${uiIcon('alert', 16)}<span>${escapeHtml(e.message)}</span></div>`;
-    }
-}
-
-// ════════════════════════════════════════════
-// TAB 3: Security
-// ════════════════════════════════════════════
-
-async function loadSecurityTab() {
-    const content = document.getElementById('settingsContent');
-    if (!content) return;
-    content.innerHTML = skeletonRows(5);
-
-    const token = localStorage.getItem('token') || '';
-    let tokenInfo = { valid: false, username: '—', role: '—', expires: '—' };
-    if (token) {
+    const input = card.querySelector('input');
+    card.querySelector('[data-action="api-copy"]')?.addEventListener('click', async () => {
         try {
-            const parts = token.split('.');
-            const payload = JSON.parse(atob(parts[1]));
-            tokenInfo = {
-                valid: true,
-                username: payload.username || '—',
-                role: payload.role || '—',
-                expires: new Date(payload.exp * 1000).toLocaleString(),
-            };
-        } catch (e) {}
-    }
+            await navigator.clipboard.writeText(input?.value || '');
+            notify({ kind: 'success', message: 'API key copied to the clipboard' });
+        } catch (err) {
+            logError('Settings: clipboard copy failed', err?.message || String(err));
+            showAlert('Could not copy', 'Select the key and copy it manually.');
+        }
+    });
 
-    content.innerHTML = `
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;">
-            <div class="glass-card" style="padding:20px;">
-                <div class="section-label">${uiIcon('lock', 12)} Session</div>
-                <div style="display:flex;flex-direction:column;gap:10px;">
-                    <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">Authenticated</span>
-                        <span class="${tokenInfo.valid ? 'badge-green' : 'badge-red'}" style="padding:2px 8px;border-radius:4px;font-size:11px;">${tokenInfo.valid ? 'Yes' : 'No'}</span>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">User</span><span style="color:white;font-weight:600;">${escapeHtml(tokenInfo.username)}</span></div>
-                    <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">Role</span><span style="color:white;">${escapeHtml(tokenInfo.role)}</span></div>
-                    <div style="display:flex;justify-content:space-between;"><span style="color: var(--text-2);">Token Expires</span><span style="color: var(--text-2);font-size:12px;">${escapeHtml(tokenInfo.expires)}</span></div>
-                </div>
-            </div>
-
-            <div class="glass-card" style="padding:20px;">
-                <div class="section-label">${uiIcon('phone', 12)} API Key (EthOS Photos app)</div>
-                <div id="apiKeyCard" style="color: var(--text-3);font-size:12px;">Loading…</div>
-            </div>
-        </div>
-
-        <div class="glass-card" style="margin-top:16px;padding:16px 20px;">
-            <div style="font-size:13px;color:#eab308;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px;">${uiIcon('alert', 14)} Security Notes</div>
-            <ul style="margin:0;padding-left:20px;color: var(--text-2);font-size:12px;line-height:1.8;">
-                <li>Set <code style="background:var(--surface-2);padding:1px 6px;border-radius:3px;">ETHOS_JWT_SECRET</code> to a strong random value in production</li>
-                <li>Restrict CORS origins via <code style="background:var(--surface-2);padding:1px 6px;border-radius:3px;">ETHOS_CORS_ORIGINS</code> environment variable</li>
-                <li>This app should never be exposed to the public internet without TLS</li>
-                <li>All file operations are validated through the <code style="background:var(--surface-2);padding:1px 6px;border-radius:3px;">sanitize_path()</code> function</li>
-            </ul>
-        </div>`;
-
-    loadApiKeyCard();
+    card.querySelector('[data-action="api-regen"]')?.addEventListener('click', async () => {
+        const ok = await showConfirm('Regenerate API key',
+            'The current key stops working immediately. Update the Android app afterwards.', { danger: true });
+        if (!ok) return;
+        try {
+            await apiRequest('/api/auth/api-key/regenerate', { method: 'POST' });
+            notify({ kind: 'success', title: 'API key', message: 'A new key was generated' });
+            renderSection('security');
+        } catch (err) {
+            logError('Settings: API key regeneration failed', err?.detail || err?.message);
+            showAlert('Regenerate failed', err?.detail || err?.message || 'Unknown error');
+        }
+    });
 }
 
-// ── API key card (per-user key for the EthOS Photos Android app) ────────────
-
-async function loadApiKeyCard() {
-    const el = document.getElementById('apiKeyCard');
-    if (!el) return;
+function _tokenInfo() {
+    const token = localStorage.getItem('token') || '';
+    const fallback = { valid: false, username: '—', role: '—', expires: '—' };
+    if (!token) return fallback;
     try {
-        const resp = await apiFetch('/api/auth/api-key');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
-        el.innerHTML = `
-            <div style="font-size:12px;color: var(--text-2);margin-bottom:8px;">Use this key to log in from the EthOS Photos or EthOS Music Android app (Settings → Server → API key). It is generated automatically for your account.</div>
-            <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
-                <code id="apiKeyValue" style="flex:1;background:var(--surface-2);padding:8px 10px;border-radius:6px;font-size:12px;color:var(--text-1);word-break:break-all;">${escapeHtml(data.api_key || '')}</code>
-            </div>
-            <div style="display:flex;gap:8px;">
-                <button class="btn-ghost btn-sm" onclick="_ethosCopyApiKey()">${uiIcon('edit', 13)} Copy</button>
-                <button class="btn-ghost btn-sm" onclick="_ethosRegenApiKey()" style="color:#eab308;">${uiIcon('refresh', 13)} Regenerate</button>
-            </div>`;
-    } catch (e) {
-        el.innerHTML = `<span class="alert alert-error" style="display:inline-flex;">${uiIcon('alert', 14)}<span>${escapeHtml(e.message)}</span></span>`;
-    }
-}
-
-window._ethosCopyApiKey = async function () {
-    const el = document.getElementById('apiKeyValue');
-    if (!el) return;
-    try {
-        await navigator.clipboard.writeText(el.textContent);
-        window.showAlert && window.showAlert('API key copied to clipboard');
-    } catch (_) {
-        window.showAlert && window.showAlert('Could not copy — select the text manually');
-    }
-};
-
-window._ethosRegenApiKey = async function () {
-    const ok = await window.showModalConfirm('Regenerate API key', 'The current key will stop working immediately.\n\nContinue?');
-    if (!ok) return;
-    try {
-        const resp = await apiFetch('/api/auth/api-key/regenerate', { method: 'POST' });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        await loadApiKeyCard();
-        window.showAlert && window.showAlert('New API key generated — update it in the app');
-    } catch (e) {
-        window.showAlert && window.showAlert('Regenerate failed: ' + e.message);
-    }
-};
-
-// ── Appearance tab (per-user desktop wallpaper) ─────────────────────────────
-
-async function loadAppearanceTab() {
-    const content = document.getElementById('settingsContent');
-    if (!content) return;
-    content.innerHTML = skeletonRows(4);
-
-    let current = DEFAULT_WALLPAPER, hasCustom = false;
-    try {
-        const res = await apiFetch('/api/appearance/wallpaper');
-        if (res.ok) {
-            const data = await res.json();
-            current = data.wallpaper || DEFAULT_WALLPAPER;
-            hasCustom = !!data.has_custom;
-        } else if (res.status !== 404) throw new Error('HTTP ' + res.status);
-    } catch (_) { /* keep local defaults below */ }
-    _renderAppearanceTab(current, hasCustom);
-}
-
-function _renderAppearanceTab(current, hasCustom) {
-    const content = document.getElementById('settingsContent');
-    if (!content) return;
-
-    const tiles = WALLPAPER_IDS.map(id => `
-        <div class="wp-tile" data-wp="${id}" role="button" tabindex="0"
-             style="position:relative;height:84px;border-radius:10px;overflow:hidden;cursor:pointer;border:2px solid ${current === id ? 'var(--accent)' : 'transparent'};transition:border-color .15s;">
-            <div class="wallpaper-${id}" style="position:absolute;inset:0;"></div>
-            <div style="position:absolute;left:8px;bottom:6px;font-size:11px;font-weight:600;color:white;text-shadow:0 1px 3px rgba(0,0,0,.55);">${id[0].toUpperCase() + id.slice(1)}${current === id ? ' ✓' : ''}</div>
-        </div>`).join('');
-
-    const customPreviewStyle = hasCustom
-        ? `background-image:url('${customImageUrl()}');background-size:cover;background-position:center;`
-        : 'background:var(--surface-2);';
-
-    content.innerHTML = `
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-            <h3 class="section-title" style="font-size:16px;">${uiIcon('palette', 16)} Desktop Wallpaper</h3>
-            <span style="font-size:12px;color: var(--text-3);">Saved per user — each account keeps its own background</span>
-        </div>
-
-        <div class="glass-card" style="padding:16px 20px;">
-            <div style="font-size:11px;color: var(--text-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;">Built-in wallpapers</div>
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;">${tiles}</div>
-        </div>
-
-        <div class="glass-card" style="margin-top:16px;padding:16px 20px;">
-            <div style="font-size:11px;color: var(--text-3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;">Custom image</div>
-            <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
-                <div data-testid="wp-custom-preview" style="position:relative;width:180px;height:96px;border-radius:10px;overflow:hidden;border:2px solid ${current === CUSTOM_ID ? 'var(--accent)' : 'transparent'};${customPreviewStyle}">
-                    ${!hasCustom ? '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;color: var(--text-3);">No image uploaded</div>' : ''}
-                </div>
-                <div style="display:flex;flex-direction:column;gap:8px;">
-                    <input type="file" id="wpUploadInput" accept="image/jpeg,image/png,image/webp" style="display:none;">
-                    <button class="btn-ghost btn-sm" onclick="document.getElementById('wpUploadInput').click()">${uiIcon('plus', 13)} Upload image…</button>
-                    ${hasCustom ? '<button class="btn-danger btn-sm" data-testid="wp-remove-custom">' + uiIcon('trash', 13) + ' Remove custom image</button>' : ''}
-                    <div style="font-size:11px;color: var(--text-3);">JPEG, PNG or WebP · up to 8 MB</div>
-                </div>
-            </div>
-        </div>`;
-
-    content.querySelectorAll('.wp-tile').forEach(tile => {
-        const pick = () => {
-            saveWallpaper(tile.dataset.wp);
-            _renderAppearanceTab(tile.dataset.wp, hasCustom);
-            if (window.showToast) window.showToast('Wallpaper updated', 'success');
+        const payload = JSON.parse(atob(token.split('.')[1] || ''));
+        return {
+            valid: true,
+            username: payload.username || '—',
+            role: payload.role || 'user',
+            expires: payload.exp ? new Date(payload.exp * 1000).toLocaleString() : '—',
         };
-        tile.addEventListener('click', pick);
-        tile.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
+    } catch (err) {
+        logError('Settings: could not decode the session token', err?.message || String(err));
+        return fallback;
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Appearance
+// ════════════════════════════════════════════════════════════════════════════
+
+async function renderAppearance(isCurrent) {
+    let current = DEFAULT_WALLPAPER;
+    let hasCustom = false;
+    try {
+        const data = await apiRequest('/api/appearance/wallpaper');
+        current = data?.wallpaper || DEFAULT_WALLPAPER;
+        hasCustom = Boolean(data?.has_custom);
+    } catch (err) {
+        // 404 means "never saved" for older installs — keep the local default.
+        if (err?.status !== 404) logError('Settings: wallpaper preference unavailable', err?.detail || err?.message);
+    }
+    if (!isCurrent()) return;
+
+    const tiles = WALLPAPER_IDS.map((id) => `
+        <button type="button" class="ui-wp-tile${current === id ? ' is-active' : ''}" data-wp="${escapeAttr(id)}"
+                aria-pressed="${current === id ? 'true' : 'false'}">
+            <span class="ui-wp-art wallpaper-${escapeAttr(id)}"></span>
+            <span class="ui-wp-label">${escapeHtml(id[0].toUpperCase() + id.slice(1))}</span>
+        </button>`).join('');
+
+    shell.view.innerHTML = `
+        <div class="ui-grid ui-grid-2">
+            <section class="ui-panel">
+                <h2>${uiIcon('palette', 13)} Built-in wallpapers</h2>
+                <p class="ui-muted">Saved per user — each account keeps its own background.</p>
+                <div class="ui-panel-body ui-wp-grid">${tiles}</div>
+            </section>
+
+            <section class="ui-panel">
+                <h2>${uiIcon('plus', 13)} Custom image</h2>
+                <p class="ui-muted">JPEG, PNG or WebP · up to 8 MB.</p>
+                <div class="ui-panel-body ui-row">
+                    <div class="ui-wp-preview${current === CUSTOM_ID ? ' is-active' : ''}" data-testid="wp-custom-preview" data-wp-preview>
+                        ${hasCustom ? '' : '<span class="ui-wp-preview-note">No image uploaded</span>'}
+                    </div>
+                    <div class="ui-list">
+                        <input type="file" id="wpUploadInput" accept="image/jpeg,image/png,image/webp" hidden>
+                        <button class="ui-btn small" data-action="wp-upload">${uiIcon('plus', 12)} Upload image…</button>
+                        ${hasCustom ? `<button class="ui-btn small danger" data-testid="wp-remove-custom" data-action="wp-remove">${uiIcon('trash', 12)} Remove custom image</button>` : ''}
+                    </div>
+                </div>
+            </section>
+        </div>`;
+
+    if (hasCustom) {
+        const preview = shell.view.querySelector('[data-wp-preview]');
+        if (preview) preview.style.backgroundImage = `url(${JSON.stringify(customImageUrl())})`;
+    }
+
+    shell.view.querySelectorAll('.ui-wp-tile').forEach((tile) => {
+        tile.addEventListener('click', () => {
+            saveWallpaper(tile.dataset.wp);
+            notify({ kind: 'success', message: 'Wallpaper updated' });
+            renderSection('appearance');
+        });
+    });
+
+    shell.view.querySelector('[data-action="wp-upload"]')?.addEventListener('click', () => {
+        document.getElementById('wpUploadInput')?.click();
     });
 
     const fileInput = document.getElementById('wpUploadInput');
-    if (fileInput) {
-        fileInput.addEventListener('change', async () => {
-            const file = fileInput.files && fileInput.files[0];
-            if (!file) return;
-            try {
-                await uploadCustomWallpaper(file);
-                _renderAppearanceTab(CUSTOM_ID, true);
-                if (window.showToast) window.showToast('Custom wallpaper uploaded', 'success');
-            } catch (e) {
-                if (window.showToast) window.showToast('Upload failed: ' + e.message, 'error');
-            }
-        });
-    }
+    fileInput?.addEventListener('change', async () => {
+        const file = fileInput.files?.[0];
+        if (!file) return;
+        try {
+            await uploadCustomWallpaper(file);
+            notify({ kind: 'success', message: 'Custom wallpaper uploaded' });
+            renderSection('appearance');
+        } catch (err) {
+            logError('Settings: wallpaper upload failed', err?.detail || err?.message);
+            notify({ kind: 'error', title: 'Upload failed', message: err?.detail || err?.message || 'Unknown error' });
+        }
+    });
 
-    const removeBtn = document.querySelector('[data-testid="wp-remove-custom"]');
-    if (removeBtn) {
-        removeBtn.addEventListener('click', async () => {
-            const ok = await window.showModalConfirm('Remove custom image', 'Your uploaded wallpaper will be deleted and the default background restored.\n\nContinue?');
-            if (!ok) return;
-            try {
-                await resetWallpaper();
-                _renderAppearanceTab(DEFAULT_WALLPAPER, false);
-                if (window.showToast) window.showToast('Custom image removed', 'success');
-            } catch (e) {
-                if (window.showToast) window.showToast('Remove failed: ' + e.message, 'error');
-            }
-        });
+    shell.view.querySelector('[data-action="wp-remove"]')?.addEventListener('click', async () => {
+        const ok = await showConfirm('Remove custom image',
+            'Your uploaded wallpaper is deleted and the default background restored.', { danger: true });
+        if (!ok) return;
+        try {
+            await resetWallpaper();
+            notify({ kind: 'success', message: 'Custom image removed' });
+            renderSection('appearance');
+        } catch (err) {
+            logError('Settings: wallpaper reset failed', err?.detail || err?.message);
+            notify({ kind: 'error', title: 'Remove failed', message: err?.detail || err?.message || 'Unknown error' });
+        }
+    });
+
+    shell.setStatus(hasCustom ? 'Custom wallpaper active' : 'Built-in wallpaper active', 'ok');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// About
+// ════════════════════════════════════════════════════════════════════════════
+
+async function renderAbout(isCurrent) {
+    const [version, doctor] = await Promise.all([
+        apiRequest('/api/system/version').catch((err) => {
+            logError('Settings: build identity unavailable', err?.detail || err?.message);
+            return null;
+        }),
+        apiRequest('/api/system/doctor').catch((err) => {
+            logError('Settings: doctor self-check unavailable', err?.detail || err?.message);
+            return null;
+        }),
+    ]);
+    if (!isCurrent()) return;
+
+    const checks = doctor?.checks || [];
+    const checkRows = checks.length
+        ? checks.map((item) => `<tr>
+                <td class="path">${escapeHtml(item.name)}</td>
+                <td><span class="ui-tag ${item.ok ? 'is-ok' : (item.required ? 'is-bad' : 'is-warn')}">${item.ok ? 'ok' : (item.required ? 'fail' : 'optional')}</span></td>
+                <td>${escapeHtml(item.detail || '—')}</td>
+                <td class="ui-muted">${escapeHtml(item.hint || '')}</td>
+            </tr>`).join('')
+        : `<tr><td colspan="4">${emptyState({ title: 'Self-check unavailable', hint: 'The doctor endpoint did not answer.' })}</td></tr>`;
+
+    shell.view.innerHTML = `
+        <div class="ui-summary">
+            <div><span class="ui-summary-label">Core version</span><span class="ui-summary-value small">${escapeHtml(version?.version || '—')}</span></div>
+            <div><span class="ui-summary-label">Git</span><span class="ui-summary-value small">${escapeHtml(version?.git_sha || '—')}</span></div>
+            <div><span class="ui-summary-label">Frontend hash</span><span class="ui-summary-value small">${escapeHtml(version?.frontend_hash || '—')}</span></div>
+            <div><span class="ui-summary-label">Self-check</span><span class="ui-summary-value small">${doctor ? (doctor.ok ? 'Healthy' : 'Attention') : 'Unavailable'}</span></div>
+        </div>
+
+        <section class="ui-panel">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('shield', 13)} Environment self-check</h2>
+                    <p class="ui-muted">Read-only probes: data directory, secrets, tools and permissions.</p>
+                </div>
+                <div class="ui-row">
+                    <button class="ui-btn small" data-action="open-logs">${uiIcon('info', 12)} Open Logs</button>
+                    <button class="ui-btn small" data-action="goto-updates">${uiIcon('download', 12)} Updates</button>
+                </div>
+            </div>
+            <div class="ui-panel-body ui-table-wrap">
+                <table class="ui-table">
+                    <thead><tr><th>Check</th><th>Status</th><th>Detail</th><th>Hint</th></tr></thead>
+                    <tbody>${checkRows}</tbody>
+                </table>
+            </div>
+        </section>`;
+
+    shell.view.querySelector('[data-action="open-logs"]')?.addEventListener('click', () => openLogs({}));
+    shell.view.querySelector('[data-action="goto-updates"]')?.addEventListener('click', () => shell.setActive('updates'));
+
+    shell.setStatus(version ? `EthOS ${version.version || ''} · built ${_fmtDate(version.backend_built_at)}` : 'Build identity unavailable',
+        version ? 'ok' : 'warn');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Shared helpers
+// ════════════════════════════════════════════════════════════════════════════
+
+const RENDERERS = {
+    overview: renderOverview,
+    updates: renderUpdates,
+    maintenance: renderMaintenance,
+    users: renderUsers,
+    security: renderSecurity,
+    appearance: renderAppearance,
+    about: renderAbout,
+};
+
+function _v(value) {
+    return value == null || value === '' ? '—' : escapeHtml(String(value));
+}
+
+function _kv(rows) {
+    return `<dl class="ui-kv">${rows.map(([key, value, mono]) => `<div>
+            <dt class="ui-kv-key">${escapeHtml(key)}</dt>
+            <dd class="ui-kv-value${mono ? ' mono' : ''}">${value}</dd>
+        </div>`).join('')}</dl>`;
+}
+
+function _bar(name, percent, label) {
+    const value = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+    return `<div class="ui-bar" title="${escapeAttr(label)}">
+            <div class="ui-bar-fill ${_tone(value)}" data-bar="${escapeAttr(name)}"></div>
+        </div>`;
+}
+
+function _setBar(name, percent) {
+    const el = shell?.view?.querySelector(`[data-bar="${name}"]`);
+    if (!el) return;
+    el.style.width = `${Math.max(0, Math.min(100, Number(percent) || 0))}%`;
+}
+
+function _tone(percent) {
+    const value = Number(percent) || 0;
+    return value > 80 ? 'bad' : value > 50 ? 'warn' : 'ok';
+}
+
+function _relTime(iso) {
+    if (!iso) return 'never';
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return String(iso);
+    const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+    if (seconds < 5) return 'just now';
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} h ${minutes % 60} min ago`;
+    return `${Math.floor(hours / 24)} d ago`;
+}
+
+function _clock() {
+    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/** ISO string or epoch seconds → local date-time; never "Invalid Date". */
+function _fmtDate(value) {
+    if (!value) return '—';
+    const date = typeof value === 'number' ? new Date(value * 1000) : new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+function _jwtRole() {
+    try {
+        const parts = (localStorage.getItem('token') || '').split('.');
+        if (parts.length < 2) return 'user';
+        return JSON.parse(atob(parts[1])).role || 'user';
+    } catch (err) {
+        logError('Settings: could not read the role from the token', err?.message || String(err));
+        return 'user';
     }
 }
 
+function _isAdmin() {
+    return _jwtRole() === 'admin';
+}
+
+function _withToken(url) {
+    const token = encodeURIComponent(localStorage.getItem('token') || '');
+    return `${url}${url.includes('?') ? '&' : '?'}token=${token}`;
+}

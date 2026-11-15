@@ -1,238 +1,203 @@
-// EthOS NAS — Systemd Service Manager App
-// Lists systemd services with start/stop/restart/enable/disable actions
-// Plus a dedicated EthOS NAS service management card at the top.
-
+// EthOS NAS — System Services (single-pane shell)
+// Dedicated EthOS NAS service panel + the full systemd unit table.
 import { escapeAttr, escapeHtml } from '../core/utils.js';
-import { apiFetch, apiJsonFetch } from '../core/api.js';
-import { skeletonRows, emptyState, errorState, wireStateActions } from '../core/states.js';
+import { apiRequest } from '../core/api.js';
+import { skeletonRows, emptyState, errorState } from '../core/states.js';
+import { showConfirm } from '../core/modal.js';
+import { notify } from '../core/notification-center.js';
+import { uiIcon } from '../core/icons.js';
+import { logError } from '../core/logger.js';
+import { mountShell } from '../core/ui-shell.js';
+
+let shell = null;
 
 export async function renderSystemdPage(body) {
     if (!body) return;
-
-    body.innerHTML = `
-        <div style="padding:16px;height:100%;display:flex;flex-direction:column;background:var(--bg, #0f172a);font-family:system-ui,sans-serif;color: var(--text-1);">
-            <!-- ═══ EthOS NAS Service Card ═══ -->
-            <div id="ethosServiceCard" data-testid="ethos-service-card" style="margin-bottom:16px;padding:16px;background:rgba(30,41,59,0.8);border:1px solid var(--border);border-radius:12px;">
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-                    <h3 style="margin:0;font-size:16px;font-weight:700;color: var(--text-1);display:flex;align-items:center;gap:8px;">
-                        🖥️ EthOS NAS Service
-                    </h3>
-                    <button class="btn-ghost" data-testid="ethos-refresh-btn" onclick="window._ethosRefresh()" style="padding:6px 14px;font-size:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color: var(--text-2);cursor:pointer;display:flex;align-items:center;gap:6px;">
-                        🔄 Refresh
-                    </button>
+    shell?.destroy();
+    shell = mountShell(body, {
+        idPrefix: 'systemd',
+        title: 'System Services',
+        subtitle: 'The EthOS NAS service and every systemd unit.',
+        icon: '⚙️',
+        sections: [{ id: 'systemd', label: 'Services' }],
+        rail: false,
+        note: 'Stopping the EthOS service ends the web UI.',
+    });
+    shell.view.innerHTML = `
+        <section class="ui-panel" data-testid="ethos-service-card">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>EthOS NAS Service</h2>
+                    <p class="ui-muted">State, port and boot behaviour.</p>
                 </div>
-                <div id="ethosStatusContent" data-testid="ethos-status-content">
-                    <div style="display:flex;align-items:center;justify-content:center;height:60px;color: var(--text-3);">
-                        ${skeletonRows(8)}
-                    </div>
-                </div>
+                <button class="ui-btn small" data-testid="ethos-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>
             </div>
+            <div class="ui-panel-body" id="ethosStatusContent" data-testid="ethos-status-content">${skeletonRows(3)}</div>
+        </section>
 
-            <!-- ═══ Services Table ═══ -->
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-                <h2 style="margin:0;font-size:18px;font-weight:700;color: var(--text-1);display:flex;align-items:center;gap:8px;">
-                    <span>⚙️</span> System Services
-                </h2>
-                <button class="btn-ghost" data-testid="systemd-refresh-btn" onclick="window._systemdLoad()" style="padding:6px 14px;font-size:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color: var(--text-2);cursor:pointer;display:flex;align-items:center;gap:6px;">
-                    🔄 Refresh
-                </button>
+        <div class="ui-toolbar">
+            <div class="ui-row">
+                <span class="ui-tag" id="systemd-total-count" data-testid="systemd-total">Loading…</span>
+                <span class="ui-tag is-ok" id="systemd-active-count">—</span>
             </div>
-            <div id="systemdContent" data-testid="systemd-content" style="flex:1;overflow-y:auto;">
-                <div style="display:flex;align-items:center;justify-content:center;height:100px;color: var(--text-3);">
-                    ${skeletonRows(8)}
-                </div>
+            <button class="ui-btn small" data-testid="systemd-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>
+        </div>
+        <section class="ui-panel" style="min-height:180px;">
+            <div class="ui-table-wrap">
+                <table class="ui-table" id="systemdTable" data-testid="systemd-table">
+                    <thead><tr><th data-testid="systemd-col-name">Service</th><th data-testid="systemd-col-description">Description</th>
+                        <th data-testid="systemd-col-status">Status</th><th class="actions" data-testid="systemd-col-actions">Actions</th></tr></thead>
+                    <tbody id="systemdContent" data-testid="systemd-content"><tr><td colspan="4">${skeletonRows(8)}</td></tr></tbody>
+                </table>
             </div>
-            <div style="margin-top:8px;padding:8px 12px;background:rgba(30,41,59,0.6);border:1px solid var(--border);border-radius:8px;display:flex;gap:16px;font-size:11px;color: var(--text-3);">
-                <span id="systemd-total-count" data-testid="systemd-total">Loading...</span>
-                <span id="systemd-active-count" style="color:#22c55e;">-</span>
-            </div>
-        </div>`;
+        </section>`;
 
-    // ── Load EthOS NAS service status in parallel with services list ──────────
-    await Promise.all([window._ethosRefresh(), window._systemdLoad()]);
+    shell.view.querySelector('[data-testid="ethos-refresh-btn"]')?.addEventListener('click', () => loadEthosService());
+    shell.view.querySelector('[data-testid="systemd-refresh-btn"]')?.addEventListener('click', () => loadUnits());
+    shell.view.querySelector('#systemdTable')?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-unit-action]');
+        if (!button) return;
+        unitAction(button.dataset.name, button.dataset.unitAction);
+    });
+    shell.view.querySelector('#ethosStatusContent')?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-ethos-action]');
+        if (!button) return;
+        ethosAction(button.dataset.ethosAction);
+    });
+
+    await Promise.all([loadEthosService(), loadUnits()]);
 }
 
-// ════════════════════════════════════════════
-// APP: EthOS NAS Service Card
-// ════════════════════════════════════════════
-
-window._ethosRefresh = async function () {
-    const el = document.getElementById('ethosStatusContent');
-    if (!el) return;
-    el.innerHTML = skeletonRows(8);
+async function loadEthosService() {
+    if (!shell) return;
+    const content = shell.view.querySelector('#ethosStatusContent');
+    if (!content) return;
+    content.innerHTML = skeletonRows(3);
+    shell.setStatus('Loading EthOS service…');
 
     try {
-        const data = await apiJsonFetch('/api/ethos-nas-service/status');
-        const isRunning = data.active_state === 'running';
+        const data = await apiRequest('/api/ethos-nas-service/status');
+        if (!shell.root.isConnected) return;
+        const running = data.active_state === 'running';
         const portOpen = data.port_9000_open;
-        const scopeLabel = data.scope === 'system' ? 'System' : 'User-level';
+        const scope = data.scope === 'system' ? 'System' : 'User-level';
 
-        let actionsHtml = '';
-        if (isRunning) {
-            actionsHtml = `
-                <button class="btn-ghost" data-testid="ethos-action-restart" onclick="window._ethosAction('restart')" style="font-size:12px;padding:6px 14px;color:#eab308;border-radius:8px;">↻ Restart</button>
-                <button class="btn-ghost" data-testid="ethos-action-stop" onclick="window._ethosAction('stop')" style="font-size:12px;padding:6px 14px;color:#ef4444;border-radius:8px;">⏹ Stop</button>`;
-        } else {
-            actionsHtml = `
-                <button class="btn-ghost" data-testid="ethos-action-start" onclick="window._ethosAction('start')" style="font-size:12px;padding:6px 14px;color:#22c55e;border-radius:8px;">▶ Start</button>`;
-        }
-
-        const enabledLabel = data.enabled_state === 'enabled' ? '🟢 Enabled (auto-start)' :
-                             data.enabled_state === 'disabled' ? '🔴 Disabled' : '⚪ Unknown';
-
-        el.innerHTML = `
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap;">
-                <span class="${isRunning ? 'badge-green' : 'badge-red'}" data-testid="ethos-status-badge" style="padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;">
-                    ${isRunning ? '● Running' : '○ Stopped'}
+        content.innerHTML = `
+            <div class="ui-row">
+                <span class="ui-tag ${running ? 'is-ok' : 'is-bad'}" data-testid="ethos-status-badge">${running ? 'Running' : 'Stopped'}</span>
+                <span class="ui-tag">${escapeHtml(scope)}</span>
+                <span class="ui-tag ${portOpen ? 'is-ok' : 'is-warn'}">port 9000 ${portOpen ? 'open' : 'closed'}</span>
+                <span class="ui-tag ${data.enabled_state === 'enabled' ? 'is-ok' : data.enabled_state === 'disabled' ? 'is-bad' : ''}">
+                    boot: ${escapeHtml(data.enabled_state || 'unknown')}
                 </span>
-                <span style="font-size:12px;color: var(--text-2);">${scopeLabel}</span>
-                <span style="font-size:12px;color:${portOpen ? '#22c55e' : '#64748b'};">Port 9000: ${portOpen ? '● Open' : '○ Closed'}</span>
             </div>
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;font-size:12px;color: var(--text-2);">
-                <span>${enabledLabel}</span>
-                ${data.user_service_file_exists ? '<span style="color: var(--text-3);">📄 ~/.config/systemd/user/ethos-nas.service</span>' : ''}
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                ${actionsHtml}
-                <button class="btn-ghost" data-testid="ethos-action-toggle-enable" onclick="window._ethosToggleEnable()" style="font-size:12px;padding:6px 14px;color:#3b82f6;border-radius:8px;">
-                    🔛 ${isRunning ? (data.enabled_state === 'enabled' ? 'Disable Boot Start' : 'Enable Boot Start') : ''}
+            ${data.user_service_file_exists ? '<p class="ui-muted ui-panel-body">Unit file: ~/.config/systemd/user/ethos-nas.service</p>' : ''}
+            <div class="ui-row ui-panel-body">
+                ${running
+                    ? `<button class="ui-btn small" data-ethos-action="restart" data-testid="ethos-action-restart">${uiIcon('refresh', 12)} Restart</button>
+                       <button class="ui-btn small danger" data-ethos-action="stop" data-testid="ethos-action-stop">⏹ Stop</button>`
+                    : `<button class="ui-btn small primary" data-ethos-action="start" data-testid="ethos-action-start">▶ Start</button>`}
+                <button class="ui-btn small" data-ethos-action="toggle-enable" data-testid="ethos-action-toggle-enable">
+                    ${data.enabled_state === 'enabled' ? 'Disable boot start' : 'Enable boot start'}
                 </button>
             </div>`;
-    } catch (e) {
-        el.innerHTML = `<div style="text-align:center;padding:20px;color:#ef4444;font-size:13px;">❌ ${escapeHtml(e.message)}</div>`;
+        shell.setStatus(running ? 'EthOS service running' : 'EthOS service stopped', running ? 'ok' : 'warn');
+    } catch (err) {
+        if (!shell.root.isConnected) return;
+        content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        shell.setStatus('Could not read the EthOS service', 'error');
+        logError('Systemd: EthOS service status unavailable', err?.detail || err?.message);
     }
-};
+}
 
-window._ethosAction = async function (action) {
-    if (!await window.showModalConfirm('EthOS NAS Service', `${action.charAt(0).toUpperCase() + action.slice(1)} the EthOS NAS service?`)) return;
-    try {
-        const resp = await apiFetch('/api/ethos-nas-service/action', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({action}),
-        });
-        if (!resp.ok) {
-            const d = await resp.json().catch(() => ({}));
-            window.addNotification?.(d.detail || `Failed to ${action}`, 'error');
-            return;
+async function ethosAction(action) {
+    if (action === 'toggle-enable') {
+        const ok = await showConfirm('EthOS NAS Service', 'Toggle auto-start on boot?');
+        if (!ok) return;
+        try {
+            await apiRequest('/api/ethos-nas-service/toggle-enable', { method: 'POST' });
+            notify({ kind: 'success', message: 'Auto-start preference updated' });
+            await loadEthosService();
+        } catch (err) {
+            logError('Systemd: toggling auto-start failed', err?.detail || err?.message);
+            notify({ kind: 'error', message: err?.detail || err?.message || 'Could not toggle auto-start' });
         }
-        window.addNotification?.(`EthOS NAS service ${action} — success`, 'success');
-        window._ethosRefresh();
-    } catch (e) {
-        window.addNotification?.(e.message, 'error');
+        return;
     }
-};
-
-window._ethosToggleEnable = async function () {
-    if (!await window.showModalConfirm('EthOS NAS Service', 'Toggle auto-start on boot?')) return;
+    const ok = await showConfirm('EthOS NAS Service',
+        `${action.charAt(0).toUpperCase()}${action.slice(1)} the EthOS NAS service?`,
+        { danger: action === 'stop' });
+    if (!ok) return;
     try {
-        const resp = await apiFetch('/api/ethos-nas-service/toggle-enable', { method: 'POST' });
-        if (!resp.ok) {
-            const d = await resp.json().catch(() => ({}));
-            window.addNotification?.(d.detail || 'Failed to toggle enable', 'error');
-            return;
-        }
-        window.addNotification?.(`Auto-start ${resp.ok ? 'enabled' : 'disabled'} for EthOS NAS`, 'success');
-        window._ethosRefresh();
-    } catch (e) {
-        window.addNotification?.(e.message, 'error');
+        await apiRequest('/api/ethos-nas-service/action', { method: 'POST', body: { action } });
+        notify({ kind: 'success', message: `EthOS NAS service ${action} — success` });
+        await loadEthosService();
+    } catch (err) {
+        logError(`Systemd: EthOS service ${action} failed`, err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || `Failed to ${action}` });
     }
-};
+}
 
-// ════════════════════════════════════════════
-// APP: Systemd Services Table
-// ════════════════════════════════════════════
-
-window._systemdLoad = async function () {
-    const content = document.getElementById('systemdContent');
+async function loadUnits() {
+    if (!shell) return;
+    const content = shell.view.querySelector('#systemdContent');
     if (!content) return;
-    content.innerHTML = skeletonRows(8);
+    content.innerHTML = `<tr><td colspan="4">${skeletonRows(8)}</td></tr>`;
 
     try {
-        const resp = await apiFetch('/api/systemd');
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = await resp.json();
+        const data = await apiRequest('/api/systemd');
+        if (!shell.root.isConnected) return;
+        const total = shell.view.querySelector('#systemd-total-count');
+        const active = shell.view.querySelector('#systemd-active-count');
+        if (total) total.textContent = `${data.total} services (${data.loaded} loaded)`;
+        if (active) active.textContent = `${data.active} active`;
 
-        // Update counts
-        const totalEl = document.getElementById('systemd-total-count');
-        const activeEl = document.getElementById('systemd-active-count');
-        if (totalEl) totalEl.textContent = `📊 ${data.total} services (${data.loaded} loaded)`;
-        if (activeEl) activeEl.textContent = `🟢 ${data.active} active`;
-
-        if (!data.services || data.services.length === 0) {
-            content.innerHTML = emptyState({
-                icon: 'settings',
-                title: 'No services found',
-                hint: 'Nothing matches the current filter. Clear the search or switch to the "All" tab.',
-                action: { label: 'Show all', id: 'reset', icon: 'refresh' },
-            });
-            wireStateActions(content, { reset: () => { const el = document.getElementById('systemdSearch'); if (el) el.value = ''; window._systemdLoad?.(true); } });
+        const services = data.services || [];
+        if (!services.length) {
+            content.innerHTML = `<tr><td colspan="4">${emptyState({ icon: 'settings', title: 'No services found', hint: 'systemd returned no units.' })}</td></tr>`;
+            shell.setStatus('No units reported', 'warn');
             return;
         }
 
-        let html = `<table class="app-table" data-testid="systemd-table" style="width:100%;font-size:12px;"><thead><tr>
-            <th data-testid="systemd-col-name" style="text-align:left;padding:8px 10px;">Service</th>
-            <th data-testid="systemd-col-description" style="text-align:left;padding:8px 10px;">Description</th>
-            <th data-testid="systemd-col-status" style="text-align:center;padding:8px 10px;">Status</th>
-            <th data-testid="systemd-col-actions" style="text-align:right;padding:8px 10px;">Actions</th>
-        </tr></thead><tbody>`;
-
-        for (const svc of data.services) {
-            const safeName = escapeAttr(svc.name);
-            const isActive = svc.active_state === 'active';
-            const statusClass = isActive ? 'badge-green' : svc.active_state === 'failed' ? 'badge-red' : 'badge-yellow';
-            const statusText = svc.active_state || svc.sub_state || 'unknown';
-
-            html += `<tr class="fm-list-row" data-testid="systemd-row-${safeName}" style="border-bottom:1px solid var(--border);">
-                <td style="padding:8px 10px;font-weight:600;color:white;font-family:monospace;font-size:11px;">
-                    ${escapeHtml(svc.name)}
-                </td>
-                <td style="padding:8px 10px;color: var(--text-2);font-size:11px;max-width:250px;overflow:hidden;text-overflow:ellipsis;">
-                    ${escapeHtml(svc.description || '—')}
-                </td>
-                <td style="padding:8px 10px;text-align:center;">
-                    <span class="${statusClass}" data-testid="systemd-status-${safeName}" style="padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;">
-                        ${escapeHtml(statusText)}
-                    </span>
-                </td>
-                <td style="padding:8px 10px;text-align:right;white-space:nowrap;">
-                    ${isActive ? `
-                        <button class="btn-ghost" data-testid="systemd-action-${safeName}-stop" onclick="window._systemdAction('${safeName}','stop')" style="font-size:10px;padding:3px 8px;color:#ef4444;" title="Stop">⏹ Stop</button>
-                        <button class="btn-ghost" data-testid="systemd-action-${safeName}-restart" onclick="window._systemdAction('${safeName}','restart')" style="font-size:10px;padding:3px 8px;color:#eab308;" title="Restart">↻ Restart</button>
-                    ` : `
-                        <button class="btn-ghost" data-testid="systemd-action-${safeName}-start" onclick="window._systemdAction('${safeName}','start')" style="font-size:10px;padding:3px 8px;color:#22c55e;" title="Start">▶ Start</button>
-                    `}
-                    <button class="btn-ghost" onclick="window._systemdAction('${safeName}','enable')" style="font-size:10px;padding:3px 8px;color:#3b82f6;" title="Enable">🔛</button>
-                    <button class="btn-ghost" onclick="window._systemdAction('${safeName}','disable')" style="font-size:10px;padding:3px 8px;color: var(--text-3);" title="Disable">🔕</button>
-                </td>
+        content.innerHTML = services.map((service) => {
+            const safe = escapeAttr(service.name);
+            const running = service.active_state === 'active';
+            const tone = running ? 'is-ok' : service.active_state === 'failed' ? 'is-bad' : 'is-warn';
+            return `<tr data-testid="systemd-row-${safe}">
+                <td class="path">${escapeHtml(service.name)}</td>
+                <td>${escapeHtml(service.description || '—')}</td>
+                <td data-testid="systemd-status-${safe}"><span class="ui-tag ${tone}">${escapeHtml(service.active_state || service.sub_state || 'unknown')}</span></td>
+                <td class="actions"><div class="ui-row" style="justify-content:flex-end;">
+                    ${running
+                        ? `<button class="ui-btn small" data-unit-action="stop" data-name="${safe}" data-testid="systemd-action-${safe}-stop">⏹ Stop</button>
+                           <button class="ui-btn small" data-unit-action="restart" data-name="${safe}" data-testid="systemd-action-${safe}-restart">↻ Restart</button>`
+                        : `<button class="ui-btn small primary" data-unit-action="start" data-name="${safe}" data-testid="systemd-action-${safe}-start">▶ Start</button>`}
+                    <button class="ui-btn small" data-unit-action="enable" data-name="${safe}" title="Enable at boot">Enable</button>
+                    <button class="ui-btn small" data-unit-action="disable" data-name="${safe}" title="Disable at boot">Disable</button>
+                </div></td>
             </tr>`;
-        }
+        }).join('');
 
-        html += '</tbody></table>';
-        content.innerHTML = html;
-    } catch (e) {
-        content.innerHTML = errorState({ detail: e.message });
-        wireStateActions(content, { retry: () => window._systemdLoad?.(true) });
+        shell.setStatus(`${services.length} unit(s) listed`, 'ok');
+    } catch (err) {
+        if (!shell.root.isConnected) return;
+        content.innerHTML = `<tr><td colspan="4">${errorState({ detail: err?.detail || err?.message || 'Unknown error' })}</td></tr>`;
+        shell.setStatus('Could not read systemd units', 'error');
+        logError('Systemd: unit list unavailable', err?.detail || err?.message);
     }
-};
+}
 
-window._systemdAction = async function (name, action) {
-    if (!await window.showModalConfirm('Systemd Action', `${action.charAt(0).toUpperCase() + action.slice(1)} "${name}"?`)) return;
+async function unitAction(name, action) {
+    const ok = await showConfirm('Systemd action',
+        `${action.charAt(0).toUpperCase()}${action.slice(1)} “${name}”?`,
+        { danger: action === 'stop' });
+    if (!ok) return;
     try {
-        const resp = await apiFetch(`/api/systemd/${encodeURIComponent(name)}/action`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({action}),
-        });
-        if (!resp.ok) {
-            const d = await resp.json().catch(() => ({}));
-            window.addNotification?.(d.detail || `Failed to ${action} ${name}`, 'error');
-            return;
-        }
-        window.addNotification?.(`${action} ${name} — success`, 'success');
-        window._systemdLoad();
-    } catch (e) {
-        window.addNotification?.(e.message, 'error');
+        await apiRequest(`/api/systemd/${encodeURIComponent(name)}/action`, { method: 'POST', body: { action } });
+        notify({ kind: 'success', message: `${action} ${name} — success` });
+        await loadUnits();
+    } catch (err) {
+        logError(`Systemd: ${action} ${name} failed`, err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || `Failed to ${action} ${name}` });
     }
-};
-
+}

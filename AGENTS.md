@@ -78,6 +78,14 @@ through `core/progress.js` — `startTask` → `update`/`finish`. No bespoke pro
 apps; finished rows persist until cleared. See `.github/instructions/frontend.instructions.md` and
 `docs/progress-ui.md`.
 
+**App windows.** Every core app uses the shared shell — `mountShell()` from `core/ui-shell.js` plus
+the `.ui-*` classes in `frontend/static/css/ethos-ui.css` — with the same metrics as the native
+package windows (218 px text-only rail, 24/28/32 main padding, 15 px panels, 11 px tables, tags,
+status pill, both themes). No `<style>` injection, no hardcoded colours, no `.glass-card`/`.app-tab`
+in apps. Files, Terminal and Login are the only documented layout exceptions. Spec
+`docs/app-ui.md`; rule `.github/instructions/app-ui.instructions.md`; skill `app-ui`; guard
+`tests/test_app_ui.py`.
+
 **Updates.** Core releases ship a **signed** `releases/index.json` + `.sig`, produced only by
 `scripts/ethos-release publish` (offline Ed25519 key at `~/.ethos-pack/ethos-packages/repo.key`, public
 half pinned in `backend/config.py` and `setup_scripts/setup_service.sh`). Bump `APP_VERSION` for any
@@ -95,6 +103,7 @@ the index, never commit the key, never let the API pass the helper a URL/ref/com
 | WebSocket (`/ws/*`, codes, reconnect) | `ws-endpoint` |
 | JSON persistence, schema, migration | `state-store` |
 | Desktop app / window / icons / XSS | `frontend-app` |
+| App window layout / styling / design system | `app-ui` |
 | Notifications (toast, sheet, package contract) | `notification-ui` |
 | Logs (source, viewer, `ctx.log`, retention) | `logging-ui` |
 | Packages package, manifest, compose, signing | `add-package` |

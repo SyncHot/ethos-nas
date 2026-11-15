@@ -9,6 +9,9 @@ import { addNotification } from '../core/notification-center.js';
 import { skeletonRows, emptyState, errorState, wireStateActions } from '../core/states.js';
 import { showConfirm, showFormModal } from '../core/modal.js';
 import { startTask } from '../core/progress.js';
+import { logError } from '../core/logger.js';
+import { uiIcon } from '../core/icons.js';
+import { mountShell } from '../core/ui-shell.js';
 import { openLogs } from './logs.js';
 
 const _pkg = {
@@ -29,10 +32,13 @@ const _pkg = {
 };
 
 const TABS = [
-    ['available', 'Available'],
-    ['installed', 'Installed'],
-    ['updates', 'Updates'],
+    { id: 'available', label: 'Available', title: 'Available Packages', subtitle: 'Signed catalog from every enabled source.' },
+    { id: 'installed', label: 'Installed', title: 'Installed Packages', subtitle: 'Services, native windows and engine packages on this NAS.' },
+    { id: 'updates', label: 'Updates', title: 'Package Updates', subtitle: 'Versions newer than the installed ones.' },
+    { id: 'sources', label: 'Sources', title: 'Package Sources', subtitle: 'Signed repositories and their trust level.' },
 ];
+
+let shell = null;
 
 const JOB_TITLES = { install: 'Installing', update: 'Updating', uninstall: 'Uninstalling' };
 
@@ -66,7 +72,10 @@ function _icon(pkg, size = 28) {
 }
 
 function _badge(text, cls = 'badge-blue') {
-    return `<span class="badge ${cls}" style="padding:2px 8px;border-radius:999px;font-size:10px;">${escapeHtml(text)}</span>`;
+    const tone = cls.includes('green') ? 'is-ok'
+        : cls.includes('red') ? 'is-bad'
+            : cls.includes('yellow') ? 'is-warn' : 'is-info';
+    return `<span class="ui-tag ${tone}">${escapeHtml(text)}</span>`;
 }
 
 function _trustBadge(pkg) {
@@ -109,9 +118,9 @@ function _systemWarning(pkg) {
         const hint = item.hint ? ` · <code>${escapeHtml(item.hint)}</code>` : '';
         return `<li>${escapeHtml(item.label || _systemLabel(item.id))} — missing <code>${escapeHtml(missing)}</code>${hint}</li>`;
     }).join('');
-    return `<div data-testid="pkg-missing-deps" style="margin-top:10px;padding:10px 12px;border:1px solid #ef4444;border-radius:8px;background:rgba(239,68,68,0.08);font-size:12px;line-height:1.55;color:#fca5a5;">
+    return `<div data-testid="pkg-missing-deps" class="ui-callout error">
         <strong>Cannot install yet — host software is missing.</strong>
-        <ul style="margin:6px 0 0 16px;padding:0;">${rows}</ul>
+        <ul>${rows}</ul>
         EthOS never installs OS packages on its own. Run the command above on the NAS, then reopen this dialog.
     </div>`;
 }
@@ -159,74 +168,78 @@ function _disabledAttr(pkgId) {
 function _busyLabel(pkgId) {
     if (!_jobBusy(pkgId)) return '';
     const title = JOB_TITLES[_pkg.job.kind] || 'Working';
-    return `<span data-testid="pkg-busy-${escapeAttr(pkgId)}" style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text-2);">⏳ ${escapeHtml(title)}…</span>`;
-}
-
-function _activeTabButton(id) {
-    return `class="app-tab${_pkg.tab === id ? ' active' : ''}" role="tab" aria-selected="${_pkg.tab === id}" data-pkg-tab="${id}"`;
+    return `<span data-testid="pkg-busy-${escapeAttr(pkgId)}" class="ui-tag is-warn">${escapeHtml(title)}…</span>`;
 }
 
 export async function renderPackagesPage(body) {
     // A re-render destroys the banner element hosting the inline task row.
     if (_pkg.task) { _pkg.task.dismiss(); _pkg.task = null; }
-    body.innerHTML = `
-        <div style="height:100%;display:flex;flex-direction:column;background:var(--surface-0);color:var(--text-1);">
-            <div style="padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
-                <h2 style="margin:0;font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px;">
-                    <span>📦</span> Packages
-                    <span id="pkgTabCount" data-testid="pkg-tab-count" style="font-size:11px;color:var(--text-3);font-weight:500;"></span>
-                </h2>
-                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                    <input id="pkgSearch" data-testid="pkg-search-input" type="search" placeholder="Search packages…"
-                           aria-label="Search packages" value="${escapeAttr(_pkg.search)}"
-                           style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text-1);font-size:12px;min-width:180px;">
-                    <button class="btn-ghost" id="pkgSourcesBtn" data-testid="pkg-sources-toggle" style="padding:7px 12px;font-size:12px;">⚙️ Sources <span id="pkgSourceCount"></span></button>
-                    <button class="btn-ghost" id="pkgRefreshBtn" data-testid="pkg-refresh-btn" aria-label="Refresh catalog" style="padding:7px 10px;font-size:13px;">⟳</button>
-                </div>
-            </div>
-            <div id="pkgJobBanner" role="status" aria-live="polite" style="display:none;padding:8px 20px;background:rgba(59,130,246,0.12);border-bottom:1px solid var(--border);font-size:12px;color:var(--text-2);"></div>
-            <div id="pkgSourcesPanel" data-testid="pkg-sources-panel" hidden style="padding:12px 20px;border-bottom:1px solid var(--border);"></div>
-            <div class="app-tabs" role="tablist" style="padding:8px 20px 0;border-bottom:1px solid var(--border);display:flex;gap:4px;">
-                ${TABS.map(([id, label]) => `<button ${_activeTabButton(id)} data-testid="pkg-tab-${id}">${label}</button>`).join('')}
-            </div>
-            <div id="pkgFilterBar" style="padding:10px 20px 0;display:flex;gap:6px;flex-wrap:wrap;"></div>
-            <div id="pkgContent" data-testid="pkg-content" role="tabpanel" style="flex:1;overflow-y:auto;padding:14px 20px;">
-                ${skeletonRows(6, { variant: 'tiles' })}
-            </div>
-        </div>`;
+    shell?.destroy();
+    shell = mountShell(body, {
+        idPrefix: 'packages',
+        title: 'Packages',
+        subtitle: 'Signed catalog, installed apps and sources.',
+        icon: '📦',
+        sections: TABS.map(({ id, label, title, subtitle }) => ({
+            id, label, title, subtitle, testId: `pkg-tab-${id}`,
+        })),
+        note: 'Native packages run with EthOS privileges — install only signed sources.',
+    });
 
-    body.querySelector('#pkgSearch')?.addEventListener('input', (ev) => {
+    const toolbar = document.createElement('div');
+    toolbar.className = 'ui-toolbar';
+    toolbar.id = 'pkgToolbar';
+    toolbar.innerHTML = `
+        <div class="ui-row">
+            <input id="pkgSearch" class="ui-input" data-testid="pkg-search-input" type="search"
+                   placeholder="Search packages…" aria-label="Search packages" value="${escapeAttr(_pkg.search)}">
+            <span id="pkgTabCount" class="ui-tag" data-testid="pkg-tab-count" hidden></span>
+        </div>
+        <button class="ui-btn small" id="pkgRefreshBtn" data-testid="pkg-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>`;
+
+    const filterBar = document.createElement('div');
+    filterBar.id = 'pkgFilterBar';
+    filterBar.className = 'ui-row';
+
+    const banner = document.createElement('div');
+    banner.id = 'pkgJobBanner';
+    banner.className = 'ui-callout info';
+    banner.hidden = true;
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('aria-live', 'polite');
+
+    shell.main.insertBefore(toolbar, shell.view);
+    shell.main.insertBefore(filterBar, shell.view);
+    shell.main.insertBefore(banner, shell.view);
+
+    toolbar.querySelector('#pkgSearch')?.addEventListener('input', (ev) => {
         _pkg.search = ev.target.value;
         _renderContent();
     });
-    body.querySelector('#pkgRefreshBtn')?.addEventListener('click', () => _loadAll(true));
-    body.querySelector('#pkgSourcesBtn')?.addEventListener('click', () => _toggleSources(body));
-    body.querySelectorAll('[data-pkg-tab]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-            _pkg.tab = btn.dataset.pkgTab;
-            body.querySelectorAll('[data-pkg-tab]').forEach((b) => {
-                const active = b.dataset.pkgTab === _pkg.tab;
-                b.classList.toggle('active', active);
-                b.setAttribute('aria-selected', active ? 'true' : 'false');
-            });
-            _renderContent();
-        });
+    toolbar.querySelector('#pkgRefreshBtn')?.addEventListener('click', () => _loadAll(true));
+
+    shell.onSection((id) => {
+        _pkg.tab = id;
+        _renderContent();
     });
 
     try {
         const me = await apiJsonFetch('/api/auth/me');
         _pkg.isAdmin = me?.role === 'admin';
-    } catch (_) { /* role unknown: keep install controls hidden */ }
+    } catch (err) {
+        logError('Packages: could not read the current role', err?.detail || err?.message);
+    }
 
     await _loadAll();
     await _resumeJob();
+    shell.setActive(TABS.some((tab) => tab.id === _pkg.tab) ? _pkg.tab : 'available');
 }
 
 async function _loadAll(force = false) {
     if (_pkg.loading) return;
     _pkg.loading = true;
-    const content = document.getElementById('pkgContent');
-    const refresh = document.getElementById('pkgRefreshBtn');
+    const content = shell?.view;
+    const refresh = shell?.root.querySelector('#pkgRefreshBtn');
     if (refresh) refresh.disabled = true;
     try {
         const [catalog, installed, sources] = await Promise.all([
@@ -253,13 +266,17 @@ async function _loadAll(force = false) {
         }));
         _pkg.statuses = statuses;
 
-        const count = document.getElementById('pkgTabCount');
-        if (count) count.textContent = _pkg.updates.length ? `${_pkg.updates.length} update${_pkg.updates.length === 1 ? '' : 's'}` : '';
-        const sourceCount = document.getElementById('pkgSourceCount');
-        if (sourceCount) sourceCount.textContent = `(${_pkg.sources.length})`;
+        const count = shell?.root.querySelector('#pkgTabCount');
+        if (count) {
+            count.textContent = _pkg.updates.length
+                ? `${_pkg.updates.length} update${_pkg.updates.length === 1 ? '' : 's'}`
+                : '';
+            count.hidden = !_pkg.updates.length;
+        }
         _renderFilterBar();
         _renderContent();
     } catch (err) {
+        logError('Packages: catalog load failed', err?.detail || err?.message);
         if (content) {
             content.innerHTML = errorState({ detail: err.detail || err.message });
             wireStateActions(content, { retry: () => _loadAll(true) });
@@ -275,12 +292,12 @@ function _categories() {
 }
 
 function _renderFilterBar() {
-    const bar = document.getElementById('pkgFilterBar');
+    const bar = shell?.root.querySelector('#pkgFilterBar');
     if (!bar) return;
     const cats = _categories();
     bar.innerHTML = cats.length
-        ? `<button class="btn-ghost" data-cat="" style="font-size:11px;padding:4px 10px;${_pkg.category === '' ? 'border-color:#3b82f6;color:#3b82f6;' : ''}">All</button>` +
-          cats.map((cat) => `<button class="btn-ghost" data-cat="${escapeAttr(cat)}" style="font-size:11px;padding:4px 10px;${_pkg.category === cat ? 'border-color:#3b82f6;color:#3b82f6;' : ''}">${escapeHtml(cat)}</button>`).join('')
+        ? `<button class="ui-btn small${_pkg.category === '' ? ' primary' : ''}" data-cat="">All</button>`
+            + cats.map((cat) => `<button class="ui-btn small${_pkg.category === cat ? ' primary' : ''}" data-cat="${escapeAttr(cat)}">${escapeHtml(cat)}</button>`).join('')
         : '';
     bar.querySelectorAll('[data-cat]').forEach((btn) => btn.addEventListener('click', () => {
         _pkg.category = btn.dataset.cat;
@@ -299,12 +316,14 @@ function _matches(pkg) {
 }
 
 function _renderContent() {
-    const content = document.getElementById('pkgContent');
+    const content = shell?.view;
     if (!content) return;
     if (_pkg.tab === 'installed') {
         _renderInstalled(content);
     } else if (_pkg.tab === 'updates') {
         _renderUpdates(content);
+    } else if (_pkg.tab === 'sources') {
+        _renderSources(content);
     } else {
         _renderCatalog(content);
     }
@@ -326,8 +345,7 @@ function _renderCatalog(content) {
         content.innerHTML = emptyState({ icon: 'search', title: 'No packages match', hint: 'Try another search or category.' });
         return;
     }
-    content.innerHTML = `<div id="pkgAvailableGrid" data-testid="pkg-available-grid"
-        style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;">
+    content.innerHTML = `<div id="pkgAvailableGrid" data-testid="pkg-available-grid" class="ui-grid">
         ${packages.map(_card).join('')}</div>`;
     content.querySelectorAll('[data-card-id]').forEach((card) => {
         card.addEventListener('click', (ev) => {
@@ -351,36 +369,35 @@ function _card(pkg) {
     const busy = _jobBusy(pkg.id);
     const disabled = _disabledAttr(pkg.id);
     const uninstall = _pkg.isAdmin
-        ? `<button class="btn-ghost" data-uninstall="${escapeAttr(pkg.id)}" data-testid="pkg-card-uninstall-${escapeAttr(pkg.id)}"${disabled} style="font-size:11px;padding:4px 8px;color:#ef4444;">Uninstall</button>`
+        ? `<button class="ui-btn small danger" data-uninstall="${escapeAttr(pkg.id)}" data-testid="pkg-card-uninstall-${escapeAttr(pkg.id)}"${disabled}>Uninstall</button>`
         : '';
     let action;
     if (busy) {
-        action = `<div style="display:flex;align-items:center;gap:10px;">${_busyLabel(pkg.id)}${uninstall}</div>`;
+        action = `<div class="ui-row">${_busyLabel(pkg.id)}${uninstall}</div>`;
     } else if (installed) {
         action = pkg.update_available && _pkg.isAdmin
-            ? `<button class="btn-primary" data-update="${escapeAttr(pkg.id)}" data-testid="pkg-update-${escapeAttr(pkg.id)}"${disabled} style="font-size:12px;padding:6px 12px;">Update → v${escapeHtml(pkg.version)}</button>`
-            : `<div style="display:flex;align-items:center;gap:8px;"><span class="badge badge-green" style="font-size:11px;">Installed v${escapeHtml(pkg.installed_version || '')}</span>${uninstall}</div>`;
+            ? `<button class="ui-btn small primary" data-update="${escapeAttr(pkg.id)}" data-testid="pkg-update-${escapeAttr(pkg.id)}"${disabled}>Update → v${escapeHtml(pkg.version)}</button>`
+            : `<div class="ui-row"><span class="ui-tag is-ok">Installed v${escapeHtml(pkg.installed_version || '')}</span>${uninstall}</div>`;
     } else {
         action = _pkg.isAdmin
-            ? `<button class="btn-primary" data-install="${escapeAttr(pkg.id)}" data-testid="pkg-install-${escapeAttr(pkg.id)}"${disabled} style="font-size:12px;padding:6px 12px;">Install</button>`
-            : '<span style="font-size:11px;color:var(--text-3);">Admin required</span>';
+            ? `<button class="ui-btn small primary" data-install="${escapeAttr(pkg.id)}" data-testid="pkg-install-${escapeAttr(pkg.id)}"${disabled}>Install</button>`
+            : '<span class="ui-tag">Admin required</span>';
     }
     return `
-        <div data-card-id="${escapeAttr(pkg.id)}" data-testid="pkg-card-${escapeAttr(pkg.id)}"
-             style="display:flex;flex-direction:column;gap:8px;padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--surface-1);cursor:pointer;">
-            <div style="display:flex;gap:10px;align-items:flex-start;">
-                <div style="width:38px;height:38px;display:flex;align-items:center;justify-content:center;background:var(--surface-2);border-radius:10px;">${_icon(pkg, 28)}</div>
+        <article data-card-id="${escapeAttr(pkg.id)}" data-testid="pkg-card-${escapeAttr(pkg.id)}" class="ui-panel ui-card">
+            <div class="ui-row" style="align-items:flex-start;">
+                <div class="ui-card-icon">${_icon(pkg, 28)}</div>
                 <div style="min-width:0;flex:1;">
-                    <div style="font-weight:700;font-size:14px;">${escapeHtml(pkg.name)}</div>
-                    <div style="font-size:11px;color:var(--text-3);">v${escapeHtml(pkg.version)} · ${escapeHtml(pkg.category || 'other')}</div>
-                    <div style="margin-top:2px;">${_capabilityBadges(pkg)}</div>
+                    <h2>${escapeHtml(pkg.name)}</h2>
+                    <p class="ui-muted">v${escapeHtml(pkg.version)} · ${escapeHtml(pkg.category || 'other')}</p>
+                    <div>${_capabilityBadges(pkg)}</div>
                 </div>
                 ${_trustBadge(pkg)}
             </div>
-            <div style="font-size:12px;color:var(--text-2);line-height:1.45;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">${escapeHtml(pkg.description || '')}</div>
-            <div style="font-size:11px;color:var(--text-3);">${escapeHtml(pkg.source_name || pkg.source || '')}${pkg.author ? ' · ' + escapeHtml(pkg.author) : ''}</div>
-            <div style="display:flex;justify-content:flex-end;">${action}</div>
-        </div>`;
+            <p class="ui-muted">${escapeHtml(pkg.description || '')}</p>
+            <p class="ui-muted">${escapeHtml(pkg.source_name || pkg.source || '')}${pkg.author ? ` · ${escapeHtml(pkg.author)}` : ''}</p>
+            <div class="ui-row" style="justify-content:flex-end;">${action}</div>
+        </article>`;
 }
 
 function _renderUpdates(content) {
@@ -389,15 +406,15 @@ function _renderUpdates(content) {
         content.innerHTML = emptyState({ icon: 'refresh', title: 'Everything is up to date', hint: 'New versions will appear here after a catalog refresh.' });
         return;
     }
-    content.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px;">
+    content.innerHTML = `<div class="ui-list">
         ${updates.map((pkg) => `
-            <div class="glass-card" style="display:flex;align-items:center;gap:12px;padding:12px 14px;">
+            <div class="ui-panel" style="display:flex;align-items:center;gap:12px;">
                 <div>${_icon(pkg, 26)}</div>
                 <div style="flex:1;min-width:0;">
-                    <div style="font-weight:600;">${escapeHtml(pkg.name)}</div>
-                    <div style="font-size:11px;color:var(--text-3);">${escapeHtml(pkg.installed_version || '')} → ${escapeHtml(pkg.version)} · ${escapeHtml(pkg.source_name || '')}</div>
+                    <h2>${escapeHtml(pkg.name)}</h2>
+                    <p class="ui-muted">${escapeHtml(pkg.installed_version || '')} → ${escapeHtml(pkg.version)} · ${escapeHtml(pkg.source_name || '')}</p>
                 </div>
-                ${_pkg.isAdmin ? `<button class="btn-primary" data-update="${escapeAttr(pkg.id)}" data-testid="pkg-update-${escapeAttr(pkg.id)}"${_disabledAttr(pkg.id)} style="font-size:12px;padding:6px 12px;">Update</button>` : ''}
+                ${_pkg.isAdmin ? `<button class="ui-btn small primary" data-update="${escapeAttr(pkg.id)}" data-testid="pkg-update-${escapeAttr(pkg.id)}"${_disabledAttr(pkg.id)}>Update</button>` : ''}
             </div>`).join('')}
     </div>`;
     content.querySelectorAll('[data-update]').forEach((btn) => btn.addEventListener('click', () => _update(btn.dataset.update)));
@@ -408,8 +425,8 @@ function _renderInstalled(content) {
         content.innerHTML = emptyState({ icon: 'package', title: 'No packages installed', hint: 'Install one from the Available tab.' });
         return;
     }
-    content.innerHTML = `<div style="overflow-x:auto;"><table class="app-table" data-testid="pkg-installed-list" style="width:100%;min-width:720px;">
-        <thead><tr><th>Package</th><th>Version</th><th>Status</th><th>Source</th><th style="text-align:right;">Actions</th></tr></thead>
+    content.innerHTML = `<div class="ui-table-wrap"><table class="ui-table" data-testid="pkg-installed-list">
+        <thead><tr><th>Package</th><th>Version</th><th>Status</th><th>Source</th><th class="actions">Actions</th></tr></thead>
         <tbody>${_pkg.installed.map(_installedRow).join('')}</tbody></table></div>`;
     content.querySelectorAll('[data-action]').forEach((btn) => btn.addEventListener('click', () => _action(btn.dataset.id, btn.dataset.action)));
     content.querySelectorAll('[data-uninstall]').forEach((btn) => btn.addEventListener('click', () => _uninstall(btn.dataset.uninstall)));
@@ -425,25 +442,25 @@ function _installedRow(pkg) {
     // Files-only packages (native UI, no service) have nothing to start or stop.
     const hasService = (pkg.runtime || 'compose') !== 'files';
     const serviceButtons = hasService ? `
-        <button class="btn-ghost" data-action="start" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-start"${disabled} style="font-size:11px;padding:4px 8px;">▶</button>
-        <button class="btn-ghost" data-action="restart" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-restart"${disabled} style="font-size:11px;padding:4px 8px;">↻</button>
-        <button class="btn-ghost" data-action="stop" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-stop"${disabled} style="font-size:11px;padding:4px 8px;">⏹</button>` : '';
+        <button class="ui-btn small" data-action="start" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-start"${disabled}>▶</button>
+        <button class="ui-btn small" data-action="restart" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-restart"${disabled}>↻</button>
+        <button class="ui-btn small" data-action="stop" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-stop"${disabled}>⏹</button>` : '';
     const actions = _pkg.isAdmin ? `
         ${serviceButtons}
-        <button class="btn-ghost" data-uninstall="${escapeAttr(pkg.id)}" data-testid="pkg-uninstall-${escapeAttr(pkg.id)}"${disabled} style="font-size:11px;padding:4px 8px;color:#ef4444;">🗑 Uninstall</button>` : '';
+        <button class="ui-btn small danger" data-uninstall="${escapeAttr(pkg.id)}" data-testid="pkg-uninstall-${escapeAttr(pkg.id)}"${disabled}>Uninstall</button>` : '';
     const update = _pkg.isAdmin && _pkg.updates.some((u) => u.id === pkg.id)
-        ? `<button class="btn-ghost" data-update="${escapeAttr(pkg.id)}" data-testid="pkg-update-${escapeAttr(pkg.id)}"${disabled} style="font-size:11px;padding:4px 8px;color:#3b82f6;">⬆ Update</button>` : '';
+        ? `<button class="ui-btn small primary" data-update="${escapeAttr(pkg.id)}" data-testid="pkg-update-${escapeAttr(pkg.id)}"${disabled}>⬆ Update</button>` : '';
     const openUi = pkg.ui && (pkg.ui.mode === 'native' ? pkg.ui.entry : pkg.ui.port)
-        ? `<button class="btn-ghost" data-open-ui="${escapeAttr(pkg.id)}" style="font-size:11px;padding:4px 8px;">Open UI</button>` : '';
+        ? `<button class="ui-btn small" data-open-ui="${escapeAttr(pkg.id)}">Open UI</button>` : '';
     const openLogsBtn = _pkg.isAdmin
-        ? `<button class="btn-ghost" data-open-logs="${escapeAttr(pkg.id)}" data-testid="pkg-logs-${escapeAttr(pkg.id)}" style="font-size:11px;padding:4px 8px;" title="Open the unified Logs app filtered to this package">📋 Logs</button>` : '';
+        ? `<button class="ui-btn small" data-open-logs="${escapeAttr(pkg.id)}" data-testid="pkg-logs-${escapeAttr(pkg.id)}" title="Open the unified Logs app filtered to this package">Logs</button>` : '';
     return `
         <tr data-testid="pkg-row-${escapeAttr(pkg.id)}">
-            <td><div style="font-weight:600;">${_icon(pkg, 20)} ${escapeHtml(pkg.name)}</div><div style="font-size:10px;color:var(--text-3);font-family:monospace;">${escapeHtml(pkg.id)}</div></td>
-            <td style="font-family:monospace;font-size:12px;">${escapeHtml(pkg.version)}</td>
+            <td><div>${_icon(pkg, 20)} ${escapeHtml(pkg.name)}</div><div class="path">${escapeHtml(pkg.id)}</div></td>
+            <td class="path">${escapeHtml(pkg.version)}</td>
             <td data-testid="pkg-status-${escapeAttr(pkg.id)}">${_statusBadge(status)}</td>
-            <td style="font-size:11px;color:var(--text-3);">${escapeHtml(pkg.source_name || pkg.source || 'local')}</td>
-            <td style="text-align:right;white-space:nowrap;">${busyLabel}${openUi}${openLogsBtn}${update}${actions}</td>
+            <td>${escapeHtml(pkg.source_name || pkg.source || 'local')}</td>
+            <td class="actions"><div class="ui-row" style="justify-content:flex-end;">${busyLabel}${openUi}${openLogsBtn}${update}${actions}</div></td>
         </tr>`;
 }
 
@@ -468,10 +485,10 @@ async function _openDetail(pkgId) {
             </div>
         </div>
         <p style="font-size:13px;line-height:1.55;color:var(--text-2);">${escapeHtml(detail.description || '')}</p>
-        ${canUninstall ? '<p style="font-size:12px;line-height:1.55;color:#ef4444;">Uninstalling stops the containers and deletes the package directory. You choose next whether its data volumes and unused images go too.</p>' : ''}
+        ${canUninstall ? '<p class="ui-callout error">Uninstalling stops the containers and deletes the package directory. You choose next whether its data volumes and unused images go too.</p>' : ''}
         ${detail.changelog ? `<p style="font-size:12px;color:var(--text-2);white-space:pre-wrap;">${escapeHtml(detail.changelog)}</p>` : ''}
         <div style="font-size:12px;color:var(--text-3);">Source: ${escapeHtml(detail.source_name || detail.source || '')}${detail.key_id ? ` · key ${escapeHtml(detail.key_id)}` : ''}</div>
-        ${detail.homepage ? `<div style="font-size:12px;margin-top:6px;"><a href="${escapeAttr(detail.homepage)}" target="_blank" rel="noopener" style="color:#3b82f6;">Homepage</a></div>` : ''}
+        ${detail.homepage ? `<div class="ui-panel-body"><a href="${escapeAttr(detail.homepage)}" target="_blank" rel="noopener" style="color:var(--ui-accent);">Homepage</a></div>` : ''}
         ${(detail.requires || []).length ? `<div style="font-size:12px;margin-top:6px;">Requires: ${detail.requires.map(escapeHtml).join(', ')}</div>` : ''}
         ${_systemRequires(detail).length ? `<div style="font-size:12px;margin-top:6px;">System requirements: ${_systemRequires(detail).map((item) => escapeHtml(_systemLabel(item))).join(', ')}${_systemRequires(detail).includes('docker') ? ' — Docker is installed automatically when missing.' : ''}</div>` : ''}
         ${_systemWarning(detail)}
@@ -561,9 +578,9 @@ function _renderJobPanel(job, name) {
     const lastLog = Array.isArray(job.log) && job.log.length ? String(job.log[job.log.length - 1]) : '';
     const title = `${JOB_TITLES[kind] || 'Working on'} ${name}`;
 
-    banner.style.display = 'block';
-    banner.style.background = status === 'failed' ? 'rgba(239,68,68,0.10)'
-        : status === 'success' ? 'rgba(34,197,94,0.10)' : 'rgba(59,130,246,0.12)';
+    banner.hidden = false;
+    banner.className = status === 'failed' ? 'ui-callout error'
+        : status === 'success' ? 'ui-callout ok' : 'ui-callout info';
 
     // Same shared row as uploads and file operations — inline host, so the
     // progress stays inside Packages. No hand-rolled bar here.
@@ -636,7 +653,7 @@ function _watchJob(job, name) {
             await _loadAll();
             _pkg.jobHideTimer = setTimeout(() => {
                 const banner = document.getElementById('pkgJobBanner');
-                if (banner) banner.style.display = 'none';
+                if (banner) banner.hidden = true;
                 if (task) task.dismiss();
                 if (_pkg.task === task) _pkg.task = null;
                 _pkg.jobHideTimer = null;
@@ -728,7 +745,7 @@ async function _uninstall(pkgId) {
                     || body.querySelector('[name="remove_images"]')?.checked;
                 if (okBtn) {
                     okBtn.textContent = deleting ? 'Delete everything' : 'Uninstall';
-                    okBtn.style.background = deleting ? '#dc2626' : '';
+                    okBtn.classList.toggle('ethos-modal-btn-danger', deleting);
                 }
             };
             body.querySelectorAll('input[type="checkbox"]').forEach((el) => el.addEventListener('change', sync));
@@ -777,43 +794,43 @@ function _openUi(pkgId) {
 // ── Sources ─────────────────────────────────────────────────────────────────
 
 async function _toggleSources(body) {
-    const panel = body.querySelector('#pkgSourcesPanel');
-    if (!panel) return;
-    if (!panel.hidden) {
-        panel.hidden = true;
-        return;
-    }
-    panel.hidden = false;
-    _renderSources(panel);
+    if (shell) _renderSources(shell.view);
 }
 
 function _renderSources(panel) {
     if (!_pkg.isAdmin) {
-        panel.innerHTML = '<div style="font-size:12px;color:var(--text-3);">Only administrators can manage package sources.</div>';
+        panel.innerHTML = '<div class="ui-callout">Only administrators can manage package sources.</div>';
         return;
     }
     const official = _pkg.sources.find((s) => s.url === OFFICIAL_SOURCE.url);
     const officialLabel = official ? 'Fix official source' : '+ Official source';
     panel.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-            <div style="font-size:12px;font-weight:600;">Package sources</div>
-            <div style="display:flex;gap:6px;">
-                ${!official || official.trust !== 'pinned' ? `<button class="btn-ghost" id="pkgAddOfficialSource" data-testid="pkg-source-add-official" style="font-size:11px;padding:4px 10px;">${officialLabel}</button>` : ''}
-                <button class="btn-ghost" id="pkgAddSource" data-testid="pkg-source-add-btn" style="font-size:11px;padding:4px 10px;">+ Add source</button>
+        <div class="ui-toolbar">
+            <div>
+                <h2>Package sources</h2>
+                <p class="ui-muted">Native UI packages require a signed source with its public key.</p>
+            </div>
+            <div class="ui-row">
+                ${!official || official.trust !== 'pinned' ? `<button class="ui-btn small" id="pkgAddOfficialSource" data-testid="pkg-source-add-official">${officialLabel}</button>` : ''}
+                <button class="ui-btn small primary" id="pkgAddSource" data-testid="pkg-source-add-btn">+ Add source</button>
             </div>
         </div>
-        <div style="display:flex;flex-direction:column;gap:6px;">
+        <div class="ui-list">
             ${_pkg.sources.map((source, index) => `
-                <div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:6px 8px;border:1px solid var(--border);border-radius:8px;">
-                    <div style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeAttr(source.url)}">
-                        <strong>${escapeHtml(source.name || source.url)}</strong>
-                        <span style="color:var(--text-3);">${escapeHtml(source.url)}</span>
+                <div class="ui-panel" style="padding:10px 12px;">
+                    <div class="ui-toolbar">
+                        <div style="min-width:0;">
+                            <strong>${escapeHtml(source.name || source.url)}</strong>
+                            <p class="ui-muted path">${escapeHtml(source.url)}</p>
+                        </div>
+                        <div class="ui-row">
+                            ${source.trust === 'pinned' ? _badge('signed', 'badge-green') : _badge('unverified', 'badge-yellow')}
+                            <button class="ui-btn small" data-edit-source="${index}" data-testid="pkg-source-edit-${index}">Edit</button>
+                            <button class="ui-btn small" data-toggle-source="${index}" data-testid="pkg-source-toggle-${index}">${source.enabled === false ? 'Enable' : 'Disable'}</button>
+                            <button class="ui-btn small danger" data-remove-source="${index}" data-testid="pkg-source-remove-${index}">Remove</button>
+                        </div>
                     </div>
-                    ${source.trust === 'pinned' ? _badge('signed', 'badge-green') : _badge('unverified', 'badge-yellow')}
-                    <button class="btn-ghost" data-edit-source="${index}" data-testid="pkg-source-edit-${index}" style="font-size:10px;padding:3px 7px;">Edit</button>
-                    <button class="btn-ghost" data-toggle-source="${index}" data-testid="pkg-source-toggle-${index}" style="font-size:10px;padding:3px 7px;">${source.enabled === false ? 'Enable' : 'Disable'}</button>
-                    <button class="btn-ghost" data-remove-source="${index}" data-testid="pkg-source-remove-${index}" style="font-size:10px;padding:3px 7px;color:#ef4444;">Remove</button>
-                </div>`).join('') || '<div style="font-size:12px;color:var(--text-3);">No sources configured.</div>'}
+                </div>`).join('') || emptyState({ icon: 'package', title: 'No sources configured', hint: 'Add the official signed repository.' })}
         </div>`;
     panel.querySelector('#pkgAddSource')?.addEventListener('click', () => _addSourceDialog());
     panel.querySelector('#pkgAddOfficialSource')?.addEventListener('click', () => _addSourceDialog(OFFICIAL_SOURCE));
@@ -852,8 +869,7 @@ async function _addSourceDialog(preset = null) {
                 });
                 addNotification('Package source added', 'success');
                 await _loadAll();
-                const panel = document.getElementById('pkgSourcesPanel');
-                if (panel && !panel.hidden) _renderSources(panel);
+                if (_pkg.tab === 'sources' && shell) _renderSources(shell.view);
                 return true;
             } catch (err) {
                 setError(err.detail || err.message);
@@ -899,8 +915,7 @@ async function _editSourceDialog(index) {
                 });
                 addNotification('Package source updated', 'success');
                 await _loadAll();
-                const panel = document.getElementById('pkgSourcesPanel');
-                if (panel) _renderSources(panel);
+                if (_pkg.tab === 'sources' && shell) _renderSources(shell.view);
                 return true;
             } catch (err) {
                 setError(err.detail || err.message);
@@ -917,7 +932,7 @@ async function _removeSource(index) {
         await apiJsonFetch(`/api/packages/registry/sources/${index}`, { method: 'DELETE' });
         addNotification('Source removed', 'success');
         await _loadAll();
-        _renderSources(document.getElementById('pkgSourcesPanel'));
+        if (_pkg.tab === 'sources' && shell) _renderSources(shell.view);
     } catch (err) {
         addNotification(err.detail || err.message, 'error');
     }
@@ -932,7 +947,7 @@ async function _toggleSource(index) {
             body: JSON.stringify({ enabled: source.enabled === false }),
         });
         await _loadAll();
-        _renderSources(document.getElementById('pkgSourcesPanel'));
+        if (_pkg.tab === 'sources' && shell) _renderSources(shell.view);
     } catch (err) {
         addNotification(err.detail || err.message, 'error');
     }

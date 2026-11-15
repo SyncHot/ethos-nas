@@ -8,9 +8,12 @@ Status: written 2026-11-11 (TODO.md P6-04).
 
 > Some apps moved to Packages (`~/apps/compose/ethos-packages`, installed from the signed
 > `ethos-packages` repository): the Code Editor, Git Diff, Photos, Music, Videos, Cameras,
-> Docker Manager, Cleaner, Samba Shares, Kanban and Download Manager. Their UI lives in the package;
-> the routers and services described below stay in the core. The Editor stylesheet is still part of
-> `frontend/index.html` until TODO.md P3-10 lands.
+> Docker Manager, Cleaner, Samba Shares, Kanban, Download Manager and Books. Their UI lives in the
+> package; the routers and services described below stay in the core. The Editor stylesheet is still
+> part of `frontend/index.html` until TODO.md P3-10 lands.
+
+The core windows share one shell (`docs/app-ui.md`) — 218 px rail, panels, summary tiles, 11 px tables
+and one status line — matching the native package windows.
 
 | App | File | Router |
 |---|---|---|
@@ -23,10 +26,11 @@ Status: written 2026-11-11 (TODO.md P6-04).
 | Services | `apps/services.js` | `/api/systemd`, `/api/ethos-nas-service` |
 | SMART | `apps/smart.js` | `/api/smart` |
 | Samba shares | `ethos-packages/ethos-shares/frontend/app.js` (package) | `/api/shares` |
+| Books | `ethos-packages/ethos-books/frontend/app.js` (package) | `/api/files`, `/api/files/raw` + the package's own venv service (`docs/books.md`) |
 | Network | `apps/network.js` | `/api/network` |
 | Logs | `apps/logs.js` | `/api/logs`, `/ws/logs/*` |
 | Search | `apps/search.js` | `/api/files/universal-search` |
-| Settings | `apps/settings.js` | `/api/system`, `/api/auth`, `/api/health`, `/api/app/version` |
+| Settings | `apps/settings.js` (rail: Overview · Updates · Maintenance · Users · Security · Appearance · About) | `/api/system`, `/api/auth`, `/api/health`, `/api/app/version` |
 
 ---
 

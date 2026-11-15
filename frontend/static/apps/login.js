@@ -117,45 +117,7 @@ export async function submitLogin(username, password) {
     }
 }
 
-// ── CSS for login overlay ────────────────────────────────────────────────────
-
-function addLoginStyles() {
-    if (document.getElementById('login-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'login-styles';
-    style.textContent = `
-        #loginOverlay {
-            position: fixed; inset: 0; z-index: 10000;
-            background: linear-gradient(135deg, #0a1628 0%, #0d1f3c 40%, #132749 70%, #0a1628 100%);
-            display: flex; align-items: center; justify-content: center;
-        }
-        .login-card {
-            background: rgba(17,24,39,0.95); backdrop-filter: blur(20px);
-            border: 1px solid var(--border); border-radius: 20px;
-            padding: 40px 36px; width: min(400px, 90vw);
-            box-shadow: 0 32px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04) inset;
-        }
-        .login-brand { text-align: center; margin-bottom: 32px; }
-        .login-brand-icon { font-size: 48px; display: block; margin-bottom: 12px; filter: drop-shadow(0 4px 12px rgba(53,132,228,0.3)); }
-        .login-brand-title { font-size: 24px; font-weight: 700; color: white; letter-spacing: -0.5px; }
-        .login-brand-subtitle { font-size: 13px; color: var(--text-3); margin-top: 4px; }
-        .login-field { margin-bottom: 16px; }
-        .login-label { display: block; font-size: 12px; font-weight: 500; color: var(--text-2); margin-bottom: 6px; letter-spacing: 0.3px; text-transform: uppercase; }
-        .login-input {
-            width: 100%; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border);
-            background: rgba(0,0,0,0.3); color: white; font-size: 14px; outline: none; transition: border-color 0.15s;
-        }
-        .login-input:focus { border-color: rgba(91,154,255,0.5); box-shadow: 0 0 0 3px rgba(53,132,228,0.15); }
-        .login-input::placeholder { color: var(--text-3); }
-        .login-submit { width: 100%; padding: 12px; border-radius: 10px; border: none; background: var(--accent); color: white; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s; margin-top: 8px; }
-        .login-submit:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(53,132,228,0.3); }
-        .login-submit:disabled { opacity: 0.6; cursor: not-allowed; }
-        #loginError { text-align: center; color: #ef4444; font-size: 13px; min-height: 20px; margin-top: 12px; }
-    `;
-    document.head.appendChild(style);
-}
-
-addLoginStyles();
+// ── Login overlay styles live in frontend/static/css/ethos-ui.css ──────────
 
 // ── Export for dynamic creation from index.html ───────────────────────────────
 

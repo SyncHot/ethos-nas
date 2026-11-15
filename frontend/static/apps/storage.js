@@ -1,320 +1,309 @@
-// EthOS NAS — Storage Page (tabbed: Disks, Partitions, USB)
-import { escapeHtml, escapeAttr, formatBytes } from '../core/utils.js';
+// EthOS NAS — Storage (rail: Disks · Partitions · USB)
+import { escapeAttr, escapeHtml, formatBytes } from '../core/utils.js';
 import { uiIcon } from '../core/icons.js';
-import { apiFetch } from '../core/api.js';
-import { showConfirm as showModalConfirm, showFormModal } from '../core/modal.js';
-import { skeletonRows } from '../core/states.js';
+import { apiRequest } from '../core/api.js';
+import { showConfirm, showFormModal } from '../core/modal.js';
+import { skeletonRows, emptyState, errorState } from '../core/states.js';
+import { logError } from '../core/logger.js';
+import { notify } from '../core/notification-center.js';
+import { mountShell, applyBarWidths } from '../core/ui-shell.js';
 
-// ════════════════════════════════════════════
-// APP: Storage Page (tabbed: Disks, Partitions, USB)
-// ════════════════════════════════════════════
+const SECTIONS = [
+    { id: 'disks', label: 'Disks', title: 'Physical Disks', subtitle: 'Drives attached to this host.', testId: 'storage-tab-disks' },
+    { id: 'partitions', label: 'Partitions', title: 'Mounted Partitions', subtitle: 'Mounted filesystems and their usage.', testId: 'storage-tab-partitions' },
+    { id: 'usb', label: 'USB', title: 'USB Storage', subtitle: 'Removable drives, partitions and mount state.', testId: 'storage-tab-usb' },
+];
 
-let _currentStorageTab = 'disks';
-let _usbFilesystems = [];  // [{name, value}] — filesystems this host can create
+let shell = null;
+let navToken = 0;
+let _usbFilesystems = []; // [{name, value}] — filesystems this host can create
 
 export async function renderStoragePage(body) {
-    body.innerHTML = `
-        <div style="display:flex;flex-direction:column;height:100%;background:var(--surface-0);color: var(--text-1);font-family:system-ui,sans-serif;">
-            <div style="display:flex;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--surface-0);">
-                <button class="app-tab active" data-tab="disks" data-testid="storage-tab-disks">${uiIcon('disk', 16)}<span>Disks</span></button>
-                <button class="app-tab" data-tab="partitions" data-testid="storage-tab-partitions">${uiIcon('partition', 16)}<span>Partitions</span></button>
-                <button class="app-tab" data-tab="usb" data-testid="storage-tab-usb">${uiIcon('usb', 16)}<span>USB</span></button>
-            </div>
-            <div id="storageContent" style="flex:1;overflow-y:auto;padding:16px 20px;" tabindex="0" role="region" aria-label="Storage details">
-                ${skeletonRows(5)}
-            </div>
-        </div>`;
-
-    // Tab switching
-    body.querySelectorAll('.app-tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-            body.querySelectorAll('.app-tab').forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
-            _currentStorageTab = tab.dataset.tab;
-            switch (_currentStorageTab) {
-                case 'disks': loadDisksTab(); break;
-                case 'partitions': loadPartitionsTab(); break;
-                case 'usb': loadUsbTab(); break;
-            }
-        });
+    shell?.destroy();
+    shell = mountShell(body, {
+        idPrefix: 'storage',
+        title: 'Storage',
+        subtitle: 'Disks, partitions and removable media.',
+        icon: '💾',
+        sections: SECTIONS,
+        note: 'Formatting and partition changes are destructive.',
     });
-
-    await loadDisksTab();
+    shell.onSection(_runSection);
+    shell.setActive('disks');
 }
 
-// ════════════════════════════════════════════
-// TAB 1: Disks
-// ════════════════════════════════════════════
+function _runSection(id) {
+    const token = ++navToken;
+    const isCurrent = () => token === navToken && shell && shell.root.isConnected;
+    const loader = LOADERS[id];
+    if (loader) loader(isCurrent);
+}
 
-async function loadDisksTab() {
-    const content = document.getElementById('storageContent');
-    if (!content) return;
+// ════════════════════════════════════════════════════════════════════════════
+// Disks
+// ════════════════════════════════════════════════════════════════════════════
+
+async function loadDisksTab(isCurrent) {
+    const content = shell.view;
     content.innerHTML = skeletonRows(5);
+    shell.setStatus('Loading disks…');
 
     try {
-        const resp = await apiFetch('/api/storage/disks');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
+        const data = await apiRequest('/api/storage/disks');
+        if (!isCurrent()) return;
         const disks = data.disks || [];
 
-        let html = `
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-                <h3 class="section-title">${uiIcon('disk', 16)} Physical Disks</h3>
-                <span style="font-size:12px;color: var(--text-3);">${disks.length} disk${disks.length !== 1 ? 's' : ''}</span>
-            </div>`;
-
-        if (disks.length === 0) {
-            html += '<div class="glass-card" style="text-align:center;padding:24px;color: var(--text-3);">No disks detected.</div>';
-        } else {
-            html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;">';
-            for (const d of disks) {
-                const smart = (d.smart && typeof d.smart.healthy === 'boolean') ? d.smart.healthy : null;
-                // rotational: true = spinning, false = flash, null = unknown
-                // (USB-SATA bridges lie about it, so the backend sends null).
-                const rot = typeof d.rotational === 'boolean' ? d.rotational : null;
-                const isHDD = rot === true;
-                const kind = rot === null ? 'USB drive' : (isHDD ? 'HDD' : 'SSD');
-                const kindIcon = rot === null ? 'usb' : (isHDD ? 'disk' : 'ssd');
-                const sizeGb = d.size_bytes ? (d.size_bytes / 1073741824).toFixed(1) : '?';
-                html += `<div class="glass-card" style="padding:16px;display:flex;flex-direction:column;gap:8px;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <span style="display:flex;color:var(--text-3);" title="${kind}">${uiIcon(kindIcon, 22)}</span>
-                            <div>
-                                <div style="font-weight:700;color:white;font-size:14px;">${escapeHtml(d.label || d.model || d.name)}</div>
-                                <div style="color: var(--text-3);font-size:11px;font-family:monospace;">${escapeHtml(d.name)}</div>
-                            </div>
+        const cards = disks.map((disk) => {
+            const smart = (disk.smart && typeof disk.smart.healthy === 'boolean') ? disk.smart.healthy : null;
+            const rotational = typeof disk.rotational === 'boolean' ? disk.rotational : null;
+            const kind = rotational === null ? 'USB drive' : (rotational ? 'HDD' : 'SSD');
+            const kindIcon = rotational === null ? 'usb' : (rotational ? 'disk' : 'ssd');
+            const sizeGb = disk.size_bytes ? (disk.size_bytes / 1073741824).toFixed(1) : '?';
+            const smartTag = smart === null
+                ? '<span class="ui-tag" title="Health is measured by the SMART Health app (smartctl)">SMART —</span>'
+                : `<span class="ui-tag ${smart ? 'is-ok' : 'is-bad'}">${smart ? 'Healthy' : 'Warning'}</span>`;
+            return `<section class="ui-panel">
+                <div class="ui-toolbar">
+                    <div class="ui-row">
+                        <span class="ui-muted">${uiIcon(kindIcon, 22)}</span>
+                        <div>
+                            <h2>${escapeHtml(disk.label || disk.model || disk.name)}</h2>
+                            <p class="ui-muted path">${escapeHtml(disk.name)}</p>
                         </div>
-                        ${smart === null
-                            ? `<span style="padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;color:var(--text-3);border:1px solid var(--border);" title="Health is measured by the SMART Health app (smartctl)">SMART —</span>`
-                            : `<span class="${smart ? 'badge-green' : 'badge-red'}" style="padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;text-transform:uppercase;">${smart ? 'Healthy' : 'Warning'}</span>`}
                     </div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:12px;">
-                        <div><span style="color: var(--text-3);">Size</span><br><span style="color:white;font-weight:600;">${sizeGb} GB</span></div>
-                        <div><span style="color: var(--text-3);">Type</span><br><span style="color: var(--text-2);">${kind}</span></div>
-                        <div><span style="color: var(--text-3);">Interface</span><br><span style="color: var(--text-2);">${escapeHtml(d.transport || '—')}</span></div>
-                        <div><span style="color: var(--text-3);">Partitions</span><br><span style="color: var(--text-2);">${Number(d.partitions ?? 0)}</span></div>
-                        <div style="grid-column:1/-1;"><span style="color: var(--text-3);">Model</span><br><span style="color: var(--text-2);font-size:11px;">${escapeHtml(d.model || '—')}</span></div>
-                    </div>
-                    ${d.filesystem ? `<div style="font-size:12px;color: var(--text-2);border-top:1px solid var(--border);padding-top:8px;">
-                        <span>Filesystem: <strong style="color:white;">${escapeHtml(d.filesystem)}</strong></span>
-                        ${d.mountpoint ? `<span style="margin-left:12px;">Mount: <strong style="color:white;font-family:monospace;">${escapeHtml(d.mountpoint)}</strong></span>` : ''}
-                    </div>` : ''}
-                </div>`;
-            }
-            html += '</div>';
-        }
+                    ${smartTag}
+                </div>
+                <div class="ui-panel-body">
+                    <dl class="ui-kv">
+                        <div><dt class="ui-kv-key">Size</dt><dd class="ui-kv-value mono">${sizeGb} GB</dd></div>
+                        <div><dt class="ui-kv-key">Type</dt><dd class="ui-kv-value">${kind}</dd></div>
+                        <div><dt class="ui-kv-key">Interface</dt><dd class="ui-kv-value">${escapeHtml(disk.transport || '—')}</dd></div>
+                        <div><dt class="ui-kv-key">Partitions</dt><dd class="ui-kv-value">${Number(disk.partitions ?? 0)}</dd></div>
+                        <div><dt class="ui-kv-key">Model</dt><dd class="ui-kv-value">${escapeHtml(disk.model || '—')}</dd></div>
+                    </dl>
+                    ${disk.filesystem ? `<p class="ui-muted ui-panel-body">Filesystem <code class="ui-code">${escapeHtml(disk.filesystem)}</code>${disk.mountpoint ? ` · mounted at <code class="ui-code">${escapeHtml(disk.mountpoint)}</code>` : ''}</p>` : ''}
+                </div>
+            </section>`;
+        }).join('');
 
-        content.innerHTML = html;
-    } catch (e) {
-        content.innerHTML = `<div class="alert alert-error" style="justify-content:center;margin:20px 0;">${uiIcon('alert', 16)}<span>${escapeHtml(e.message)}</span></div>`;
+        content.innerHTML = `
+            <div class="ui-toolbar">
+                <h2>${uiIcon('disk', 13)} Physical Disks</h2>
+                <span class="ui-tag">${disks.length} disk${disks.length === 1 ? '' : 's'}</span>
+            </div>
+            ${disks.length
+                ? `<div class="ui-grid">${cards}</div>`
+                : emptyState({ icon: 'disk', title: 'No disks detected', hint: 'Attached drives appear here.' })}`;
+
+        shell.setStatus(`${disks.length} disk(s)`, 'ok');
+    } catch (err) {
+        if (!isCurrent()) return;
+        content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        shell.setStatus('Could not read disks', 'error');
+        logError('Storage: disks unavailable', err?.detail || err?.message);
     }
 }
 
-// ════════════════════════════════════════════
-// TAB 2: Partitions
-// ════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// Partitions
+// ════════════════════════════════════════════════════════════════════════════
 
-async function loadPartitionsTab() {
-    const content = document.getElementById('storageContent');
-    if (!content) return;
+async function loadPartitionsTab(isCurrent) {
+    const content = shell.view;
     content.innerHTML = skeletonRows(5);
+    shell.setStatus('Loading partitions…');
 
     try {
-        const resp = await apiFetch('/api/storage/partitions');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
+        const data = await apiRequest('/api/storage/partitions');
+        if (!isCurrent()) return;
         const parts = data.partitions || [];
 
-        let html = `
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-                <h3 class="section-title">${uiIcon('partition', 16)} Mounted Partitions</h3>
-                <span style="font-size:12px;color: var(--text-3);">${parts.length} partition${parts.length !== 1 ? 's' : ''}</span>
-            </div>`;
-
-        if (parts.length === 0) {
-            html += '<div class="glass-card" style="text-align:center;padding:24px;color: var(--text-3);">No partitions detected.</div>';
-        } else {
-            html += '<table class="app-table" style="width:100%;">';
-            html += `<thead><tr>
-                <th style="padding:8px 10px;text-align:left;">Device</th>
-                <th style="padding:8px 10px;text-align:left;">Mountpoint</th>
-                <th style="padding:8px 10px;text-align:left;">Filesystem</th>
-                <th style="padding:8px 10px;text-align:right;">Size</th>
-                <th style="padding:8px 10px;text-align:right;">Used</th>
-                <th style="padding:8px 10px;text-align:right;">Free</th>
-                <th style="padding:8px 10px;text-align:right;">Use%</th>
-            </tr></thead><tbody>`;
-            for (const p of parts) {
-                const usePct = p.percent || 0;
-                const barColor = usePct > 85 ? '#ef4444' : usePct > 60 ? '#eab308' : '#22c55e';
-                html += `<tr>
-                    <td style="padding:8px 10px;font-family:monospace;color:white;font-weight:600;">${escapeHtml(p.device)}</td>
-                    <td style="padding:8px 10px;font-family:monospace;color: var(--text-2);">${escapeHtml(p.mountpoint)}</td>
-                    <td style="padding:8px 10px;"><span class="badge-blue" style="padding:2px 8px;border-radius:4px;font-size:11px;">${escapeHtml(p.fstype)}</span></td>
-                    <td style="padding:8px 10px;text-align:right;color:white;font-family:monospace;font-size:12px;">${p.total_human || formatBytes(p.total || 0)}</td>
-                    <td style="padding:8px 10px;text-align:right;color:white;font-family:monospace;font-size:12px;">${p.used_human || formatBytes(p.used || 0)}</td>
-                    <td style="padding:8px 10px;text-align:right;color:white;font-family:monospace;font-size:12px;">${p.free_human || formatBytes(p.free || 0)}</td>
-                    <td style="padding:8px 10px;text-align:right;">
-                        <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;">
-                            <div class="progress-track" style="width:50px;height:6px;border-radius:3px;">
-                                <div class="progress-fill" style="width:${usePct}%;height:100%;border-radius:3px;background:${barColor};"></div>
-                            </div>
-                            <span style="font-size:12px;font-family:monospace;color:${barColor};">${usePct}%</span>
+        const rows = parts.map((part) => {
+            const percent = Math.max(0, Math.min(100, Number(part.percent) || 0));
+            const tone = percent > 85 ? 'bad' : percent > 60 ? 'warn' : 'ok';
+            return `<tr>
+                <td class="path">${escapeHtml(part.device)}</td>
+                <td class="path">${escapeHtml(part.mountpoint)}</td>
+                <td><span class="ui-tag is-info">${escapeHtml(part.fstype || '—')}</span></td>
+                <td class="num">${escapeHtml(part.total_human || formatBytes(part.total || 0))}</td>
+                <td class="num">${escapeHtml(part.used_human || formatBytes(part.used || 0))}</td>
+                <td class="num">${escapeHtml(part.free_human || formatBytes(part.free || 0))}</td>
+                <td class="num">
+                    <div class="ui-row">
+                        <div class="ui-bar" title="${escapeAttr(part.mountpoint)} usage">
+                            <div class="ui-bar-fill ${tone}" data-width="${percent}"></div>
                         </div>
-                    </td>
-                </tr>`;
-            }
-            html += '</tbody></table>';
-        }
+                        <span class="ui-tag is-${tone}">${percent}%</span>
+                    </div>
+                </td>
+            </tr>`;
+        }).join('');
 
-        content.innerHTML = html;
-    } catch (e) {
-        content.innerHTML = `<div class="alert alert-error" style="justify-content:center;margin:20px 0;">${uiIcon('alert', 16)}<span>${escapeHtml(e.message)}</span></div>`;
+        content.innerHTML = `
+            <div class="ui-toolbar">
+                <h2>${uiIcon('partition', 13)} Mounted Partitions</h2>
+                <span class="ui-tag">${parts.length} partition${parts.length === 1 ? '' : 's'}</span>
+            </div>
+            ${parts.length ? `<div class="ui-panel"><div class="ui-table-wrap"><table class="ui-table">
+                    <thead><tr><th>Device</th><th>Mountpoint</th><th>Filesystem</th>
+                        <th class="num">Size</th><th class="num">Used</th><th class="num">Free</th><th class="num">Use%</th></tr></thead>
+                    <tbody>${rows}</tbody>
+                </table></div></div>`
+                : emptyState({ icon: 'partition', title: 'No partitions detected', hint: 'Attached disks have no mounted filesystems.' })}`;
+
+        applyBarWidths(content);
+        shell.setStatus(`${parts.length} mounted partition(s)`, 'ok');
+    } catch (err) {
+        if (!isCurrent()) return;
+        content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        shell.setStatus('Could not read partitions', 'error');
+        logError('Storage: partitions unavailable', err?.detail || err?.message);
     }
 }
 
-// ════════════════════════════════════════════
-// TAB 3: USB
-// ════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// USB
+// ════════════════════════════════════════════════════════════════════════════
 
-async function loadUsbTab() {
-    const content = document.getElementById('storageContent');
-    if (!content) return;
+async function loadUsbTab(isCurrent) {
+    const content = shell.view;
     content.innerHTML = skeletonRows(4);
+    shell.setStatus('Loading USB devices…');
 
     try {
-        const resp = await apiFetch('/api/storage/usb');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
+        const data = await apiRequest('/api/storage/usb');
+        if (!isCurrent()) return;
         const devices = data.usb_devices || [];
         _usbFilesystems = data.supported_filesystems || [];
 
-        let html = `
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-                <h3 class="section-title">${uiIcon('usb', 16)} USB Storage Devices</h3>
-                <span style="font-size:12px;color: var(--text-3);">${devices.length} device${devices.length !== 1 ? 's' : ''}</span>
-            </div>`;
-
-        if (devices.length === 0) {
-            html += '<div class="glass-card" style="text-align:center;padding:24px;color: var(--text-3);">No USB storage devices connected.</div>';
-        } else {
-            html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:12px;">';
-            for (const u of devices) {
-                const sizeGb = u.size_bytes ? (u.size_bytes / 1073741824).toFixed(1) : '?';
-                html += `<div class="glass-card" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
-                    <div style="display:flex;align-items:center;gap:12px;">
-                        <span style="display:flex;color:var(--text-3);">${uiIcon('usb', 26)}</span>
-                        <div style="flex:1;min-width:0;">
-                            <div style="font-weight:700;color:white;font-size:14px;">${escapeHtml(u.label || u.model || u.name)}</div>
-                            <div style="display:flex;gap:16px;margin-top:2px;font-size:12px;color: var(--text-2);">
-                                <span>${escapeHtml(u.device)}</span>
-                                <span>${sizeGb} GB</span>
-                            </div>
-                        </div>
-                        <div style="display:flex;gap:6px;flex-shrink:0;">
-                            <button class="btn-ghost btn-sm usb-addpart-btn" data-device="${escapeAttr(u.device)}" data-name="${escapeAttr(u.name)}" data-testid="usb-addpart-${escapeAttr(u.name)}" title="Create a new partition in the free space of this disk">${uiIcon('plus', 13)} Partition</button>
-                            <button class="btn-danger btn-sm usb-init-btn" data-device="${escapeAttr(u.device)}" data-name="${escapeAttr(u.name)}" data-testid="usb-init-${escapeAttr(u.name)}" title="Wipe all partitions and recreate one full-size volume">${uiIcon('refresh', 13)} Initialize</button>
-                        </div>
-                    </div>`;
-
-                const partitions = u.partitions || [];
-                if (partitions.length === 0) {
-                    html += '<div style="font-size:12px;color:#eab308;">No partition table — use Partition or Initialize to set this drive up.</div>';
-                } else {
-                    for (const p of partitions) {
-                        const sizeGbP = p.size_bytes ? (p.size_bytes / 1073741824).toFixed(1) : '?';
-                        let status, mountBtn;
-                        if (!p.mountable) {
-                            status = `<span style="color:#eab308;">${escapeHtml(p.fstype || 'unformatted')}</span>`;
-                            mountBtn = '';
-                        } else if (p.mounted) {
-                            status = `<span style="font-family:monospace;color:#22c55e;">${escapeHtml(p.mountpoint)}</span>`;
-                            mountBtn = `<button class="btn-warning btn-sm usb-unmount-btn" data-device="${escapeAttr(p.device)}" data-testid="usb-unmount-${escapeAttr(p.name)}">Unmount</button>`;
-                        } else {
-                            status = p.last_mountpoint
-                                ? `<span style="color:#eab308;">Not mounted <span style="font-family:monospace;color:var(--text-3);">(was ${escapeHtml(p.last_mountpoint)})</span></span>`
-                                : '<span style="color:#eab308;">Not mounted</span>';
-                            mountBtn = `<button class="btn-success btn-sm usb-mount-btn" data-device="${escapeAttr(p.device)}" data-folder="${escapeAttr(p.last_mountpoint || p.label || ('usb_' + p.name))}" data-testid="usb-mount-${escapeAttr(p.name)}">Mount</button>`;
-                        }
-                        html += `<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-top:1px solid var(--border);font-size:12px;">
-                            <span style="font-family:monospace;color:white;font-weight:600;">${escapeHtml(p.name)}</span>
-                            ${p.label ? `<span style="color:white;">${escapeHtml(p.label)}</span>` : ''}
-                            ${p.mountable ? `<span class="badge-blue" style="padding:2px 8px;border-radius:4px;font-size:11px;">${escapeHtml(p.fstype)}</span>` : ''}
-                            <span style="color: var(--text-3);">${sizeGbP} GB</span>
-                            ${p.managed ? '<span class="badge-green" style="padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;text-transform:uppercase;">Persistent</span>' : ''}
-                            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${status}</span>
-                            ${mountBtn}
-                            ${p.mountable ? `<button class="btn-ghost btn-sm usb-relabel-btn" data-device="${escapeAttr(p.device)}" data-label="${escapeAttr(p.label || '')}" data-fstype="${escapeAttr(p.fstype || '')}" data-testid="usb-relabel-${escapeAttr(p.name)}" title="Change the volume label (no reformat, no data loss)">${uiIcon('edit', 13)} Rename</button>` : ''}
-                            <button class="btn-ghost btn-sm usb-format-btn" data-device="${escapeAttr(p.device)}" data-name="${escapeAttr(p.name)}" data-fstype="${escapeAttr(p.fstype || '')}" data-testid="usb-format-${escapeAttr(p.name)}" title="Format this partition (erases all data)">${uiIcon('settings', 13)} Format</button>
-                            <button class="btn-danger btn-sm usb-delete-btn" data-device="${escapeAttr(p.device)}" data-testid="usb-delete-${escapeAttr(p.name)}" title="Delete this partition (erases all data)">${uiIcon('trash', 13)} Delete</button>
-                        </div>`;
+        const cards = devices.map((device) => {
+            const sizeGb = device.size_bytes ? (device.size_bytes / 1073741824).toFixed(1) : '?';
+            const partitions = device.partitions || [];
+            const partitionRows = partitions.length
+                ? partitions.map((part) => {
+                    const size = part.size_bytes ? (part.size_bytes / 1073741824).toFixed(1) : '?';
+                    let status;
+                    let mountButton = '';
+                    if (!part.mountable) {
+                        status = `<span class="ui-tag is-warn">${escapeHtml(part.fstype || 'unformatted')}</span>`;
+                    } else if (part.mounted) {
+                        status = `<span class="ui-tag is-ok">${escapeHtml(part.mountpoint)}</span>`;
+                        mountButton = `<button class="ui-btn small" data-class="usb-unmount" data-device="${escapeAttr(part.device)}" data-testid="usb-unmount-${escapeAttr(part.name)}">Unmount</button>`;
+                    } else {
+                        status = `<span class="ui-tag is-warn">Not mounted${part.last_mountpoint ? ` (was ${escapeHtml(part.last_mountpoint)})` : ''}</span>`;
+                        mountButton = `<button class="ui-btn small primary" data-class="usb-mount" data-device="${escapeAttr(part.device)}" data-folder="${escapeAttr(part.last_mountpoint || part.label || (`usb_${part.name}`))}" data-testid="usb-mount-${escapeAttr(part.name)}">Mount</button>`;
                     }
-                }
+                    return `<div class="ui-list-row">
+                        <span class="ui-tag">${escapeHtml(part.name)}</span>
+                        ${part.label ? `<span>${escapeHtml(part.label)}</span>` : ''}
+                        ${part.mountable ? `<span class="ui-tag is-info">${escapeHtml(part.fstype || '—')}</span>` : ''}
+                        <span class="ui-tag">${size} GB</span>
+                        ${part.managed ? '<span class="ui-tag is-ok">Persistent</span>' : ''}
+                        <span class="ui-list-row-main">${status}</span>
+                        ${mountButton}
+                        ${part.mountable ? `<button class="ui-btn small" data-class="usb-relabel" data-device="${escapeAttr(part.device)}" data-label="${escapeAttr(part.label || '')}" data-fstype="${escapeAttr(part.fstype || '')}" data-testid="usb-relabel-${escapeAttr(part.name)}">Rename</button>` : ''}
+                        <button class="ui-btn small" data-class="usb-format" data-device="${escapeAttr(part.device)}" data-name="${escapeAttr(part.name)}" data-fstype="${escapeAttr(part.fstype || '')}" data-testid="usb-format-${escapeAttr(part.name)}">Format</button>
+                        <button class="ui-btn small danger" data-class="usb-delete" data-device="${escapeAttr(part.device)}" data-testid="usb-delete-${escapeAttr(part.name)}">Delete</button>
+                    </div>`;
+                }).join('')
+                : '<p class="ui-callout">No partition table — use Partition or Initialize to set this drive up.</p>';
 
-                html += '</div>';
-            }
-            html += '</div>';
-        }
+            return `<section class="ui-panel">
+                <div class="ui-toolbar">
+                    <div class="ui-row">
+                        <span class="ui-muted">${uiIcon('usb', 24)}</span>
+                        <div>
+                            <h2>${escapeHtml(device.label || device.model || device.name)}</h2>
+                            <p class="ui-muted path">${escapeHtml(device.device)} · ${sizeGb} GB</p>
+                        </div>
+                    </div>
+                    <div class="ui-row">
+                        <button class="ui-btn small" data-class="usb-addpart" data-device="${escapeAttr(device.device)}" data-name="${escapeAttr(device.name)}" data-testid="usb-addpart-${escapeAttr(device.name)}">${uiIcon('plus', 12)} Partition</button>
+                        <button class="ui-btn small danger" data-class="usb-init" data-device="${escapeAttr(device.device)}" data-name="${escapeAttr(device.name)}" data-testid="usb-init-${escapeAttr(device.name)}">${uiIcon('refresh', 12)} Initialize</button>
+                    </div>
+                </div>
+                <div class="ui-panel-body ui-list">${partitionRows}</div>
+            </section>`;
+        }).join('');
 
-        content.innerHTML = html;
+        content.innerHTML = `
+            <div class="ui-toolbar">
+                <h2>${uiIcon('usb', 13)} USB Storage Devices</h2>
+                <span class="ui-tag">${devices.length} device${devices.length === 1 ? '' : 's'}</span>
+            </div>
+            ${devices.length
+                ? `<div class="ui-grid">${cards}</div>`
+                : emptyState({ icon: 'usb', title: 'No USB storage connected', hint: 'Plug a drive in and refresh this view.' })}`;
 
-        // Wire up mount/unmount buttons.
-        content.querySelectorAll('.usb-mount-btn').forEach(btn => {
-            btn.addEventListener('click', () => usbMountAction(btn));
-        });
-        content.querySelectorAll('.usb-unmount-btn').forEach(btn => {
-            btn.addEventListener('click', () => usbUnmountAction(btn));
-        });
-        // Wire up partition management buttons.
-        content.querySelectorAll('.usb-relabel-btn').forEach(btn => {
-            btn.addEventListener('click', () => openRelabelDialog(btn.dataset.device, btn.dataset.label || '', btn.dataset.fstype || ''));
-        });
-        content.querySelectorAll('.usb-format-btn').forEach(btn => {
-            btn.addEventListener('click', () => openFormatDialog(btn.dataset.device, btn.dataset.name || btn.dataset.device, btn.dataset.fstype || ''));
-        });
-        content.querySelectorAll('.usb-delete-btn').forEach(btn => {
-            btn.addEventListener('click', () => usbDeletePartitionAction(btn));
-        });
-        content.querySelectorAll('.usb-addpart-btn').forEach(btn => {
-            btn.addEventListener('click', () => openPartitionDialog(btn.dataset.device, btn.dataset.name));
-        });
-        content.querySelectorAll('.usb-init-btn').forEach(btn => {
-            btn.addEventListener('click', () => openInitDialog(btn.dataset.device, btn.dataset.name));
-        });
-    } catch (e) {
-        content.innerHTML = `<div class="alert alert-error" style="justify-content:center;margin:20px 0;">${uiIcon('alert', 16)}<span>${escapeHtml(e.message)}</span></div>`;
+        _wireUsbActions(content);
+        shell.setStatus(`${devices.length} USB device(s)`, 'ok');
+    } catch (err) {
+        if (!isCurrent()) return;
+        content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        shell.setStatus('Could not read USB devices', 'error');
+        logError('Storage: USB devices unavailable', err?.detail || err?.message);
     }
 }
 
+function _wireUsbActions(content) {
+    content.querySelectorAll('[data-class="usb-mount"]').forEach((btn) => {
+        btn.addEventListener('click', () => usbMountAction(btn));
+    });
+    content.querySelectorAll('[data-class="usb-unmount"]').forEach((btn) => {
+        btn.addEventListener('click', () => usbUnmountAction(btn));
+    });
+    content.querySelectorAll('[data-class="usb-relabel"]').forEach((btn) => {
+        btn.addEventListener('click', () => openRelabelDialog(btn.dataset.device, btn.dataset.label || '', btn.dataset.fstype || ''));
+    });
+    content.querySelectorAll('[data-class="usb-format"]').forEach((btn) => {
+        btn.addEventListener('click', () => openFormatDialog(btn.dataset.device, btn.dataset.name || btn.dataset.device, btn.dataset.fstype || ''));
+    });
+    content.querySelectorAll('[data-class="usb-delete"]').forEach((btn) => {
+        btn.addEventListener('click', () => usbDeletePartitionAction(btn));
+    });
+    content.querySelectorAll('[data-class="usb-addpart"]').forEach((btn) => {
+        btn.addEventListener('click', () => openPartitionDialog(btn.dataset.device, btn.dataset.name));
+    });
+    content.querySelectorAll('[data-class="usb-init"]').forEach((btn) => {
+        btn.addEventListener('click', () => openInitDialog(btn.dataset.device, btn.dataset.name));
+    });
+}
+
+const LOADERS = {
+    disks: loadDisksTab,
+    partitions: loadPartitionsTab,
+    usb: loadUsbTab,
+};
+
+// ════════════════════════════════════════════════════════════════════════════
+// USB dialogs
+// ════════════════════════════════════════════════════════════════════════════
+
 function fsSelectHtml(name, current) {
-    const opts = _usbFilesystems.length ? _usbFilesystems : [{ name: 'ext4', value: 'ext4' }];
-    return `<select class="ethos-modal-input" name="${name}" aria-label="${name}" style="margin-top:4px;">` +
-        opts.map(f => `<option value="${escapeAttr(f.value)}"${f.value === current ? ' selected' : ''}>${escapeHtml(f.name)}</option>`).join('') +
-        `</select>`;
+    const options = _usbFilesystems.length ? _usbFilesystems : [{ name: 'ext4', value: 'ext4' }];
+    return `<select class="ethos-modal-input" name="${name}" aria-label="${name}" style="margin-top:4px;">`
+        + options.map((fs) => `<option value="${escapeAttr(fs.value)}"${fs.value === current ? ' selected' : ''}>${escapeHtml(fs.name)}</option>`).join('')
+        + '</select>';
 }
 
 function labelInputHtml(name) {
     return `<input class="ethos-modal-input" name="${name}" maxlength="16" placeholder="Volume label (optional)" style="margin-top:4px;">`;
 }
 
-const FIELD_LABEL = 'font-size:12px;color:var(--modal-text,#cbd5e1);opacity:.75;margin-bottom:0;';
+const FIELD_LABEL = 'font-size:12px;color:var(--text-2);opacity:.75;margin-bottom:0;';
+const FIELD_DANGER = 'margin:0 0 14px;font-size:13px;color:var(--ui-bad);font-weight:600;';
+const FIELD_NOTE = 'margin:12px 0 0;font-size:11px;color:var(--text-3);line-height:1.5;';
 
-async function usbPostAction(url, payload, successMsg) {
+async function usbPostAction(url, payload, successMessage) {
     try {
-        const resp = await apiFetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
-        window.addNotification(successMsg, 'success');
-    } catch (e) {
-        window.addNotification(e.message, 'error');
+        await apiRequest(url, { method: 'POST', body: payload });
+        notify({ kind: 'success', message: successMessage });
+    } catch (err) {
+        logError(`Storage: ${url} failed`, err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || 'Unknown error' });
         return false;
     }
-    await loadUsbTab();
+    _runSection('usb');
     return true;
 }
 
@@ -324,12 +313,12 @@ async function openFormatDialog(device, devName, currentFstype = '') {
         danger: true,
         confirmLabel: 'Format',
         bodyHtml: `
-            <p style="margin:0 0 14px;font-size:13px;color:#ef4444;font-weight:600;display:flex;align-items:center;gap:6px;">${uiIcon('alert', 14)} All data on ${escapeHtml(device)} will be permanently erased.</p>
-            <div style="margin-bottom:0;${FIELD_LABEL}">Filesystem</div>
+            <p style="${FIELD_DANGER}">${uiIcon('alert', 14)} All data on ${escapeHtml(device)} will be permanently erased.</p>
+            <div style="${FIELD_LABEL}">Filesystem</div>
             ${fsSelectHtml('fstype', currentFstype)}
             <div style="margin-top:12px;${FIELD_LABEL}">Label</div>
             ${labelInputHtml('label')}
-            <p style="margin:14px 0 0;font-size:11px;color:var(--text-3);line-height:1.5;">If the volume is mounted it will be unmounted, reformatted and remounted automatically.</p>`,
+            <p style="${FIELD_NOTE}">If the volume is mounted it will be unmounted, reformatted and remounted automatically.</p>`,
     });
     if (!values) return;
     await usbPostAction('/api/storage/usb/format', {
@@ -338,20 +327,20 @@ async function openFormatDialog(device, devName, currentFstype = '') {
 }
 
 async function openRelabelDialog(device, currentLabel, fstype) {
-    const fs = _usbFilesystems.find(f => f.value === fstype);
-    const maxLen = fs ? fs.max_label : 16;
+    const fs = _usbFilesystems.find((item) => item.value === fstype);
+    const maxLength = fs ? fs.max_label : 16;
     const values = await showFormModal({
         title: `Rename ${device}`,
         confirmLabel: 'Rename',
         bodyHtml: `
             <div style="${FIELD_LABEL}">New volume label</div>
-            <input class="ethos-modal-input" name="label" maxlength="${maxLen}" value="${escapeAttr(currentLabel)}" placeholder="Volume label" style="margin-top:4px;">
-            <p style="margin:12px 0 0;font-size:11px;color:var(--text-3);line-height:1.5;">Letters, digits, dot and dash only (max ${maxLen} chars). No data is touched — if the volume is mounted it is briefly unmounted and remounted at the same path.</p>`,
+            <input class="ethos-modal-input" name="label" maxlength="${maxLength}" value="${escapeAttr(currentLabel)}" placeholder="Volume label" style="margin-top:4px;">
+            <p style="${FIELD_NOTE}">Letters, digits, dot and dash only (max ${maxLength} chars). No data is touched — if the volume is mounted it is briefly unmounted and remounted at the same path.</p>`,
     });
     if (!values) return;
     const label = (values.label || '').trim();
     if (!label) {
-        window.addNotification('Label must not be empty', 'error');
+        notify({ kind: 'error', message: 'Label must not be empty' });
         return;
     }
     await usbPostAction('/api/storage/usb/relabel', { device, label }, `Renamed ${device} to “${label}”`);
@@ -362,7 +351,7 @@ async function openPartitionDialog(diskDevice, diskName) {
         title: `New partition — ${diskName}`,
         confirmLabel: 'Create',
         bodyHtml: `
-            <p style="margin:0 0 14px;font-size:13px;color:var(--modal-text,#cbd5e1);line-height:1.6;">A new partition will be created in the free space of <strong>${escapeHtml(diskDevice)}</strong>, formatted and mounted persistently (auto-mount on boot).</p>
+            <p style="margin:0 0 14px;font-size:13px;color:var(--text-2);line-height:1.6;">A new partition will be created in the free space of <strong>${escapeHtml(diskDevice)}</strong>, formatted and mounted persistently (auto-mount on boot).</p>
             <div style="${FIELD_LABEL}">Size (GB) — leave empty to use all remaining free space</div>
             <input class="ethos-modal-input" name="size_gb" type="number" min="1" step="0.5" placeholder="all remaining free space" style="margin-top:4px;">
             <div style="margin-top:12px;${FIELD_LABEL}">Filesystem</div>
@@ -378,9 +367,9 @@ async function openPartitionDialog(diskDevice, diskName) {
 }
 
 async function openInitDialog(diskDevice, diskName) {
-    const ok = await showModalConfirm(
+    const ok = await showConfirm(
         'Initialize USB disk',
-        `This wipes EVERYTHING on ${diskDevice}: all partitions and all data are permanently destroyed, then a fresh GPT table with one full-size volume is created. Continue?`
+        `This wipes EVERYTHING on ${diskDevice}: all partitions and all data are permanently destroyed, then a fresh GPT table with one full-size volume is created. Continue?`,
     );
     if (!ok) return;
 
@@ -389,7 +378,7 @@ async function openInitDialog(diskDevice, diskName) {
         danger: true,
         confirmLabel: 'Wipe & Initialize',
         bodyHtml: `
-            <p style="margin:0 0 14px;font-size:13px;color:#ef4444;font-weight:600;display:flex;align-items:center;gap:6px;">${uiIcon('alert', 14)} All partitions and data on ${escapeHtml(diskDevice)} will be destroyed.</p>
+            <p style="${FIELD_DANGER}">${uiIcon('alert', 14)} All partitions and data on ${escapeHtml(diskDevice)} will be destroyed.</p>
             <div style="${FIELD_LABEL}">Filesystem for the new volume</div>
             ${fsSelectHtml('fstype', 'ext4')}
             <div style="margin-top:12px;${FIELD_LABEL}">Label</div>
@@ -403,19 +392,19 @@ async function openInitDialog(diskDevice, diskName) {
 
 async function usbDeletePartitionAction(btn) {
     const device = btn.dataset.device;
-    const ok = await showModalConfirm(
+    const ok = await showConfirm(
         'Delete partition',
-        `Delete ${device}? The partition is removed from the disk and ALL data on it is permanently erased.`
+        `Delete ${device}? The partition is removed from the disk and ALL data on it is permanently erased.`,
     );
     if (!ok) return;
 
-    const prev = btn.innerHTML;
+    const previous = btn.innerHTML;
     btn.disabled = true;
     btn.textContent = 'Deleting...';
     const done = await usbPostAction('/api/storage/usb/delete-partition', { device }, `Deleted partition ${device}`);
     if (!done) {
         btn.disabled = false;
-        btn.innerHTML = prev;   // keep the trash icon instead of an emoji
+        btn.innerHTML = previous;
     }
 }
 
@@ -428,58 +417,49 @@ async function usbMountAction(btn) {
             <p style="margin:0 0 14px;font-size:13px;color:var(--text-2);line-height:1.6;">Mount ${escapeHtml(device)} permanently? An entry with the nofail option is added to /etc/fstab: the drive mounts automatically on every boot, and if it is disconnected at boot time the system still starts normally.</p>
             <div style="${FIELD_LABEL}">Folder name under /mnt</div>
             <input class="ethos-modal-input" name="folder" maxlength="40" value="${escapeAttr(btn.dataset.folder || '')}" placeholder="e.g. Backups — stable across re-mounts" style="margin-top:4px;">
-            <p style="margin:12px 0 0;font-size:11px;color:var(--text-3);line-height:1.5;">The same folder is reused on every mount of this drive, so backup jobs can target a fixed path.</p>`,
+            <p style="${FIELD_NOTE}">The same folder is reused on every mount of this drive, so backup jobs can target a fixed path.</p>`,
     });
     if (!values) return;
 
-    const prev = btn.innerHTML;
+    const previous = btn.innerHTML;
     btn.disabled = true;
     btn.textContent = 'Mounting...';
     try {
-        const resp = await apiFetch('/api/storage/usb/mount', {
+        const result = await apiRequest('/api/storage/usb/mount', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ device, folder: (values.folder || '').trim() || null }),
+            body: { device, folder: (values.folder || '').trim() || null },
         });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
-        window.addNotification(`Mounted ${device} at ${data.mountpoint}`, 'success');
-    } catch (e) {
-        window.addNotification(e.message, 'error');
-        btn.disabled = false;      // a failed mount must not leave a dead button
-        btn.innerHTML = prev;
+        notify({ kind: 'success', message: `Mounted ${device} at ${result.mountpoint}` });
+    } catch (err) {
+        logError('Storage: USB mount failed', err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || 'Mount failed' });
+        btn.disabled = false;
+        btn.innerHTML = previous;
         return;
     }
-    await loadUsbTab();
+    _runSection('usb');
 }
 
 async function usbUnmountAction(btn) {
     const device = btn.dataset.device;
-    const ok = await showModalConfirm(
+    const ok = await showConfirm(
         'Unmount USB drive',
-        `Unmount ${device} permanently? The drive is unmounted now and its /etc/fstab entries are removed, so it will not be mounted automatically on the next boot.`
+        `Unmount ${device} permanently? The drive is unmounted now and its /etc/fstab entries are removed, so it will not be mounted automatically on the next boot.`,
     );
     if (!ok) return;
 
-    const prev = btn.innerHTML;
+    const previous = btn.innerHTML;
     btn.disabled = true;
     btn.textContent = 'Unmounting...';
     try {
-        const resp = await apiFetch('/api/storage/usb/unmount', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ device }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
-        window.addNotification(`Unmounted ${device}`, 'success');
-    } catch (e) {
-        window.addNotification(e.message, 'error');
+        await apiRequest('/api/storage/usb/unmount', { method: 'POST', body: { device } });
+        notify({ kind: 'success', message: `Unmounted ${device}` });
+    } catch (err) {
+        logError('Storage: USB unmount failed', err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || 'Unmount failed' });
         btn.disabled = false;
-        btn.innerHTML = prev;
+        btn.innerHTML = previous;
         return;
     }
-    await loadUsbTab();
+    _runSection('usb');
 }
-
-window.renderStoragePage = renderStoragePage;

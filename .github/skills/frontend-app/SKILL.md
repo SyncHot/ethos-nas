@@ -17,14 +17,21 @@ argument-hint: "Which app or screen are you adding/changing?"
 ### 1. Create the module
 `frontend/static/apps/<app>.js`:
 ```js
-import { apiJsonFetch } from '../core/api.js';
-import { addNotification } from '../core/notification-center.js';
+import { mountShell } from '../core/ui-shell.js';
+import { apiRequest } from '../core/api.js';
+import { notify } from '../core/notification-center.js';
 import { escapeHtml } from '../core/utils.js';
 
 export function render<App>Page(container) {
-    // render, fetch, wire events
+    const shell = mountShell(container, {
+        idPrefix: '<app>', title: '<App>', icon: '🧩',
+        sections: [{ id: 'main', label: 'Overview' }], rail: false,
+    });
+    // render into shell.view, fetch, wire events
 }
 ```
+Use the shared shell (`docs/app-ui.md`, skill `app-ui`) for every app window;
+Files/Terminal/Login are the only layout exceptions.
 
 ### 2. Register the app (all required)
 1. `frontend/static/app.js` — import the renderer and add it to `RENDERERS`:
