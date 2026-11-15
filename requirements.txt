@@ -1,27 +1,27 @@
 # EthOS NAS — dependencies
 
 # Web framework + ASGI server
-fastapi>=0.115.0,<1.0.0
-uvicorn[standard]>=0.34.0,<1.0.0
+fastapi>=0.162.5,<1.0.0
+uvicorn[standard]>=0.54.0,<1.0.0
 
 # FastAPI parses `File(...)`/`Form(...)` endpoints (uploads, chunked uploads,
 # appearance wallpapers) with python-multipart; without it the app refuses to
 # start with "Form data requires python-multipart to be installed".
-python-multipart>=0.0.12,<1
+python-multipart>=0.0.33,<1
 
 # Imported directly by the backup, files, docker and compose-policy modules
 # (also pulled in by uvicorn[standard], but required explicitly here).
-PyYAML>=6.0,<7
+PyYAML>=6.0.3,<7
 
 # Image thumbnail generation (WebP output)
-Pillow>=10.0.0,<13
+Pillow>=13.0.0,<14
 
 # Face detection for video thumbnails used to live here (opencv-python-headless).
 # It now runs in the `ethos-media-enhance` package, see docs/app-store.md.
 
 # System metrics + Docker SDK
-psutil>=7.0.0,<8
-docker>=7.1.0,<8
+psutil>=7.2.2,<8
+docker>=7.2.0,<8
 
 # PAM authentication (Linux credentials) + bcrypt hashing fallback
 # Unmaintained upstream — capped so a surprise major bump cannot break login.
@@ -30,7 +30,7 @@ pamela>=1.2.0,<2
 # AES-256-GCM at-rest encryption for the PhotoStation Private section
 # (PIN-derived key, files stored as <name>.ethos.enc) + Ed25519 package
 # repository signatures (scripts/ethos-pack, services/package_repo.py).
-cryptography>=42.0.0,<50
+cryptography>=50.0.2,<51
 
 # Music (YouTube search/stream/download) used to require yt-dlp here. It now
 # runs in the `ethos-music-engine` package with its own offline wheelhouse,
