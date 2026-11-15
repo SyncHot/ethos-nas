@@ -2,7 +2,7 @@
 // Download settings live in the Download Manager package window (Packages).
 import { escapeHtml, formatBytes, formatUptime, formatDate } from '../core/utils.js';
 import { uiIcon } from '../core/icons.js';
-import { apiFetch, readErrorDetail } from '../core/api.js';
+import { apiFetch, apiRequest, readErrorDetail } from '../core/api.js';
 import { addNotification } from '../core/notification-center.js';
 import { showRestartOverlay } from '../core/window-manager.js';
 import { skeletonRows } from '../core/states.js';
@@ -154,6 +154,17 @@ async function loadSystemTab() {
                 <a id="apkLinkVideo" href="#" aria-disabled="true" data-testid="apk-link-video" class="btn-ghost btn-sm" style="text-decoration:none;">${uiIcon('download', 13)} Download APK</a>
             </div>
 
+            <div class="glass-card" id="coreUpdateCard" data-testid="core-update-card" style="margin-top:12px;padding:16px 20px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+                    <div>
+                        <div style="font-size:13px;color:white;font-weight:600;">${uiIcon('settings', 14)} EthOS NAS <span id="coreVersion" style="font-size:11px;color: var(--text-3);font-weight:400;">(version…)</span></div>
+                        <div id="coreUpdateStatus" data-testid="core-update-status" style="font-size:11px;color: var(--text-3);">Loading update status…</div>
+                    </div>
+                    <button id="coreUpdateCheck" data-testid="core-update-check" class="btn-ghost btn-sm" hidden>${uiIcon('refresh', 13)} Check for updates</button>
+                </div>
+                <div id="coreUpdateNotes" style="display:none;margin-top:10px;font-size:11px;color:var(--text-2);white-space:pre-wrap;"></div>
+            </div>
+
             <div class="glass-card" style="margin-top:12px;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;">
                 <div>
                     <div style="font-size:13px;color:white;font-weight:600;">Restart Application</div>
@@ -172,8 +183,87 @@ async function loadSystemTab() {
     loadHealthCard();
     loadAppVersions();
     loadCachesCard();
+    loadUpdateCard();
     } catch (e) {
         content.innerHTML = `<div class="alert alert-error" style="justify-content:center;margin:20px 0;">${uiIcon('alert', 16)}<span>${escapeHtml(e.message)}</span></div>`;
+    }
+}
+
+/** Role from the JWT payload (the API enforces it; this only hides buttons). */
+function _jwtRole() {
+    try {
+        const parts = (localStorage.getItem('token') || '').split('.');
+        if (parts.length < 2) return 'user';
+        return JSON.parse(atob(parts[1])).role || 'user';
+    } catch (_) {
+        return 'user';
+    }
+}
+
+/**
+ * Core update card: version of the running checkout, the last cached check and
+ * (admins only) a button that refreshes the signed release index.
+ * Check-only — nothing is installed from the browser (docs/updates.md).
+ */
+async function loadUpdateCard() {
+    const versionEl = document.getElementById('coreVersion');
+    const statusEl = document.getElementById('coreUpdateStatus');
+    const notesEl = document.getElementById('coreUpdateNotes');
+    const btn = document.getElementById('coreUpdateCheck');
+    if (!versionEl || !statusEl) return;
+    const isAdmin = _jwtRole() === 'admin';
+    if (btn) btn.hidden = !isAdmin;
+
+    const render = (data) => {
+        const cur = data.current || {};
+        versionEl.textContent = `v${cur.version || '?'}${cur.git_sha ? ' · ' + cur.git_sha : ''}`;
+        const latest = data.latest || null;
+        const checked = data.checked_at_iso ? `last checked ${formatDate(data.checked_at_iso)}` : 'never checked';
+        if (notesEl) {
+            notesEl.textContent = (data.update_available === true && latest && latest.notes) ? latest.notes : '';
+            notesEl.style.display = notesEl.textContent ? 'block' : 'none';
+        }
+        if (data.enabled === false) {
+            statusEl.textContent = 'Update checks are disabled on this server';
+            statusEl.style.color = 'var(--text-3)';
+        } else if (data.error) {
+            statusEl.textContent = `Check failed — ${data.error} (${checked})`;
+            statusEl.style.color = '#eab308';
+        } else if (data.update_available === true && latest) {
+            statusEl.textContent = `Update available: v${latest.version || '?'}${latest.git_sha ? ' · ' + latest.git_sha : ''} — ${checked}`;
+            statusEl.style.color = '#eab308';
+        } else if (data.update_available === false) {
+            statusEl.textContent = `Up to date — ${checked}`;
+            statusEl.style.color = 'var(--text-2)';
+        } else {
+            statusEl.textContent = `Not checked yet — ${checked}`;
+            statusEl.style.color = 'var(--text-3)';
+        }
+    };
+
+    try {
+        render(await apiRequest('/api/system/update'));
+    } catch (err) {
+        statusEl.textContent = `Could not read update status — ${err.detail || err.message}`;
+        statusEl.style.color = '#eab308';
+    }
+
+    if (btn && isAdmin && !btn.dataset.wired) {
+        btn.dataset.wired = '1';
+        btn.addEventListener('click', async () => {
+            const label = btn.innerHTML;
+            btn.disabled = true;
+            btn.textContent = 'Checking…';
+            try {
+                render(await apiRequest('/api/system/update/check', { method: 'POST' }));
+            } catch (err) {
+                statusEl.textContent = `Check failed — ${err.detail || err.message}`;
+                statusEl.style.color = '#eab308';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = label;
+            }
+        });
     }
 }
 

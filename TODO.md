@@ -382,6 +382,21 @@ and PAM password rotation; archive the old `ethosnas` repo after every checkout 
 publishing releases with the snapshot flow in `docs/open-source.md`.
 **Done when.** `docs/open-source.md` checklist is fully ticked and CI is green on the public repo.
 
+### ◐ P5-12 · Core update check (signed release index) — `M`
+**Problem.** A server could not learn that a newer EthOS release exists; `GET /api/system/version`
+existed but no UI consumed it and no release list was published.
+**Fix.** Signed `releases/index.json` (+`.sig`, offline Ed25519 key shared with the package catalog),
+`scripts/ethos-release publish|verify`, `services/update_service.py` (fetch → verify → compare build/sha →
+cache in `update/state.json` → Notification Center event), `GET /api/system/update` (any user, cached,
+no network) and `POST /api/system/update/check` (admin), Settings → System card, 24 h background checker.
+Spec: `docs/updates.md`.
+**Status 2026-11-15.** Check-only shipped: 18/18 unit checks, security invariants cover both routes,
+router smoke green.
+**Remaining.** Apply from the UI: root helper `ethos-update` (fetch the signed artifact → backup →
+`git`/`pip` as the repo owner → `systemctl restart` → health probe → auto-rollback), `POST /api/system/update`,
+progress task + schedule in the card.
+**Done when.** An admin can update from Settings and a failed update rolls back automatically.
+
 # §7 · P6 — Documentation
 
 ### ☑ P6-01 · Retire the empty `docs/todo.md` — `S`

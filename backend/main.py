@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.config import APP_VERSION, DEFAULT_JWT_SECRET, settings
 from backend.routers.system import router as system_router, stats_ws_router
+from backend.routers.system_update import router as system_update_router
 from backend.routers.processes import router as processes_router
 from backend.routers.logs import router as logs_router
 from backend.routers.logs_ws import (
@@ -204,6 +205,10 @@ async def lifespan(app: FastAPI):
     # Trim caches, the recycle bin and abandoned uploads (services/retention_service.py)
     start_retention_sweeper()
 
+    # Core update check (signed release index, check-only — docs/updates.md)
+    from backend.services.update_service import start_update_checker, stop_update_checker
+    start_update_checker()
+
     # Cameras: resume motion-detection threads for enabled cameras
     from backend.services.camera_service import start_all_motion_threads, stop_all_motion_threads
     _motion_cams = start_all_motion_threads()
@@ -231,6 +236,7 @@ async def lifespan(app: FastAPI):
     await stop_health_monitor()
     await stop_net_stats_sampler()
     await stop_retention_sweeper()
+    await stop_update_checker()
     from backend.services import package_runtime as _package_runtime_stop
     await _package_runtime_stop.shutdown_all()
     from backend.services.camera_service import stop_all_recordings
@@ -394,6 +400,7 @@ async def frontend_cache_middleware(request: Request, call_next):
 
 # ── API routers ───────────────────────────────────────────────────────────────
 app.include_router(system_router,    prefix="/api/system",    tags=["System"])
+app.include_router(system_update_router, prefix="/api/system/update", tags=["System"])
 app.include_router(processes_router, prefix="/api/processes", tags=["Processes"])
 app.include_router(logs_router,      prefix="/api/logs",      tags=["Logs"])
 app.include_router(docker_router,    prefix="/api",           tags=["Docker"])

@@ -59,6 +59,7 @@ jobs:
                    tests/test_logging_convention.py \
                    tests/test_logging_ui.py \
                    tests/test_log_service.py \
+                   tests/test_update_service.py \
                    tests/test_logs_api.py \
                    tests/test_logs_ws.py \
                    tests/test_security_invariants.py \

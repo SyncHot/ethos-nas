@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -15,6 +15,11 @@ INSTALL_DIR = Path(__file__).resolve().parent.parent
 # Developer checkouts of the Android apps live next to this repo. Only used as
 # a last-resort search path; on a server it resolves to nothing.
 DEV_COMPOSE_DIR = Path.home() / "apps" / "compose"
+
+# Ed25519 public key (base64) of the offline release key. It signs both the
+# package catalog and the core release index; the matching private key never
+# leaves the maintainer's machine. Spec: docs/updates.md.
+RELEASE_PUBKEY_B64 = "sXiL7v0droY2BVyttuDt0Bqq6jB7MpknylJo+/iavqE="
 
 
 def _load_dotenv(path: Path) -> None:
@@ -132,8 +137,23 @@ class Settings:
     )
     PACKAGES_DEFAULT_SOURCE_KEY: str = os.getenv(
         "ETHOS_PACKAGES_DEFAULT_SOURCE_KEY",
-        "sXiL7v0droY2BVyttuDt0Bqq6jB7MpknylJo+/iavqE=",
+        RELEASE_PUBKEY_B64,
     )
+
+    # ── Core update check (services/update_service.py, docs/updates.md) ─────
+    # Reads a signed release index published from the public repository. This
+    # is the *check* path only: nothing is installed from here.
+    UPDATE_ENABLED: bool = os.getenv("ETHOS_UPDATE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    UPDATE_INDEX_URL: str = os.getenv(
+        "ETHOS_UPDATE_INDEX_URL",
+        "https://raw.githubusercontent.com/SyncHot/ethos-nas/master/releases/index.json",
+    )
+    UPDATE_PUBKEY: str = os.getenv("ETHOS_UPDATE_PUBKEY", RELEASE_PUBKEY_B64)
+    UPDATE_MAX_INDEX_BYTES: int = int(os.getenv("ETHOS_UPDATE_MAX_INDEX_BYTES", str(256 * 1024)))
+    # A cached result younger than this is returned without a network round-trip.
+    UPDATE_TTL_SECONDS: int = int(os.getenv("ETHOS_UPDATE_TTL_SECONDS", "3600"))
+    # Background check cadence (the first run happens one interval after start).
+    UPDATE_CHECK_HOURS: float = float(os.getenv("ETHOS_UPDATE_CHECK_HOURS", "24"))
 
     # ── System Health Monitor (services/health_monitor_service.py) ───────────
     # How often the background checker runs (seconds).

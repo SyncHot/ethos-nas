@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""EthOS NAS — build and sign the core release index.
+
+The public repository ships `releases/index.json` + `releases/index.json.sig`.
+Installed servers read that pair (Settings → System → Check for updates) and
+compare it with their own checkout. Spec: docs/updates.md.
+
+Usage:
+    python scripts/ethos-release publish --notes "What changed"
+    python scripts/ethos-release publish --version 2.1.0 --notes "…"
+    python scripts/ethos-release verify            # check the committed index
+
+The signing key is the same offline Ed25519 key that signs the package
+catalog (default: ~/.ethos-pack/ethos-packages/repo.key). It is never
+committed; `verify` uses the public half pinned in backend/config.py.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+try:
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+        Ed25519PublicKey,
+    )
+except ImportError:  # pragma: no cover - cryptography is a core dependency
+    print("ERROR: the 'cryptography' package is required (pip install -r requirements.txt)",
+          file=sys.stderr)
+    raise SystemExit(2)
+
+ROOT = Path(__file__).resolve().parent.parent
+INDEX_PATH = ROOT / "releases" / "index.json"
+SIGNATURE_PATH = ROOT / "releases" / "index.json.sig"
+DEFAULT_KEY = Path.home() / ".ethos-pack" / "ethos-packages" / "repo.key"
+SCHEMA = 1
+MAX_RELEASES = 25
+
+
+def _config_literal(name: str) -> str:
+    """Read a module-level string constant from backend/config.py (no import:
+    importing the backend would bootstrap a JWT secret as a side effect)."""
+    text = (ROOT / "backend" / "config.py").read_text(encoding="utf-8")
+    match = re.search(rf'^{name}\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    if not match:
+        raise SystemExit(f"ERROR: {name} not found in backend/config.py")
+    return match.group(1)
+
+
+def _git(*args: str) -> str:
+    result = subprocess.run(["git", "-C", str(ROOT), *args],
+                            capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        raise SystemExit(f"ERROR: git {' '.join(args)}: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _load_existing() -> list[dict]:
+    if not INDEX_PATH.is_file():
+        return []
+    try:
+        data = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        print("warning: existing index is unreadable — starting a new one", file=sys.stderr)
+        return []
+    releases = data.get("releases")
+    return [r for r in releases if isinstance(r, dict)] if isinstance(releases, list) else []
+
+
+def _sign(payload: bytes, key_path: Path) -> bytes:
+    if not key_path.is_file():
+        raise SystemExit(f"ERROR: signing key not found: {key_path}")
+    raw = base64.b64decode(key_path.read_bytes().strip(), validate=True)
+    return base64.b64encode(Ed25519PrivateKey.from_private_bytes(raw).sign(payload)) + b"\n"
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    version = (args.version or _config_literal("APP_VERSION")).strip()
+    sha = _git("rev-parse", "--short", "HEAD")
+    full_sha = _git("rev-parse", "HEAD")
+    build = int(_git("rev-list", "--count", "HEAD") or 0)
+    dirty = bool(_git("status", "--porcelain"))
+    if dirty:
+        print("warning: working tree is dirty — the index will point at the last commit",
+              file=sys.stderr)
+
+    entry = {
+        "version": version,
+        "git_sha": sha,
+        "git_sha_full": full_sha,
+        "build": build,
+        "released_at": _now(),
+        "notes": (args.notes or "").strip(),
+    }
+    releases = [entry] + [r for r in _load_existing() if r.get("git_sha") != sha][:MAX_RELEASES - 1]
+    data = {
+        "schema": SCHEMA,
+        "generated_at": _now(),
+        "latest": entry,
+        "releases": releases,
+    }
+    payload = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+    INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    INDEX_PATH.write_bytes(payload)
+    SIGNATURE_PATH.write_bytes(_sign(payload, Path(args.key).expanduser()))
+
+    print(f"published {INDEX_PATH.relative_to(ROOT)}: v{version} · {sha} · build {build}")
+    print(f"signed   {SIGNATURE_PATH.relative_to(ROOT)}")
+    print("\nnext:")
+    print(f"  git add releases && git commit -m \"release: v{version}\" && git push")
+    return 0
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    if not INDEX_PATH.is_file() or not SIGNATURE_PATH.is_file():
+        print("ERROR: releases/index.json or its signature is missing", file=sys.stderr)
+        return 1
+    payload = INDEX_PATH.read_bytes()
+    signature = base64.b64decode(SIGNATURE_PATH.read_bytes().strip(), validate=True)
+    public = base64.b64decode(_config_literal("RELEASE_PUBKEY_B64"), validate=True)
+    try:
+        Ed25519PublicKey.from_public_bytes(public).verify(signature, payload)
+    except InvalidSignature:
+        print("FAIL: release index signature is invalid", file=sys.stderr)
+        return 1
+    data = json.loads(payload)
+    latest = data.get("latest") or {}
+    print(f"OK: signature valid — v{latest.get('version')} · {latest.get('git_sha')}"
+          f" · build {latest.get('build')} · {len(data.get('releases') or [])} release(s)")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Build/sign the EthOS NAS release index")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    publish = sub.add_parser("publish", help="write and sign releases/index.json")
+    publish.add_argument("--version", default="", help="defaults to APP_VERSION")
+    publish.add_argument("--notes", default="", help="release notes shown in the UI")
+    publish.add_argument("--key", default=str(DEFAULT_KEY), help="Ed25519 private key path")
+    publish.set_defaults(func=cmd_publish)
+
+    verify = sub.add_parser("verify", help="verify the committed index signature")
+    verify.set_defaults(func=cmd_verify)
+
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,302 @@
+"""EthOS NAS — core update check (signed release index).
+
+The public repository publishes `releases/index.json` plus an Ed25519
+signature (`index.json.sig`). This service fetches it, verifies the signature
+against the pinned release key (`settings.UPDATE_PUBKEY`), and compares the
+published `git_sha`/`build` with the running checkout.
+
+It is deliberately **check-only**: nothing is downloaded, installed or executed.
+The Settings → System card shows the result and the operator upgrades with the
+documented commands (docs/open-source.md). Spec: docs/updates.md.
+
+State lives in `<DATA_DIR>/update/state.json` (versioned store) so a restart
+keeps the last result and the background checker does not re-notify.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import subprocess
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from backend.config import APP_VERSION, settings
+from backend.services import json_store, package_repo
+from backend.services.notifications_service import emit_event
+from backend.services.package_schema import version_gt
+
+logger = logging.getLogger("ethos-nas.services.update_service")
+
+STATE_VERSION = 1
+_CHECK_LOCK = asyncio.Lock()
+_loop_task: asyncio.Task | None = None
+_loop_stop: asyncio.Event | None = None
+
+REPO_SLUG = "SyncHot/ethos-nas"
+
+
+# ── State store ─────────────────────────────────────────────────────────────
+
+def _state_path() -> Path:
+    """Resolved per call so ETHOS_DATA_DIR is honoured (and testable)."""
+    return Path(settings.DATA_DIR) / "update" / "state.json"
+
+
+def _store() -> json_store.Store:
+    path = _state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        logger.warning("Could not create %s", path.parent, exc_info=True)
+    return json_store.get(path, dict, version=STATE_VERSION)
+
+
+def _load() -> dict:
+    data = _store().load()
+    return data if isinstance(data, dict) else {}
+
+
+def _save(state: dict) -> None:
+    _store().save(state)
+
+
+# ── Identity of the running build ───────────────────────────────────────────
+
+def _git(*args: str) -> str:
+    root = Path(__file__).resolve().parent.parent.parent
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True, text=True, timeout=3,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        logger.debug("git %s unavailable", " ".join(args), exc_info=True)
+        return ""
+
+
+def current_release() -> dict:
+    """Version identity of the running checkout (git is best-effort)."""
+    build = 0
+    try:
+        build = int(_git("rev-list", "--count", "HEAD") or 0)
+    except ValueError:
+        build = 0
+    return {"version": APP_VERSION, "git_sha": _git("rev-parse", "--short", "HEAD"), "build": build}
+
+
+# ── Index fetch + validation ────────────────────────────────────────────────
+
+class UpdateError(RuntimeError):
+    """A check could not be completed (bad signature, network, bad schema)."""
+
+
+def _coerce_release(raw: Any) -> dict:
+    """Keep only the fields the UI renders, with bounded types."""
+    if not isinstance(raw, dict):
+        raise UpdateError("release entry is not an object")
+    sha = str(raw.get("git_sha") or "").strip()[:64]
+    version = str(raw.get("version") or "").strip()[:32]
+    if not sha and not version:
+        raise UpdateError("release entry has neither git_sha nor version")
+    try:
+        build = int(raw.get("build") or 0)
+    except (TypeError, ValueError):
+        build = 0
+    return {
+        "version": version,
+        "git_sha": sha,
+        "build": build,
+        "released_at": str(raw.get("released_at") or "").strip()[:64],
+        "notes": str(raw.get("notes") or "").strip()[:8000],
+        "commit_url": f"https://github.com/{REPO_SLUG}/commit/{sha}" if sha else "",
+    }
+
+
+def parse_index(payload: bytes) -> dict:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise UpdateError(f"release index is not valid JSON: {exc}") from None
+    if not isinstance(data, dict) or data.get("schema") != 1:
+        raise UpdateError("unsupported release index schema")
+    latest = data.get("latest")
+    if latest is None and isinstance(data.get("releases"), list) and data["releases"]:
+        latest = data["releases"][0]
+    return _coerce_release(latest)
+
+
+def fetch_latest() -> dict:
+    """Fetch, verify and parse the release index (blocking; call in a thread)."""
+    url = settings.UPDATE_INDEX_URL
+    try:
+        payload = package_repo.get_bytes(url, settings.UPDATE_MAX_INDEX_BYTES)
+        signature = package_repo.get_bytes(url + ".sig", 4096)
+    except package_repo.PackageError as exc:
+        raise UpdateError(str(exc)) from None
+    try:
+        package_repo.verify_signature(
+            payload, signature.decode("ascii", "replace").strip(), settings.UPDATE_PUBKEY,
+        )
+    except package_repo.PackageError as exc:
+        raise UpdateError(str(exc)) from None
+    except UnicodeDecodeError:
+        raise UpdateError("release signature is not base64 text") from None
+    return parse_index(payload)
+
+
+# ── Comparison ──────────────────────────────────────────────────────────────
+
+def _shas_match(left: str, right: str) -> bool:
+    left, right = (left or "").lower(), (right or "").lower()
+    if not left or not right:
+        return False
+    return left.startswith(right) or right.startswith(left)
+
+
+def is_newer(latest: dict, current: dict) -> bool:
+    """True when the published release is ahead of the running checkout.
+
+    The monotonic commit count is authoritative: the commit that ships the index
+    itself is one ahead of the indexed release and must not report an update.
+    The commit sha and the semantic version are fallbacks for installs without
+    git metadata (tarball deployments).
+    """
+    latest_build = int(latest.get("build") or 0)
+    current_build = int(current.get("build") or 0)
+    if latest_build and current_build:
+        return latest_build > current_build
+    latest_sha, current_sha = latest.get("git_sha", ""), current.get("git_sha", "")
+    if latest_sha and current_sha:
+        return not _shas_match(latest_sha, current_sha)
+    return version_gt(str(latest.get("version") or ""), str(current.get("version") or ""))
+
+
+# ── Public API ──────────────────────────────────────────────────────────────
+
+def status() -> dict:
+    """Cached result only — never triggers a network request."""
+    state = _load()
+    return {
+        "enabled": settings.UPDATE_ENABLED,
+        "index_url": settings.UPDATE_INDEX_URL,
+        "key_fingerprint": package_repo.key_fingerprint(settings.UPDATE_PUBKEY),
+        "current": current_release(),
+        "latest": state.get("latest") or None,
+        "update_available": state.get("update_available"),
+        "checked_at": state.get("checked_at"),
+        "checked_at_iso": state.get("checked_at_iso"),
+        "error": state.get("error", ""),
+        "auto_check_hours": settings.UPDATE_CHECK_HOURS,
+    }
+
+
+async def check(force: bool = False) -> dict:
+    """Check the signed index, caching the result for UPDATE_TTL_SECONDS."""
+    if not settings.UPDATE_ENABLED:
+        return {**status(), "error": "Update checks are disabled (ETHOS_UPDATE_ENABLED=0)"}
+
+    state = _load()
+    checked_at = state.get("checked_at") or 0
+    if not force and checked_at and (time.time() - checked_at) < settings.UPDATE_TTL_SECONDS:
+        return status()
+
+    async with _CHECK_LOCK:
+        # Another caller may have refreshed while we waited for the lock.
+        state = _load()
+        checked_at = state.get("checked_at") or 0
+        if not force and checked_at and (time.time() - checked_at) < settings.UPDATE_TTL_SECONDS:
+            return status()
+
+        current = await asyncio.to_thread(current_release)
+        now = time.time()
+        try:
+            latest = await asyncio.to_thread(fetch_latest)
+        except UpdateError as exc:
+            logger.warning("Core update check failed: %s", exc)
+            _save({
+                "checked_at": now,
+                "checked_at_iso": _iso(now),
+                "current": current,
+                "latest": state.get("latest") or None,
+                "update_available": state.get("update_available"),
+                "error": str(exc),
+            })
+            return status()
+
+        update_available = is_newer(latest, current)
+        previous_sha = (state.get("latest") or {}).get("git_sha", "")
+        _save({
+            "checked_at": now,
+            "checked_at_iso": _iso(now),
+            "current": current,
+            "latest": latest,
+            "update_available": update_available,
+            "error": "",
+        })
+        logger.info(
+            "Core update check: running %s (%s), latest %s (%s), update_available=%s",
+            current.get("version"), current.get("git_sha") or "?",
+            latest.get("version"), latest.get("git_sha") or "?", update_available,
+        )
+        if update_available and latest.get("git_sha") and latest["git_sha"] != previous_sha:
+            emit_event(
+                "info",
+                "EthOS NAS update available",
+                f"v{latest.get('version') or '?'} ({latest.get('git_sha')}) is published. "
+                "Open Settings → System for details.",
+                source="updates",
+                dedupe_key=f"core-update:{latest['git_sha']}",
+                action={"label": "Open Settings", "appId": "settings"},
+            )
+        return status()
+
+
+def _iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+# ── Background checker ──────────────────────────────────────────────────────
+
+async def _loop(stop: asyncio.Event) -> None:
+    interval = max(1.0, float(settings.UPDATE_CHECK_HOURS)) * 3600
+    logger.info("Core update checker started (every %.0f h)", interval / 3600)
+    while not stop.is_set():
+        # Sleep first: a short-lived dev/test instance must never reach the network.
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+            break
+        except asyncio.TimeoutError:
+            pass  # intentional: the timeout is the scheduled wake-up, not a failure
+        try:
+            await check(force=True)
+        except Exception:
+            logger.error("Core update checker iteration failed", exc_info=True)
+    logger.info("Core update checker stopped")
+
+
+def start_update_checker() -> None:
+    global _loop_task, _loop_stop
+    if _loop_task is not None and not _loop_task.done():
+        return
+    from backend.services.task_registry import spawn
+
+    _loop_stop = asyncio.Event()
+    _loop_task = spawn(_loop(_loop_stop), name="core-update-checker")
+
+
+async def stop_update_checker() -> None:
+    global _loop_task, _loop_stop
+    if _loop_stop is not None:
+        _loop_stop.set()
+    if _loop_task is not None and not _loop_task.done():
+        try:
+            await asyncio.wait_for(_loop_task, timeout=5)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            logger.debug("Update checker did not stop in time", exc_info=True)
+    _loop_task = None
+    _loop_stop = None
