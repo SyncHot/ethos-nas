@@ -527,32 +527,43 @@
 
 /* ── Logs source tree + viewer (apps/logs.js) ───────────────────────────── */
 
-.logs-rail-body { display: flex; flex-direction: column; min-height: 0; }
+/* The source list owns the rail scroll so brand and foot stay pinned. Its rows
+   are `flex: none` — otherwise a short rail squashes them and labels overlap. */
+.ui-rail:has(.logs-rail-body) { overflow: hidden; }
+.logs-rail-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .logs-rail-body h4 {
+    flex: none;
     margin: 10px 8px 4px;
     color: var(--text-3);
     font-size: 10px;
     letter-spacing: 0.08em;
     text-transform: uppercase;
 }
+.logs-rail-body h4:first-child { margin-top: 2px; }
 .logs-src-btn {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
     width: 100%;
+    min-height: 26px;
     padding: 5px 8px;
     border: 0;
     border-radius: 6px;
     background: transparent;
     color: var(--text-2);
     font-size: 12px;
+    line-height: 1.35;
     text-align: left;
     cursor: pointer;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
+/* `.ui-shell button { color: inherit }` outranks a bare class — scope it. */
+.ui-shell .logs-src-btn { color: var(--text-2); }
 .logs-src-btn:hover { background: var(--ui-hover); }
 .logs-src-btn.active { background: var(--ui-accent-soft); color: var(--text-1); font-weight: 600; }
-.logs-badge { margin-left: 6px; color: var(--text-3); font-size: 10px; }
+.logs-src-btn:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 1px; }
+.logs-src-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-badge { flex: none; margin-left: auto; color: var(--text-3); font-size: 10px; font-variant-numeric: tabular-nums; }
 
 .logs-toolbar {
     display: flex;
@@ -766,6 +777,20 @@
 
     .ui-foot { margin-top: 0; flex-direction: row; align-items: center; padding: 0; flex: none; }
     .ui-side-note { display: none; }
+
+    /* Logs source tree follows the rail: one horizontal, scrollable row. */
+    .logs-rail-body {
+        flex-direction: row;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+    }
+    .logs-rail-body h4 { display: none; }
+    .logs-src-btn { width: auto; padding: 6px 10px; white-space: nowrap; }
+    .logs-src-label { flex: none; }
+    .logs-badge { margin-left: 0; }
 
     .ui-main { padding: 16px; }
     .ui-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }

@@ -238,21 +238,21 @@ async function _loadTree(state) {
     const appHtml = appButtons.map((item) => {
         const count = item.count ?? state.apps.find((entry) => entry.app === (item.app || 'core'))?.count;
         const badge = count ? `<span class="logs-badge">${count}</span>` : '';
-        return `<button class="logs-src-btn" data-action="select" data-kind="app" data-app="${escapeAttr(item.app)}">${escapeHtml(item.label)}${badge}</button>`;
+        return `<button class="logs-src-btn" data-action="select" data-kind="app" data-app="${escapeAttr(item.app)}"><span class="logs-src-label">${escapeHtml(item.label)}</span>${badge}</button>`;
     }).join('');
 
     const fileHtml = (files.files || []).map((file) =>
-        `<button class="logs-src-btn" data-action="select" data-kind="file" data-path="${escapeAttr(file.path)}" title="${escapeAttr(file.path)}">${escapeHtml(file.label)} <span class="logs-badge">${formatBytes(file.size || 0)}</span></button>`
+        `<button class="logs-src-btn" data-action="select" data-kind="file" data-path="${escapeAttr(file.path)}" title="${escapeAttr(file.path)}"><span class="logs-src-label">${escapeHtml(file.label)}</span><span class="logs-badge">${formatBytes(file.size || 0)}</span></button>`
     ).join('') || '<div class="logs-empty">No readable files</div>';
 
     const containerHtml = (containers.containers || []).map((container) => {
         const label = container.package_id ? `${container.package_id} · ${container.name}` : container.name;
-        return `<button class="logs-src-btn" data-action="select" data-kind="container" data-container="${escapeAttr(container.name)}" title="${escapeAttr(container.name)}">${escapeHtml(label)}</button>`;
+        return `<button class="logs-src-btn" data-action="select" data-kind="container" data-container="${escapeAttr(container.name)}" title="${escapeAttr(container.name)}"><span class="logs-src-label">${escapeHtml(label)}</span></button>`;
     }).join('') || '<div class="logs-empty">Docker is not reachable</div>';
 
     const journalHtml = `
-        <button class="logs-src-btn" data-action="select" data-kind="journal" data-unit="">All units</button>
-        <button class="logs-src-btn" data-action="select" data-kind="journal" data-unit="ethos-nas">ethos-nas</button>`;
+        <button class="logs-src-btn" data-action="select" data-kind="journal" data-unit=""><span class="logs-src-label">All units</span></button>
+        <button class="logs-src-btn" data-action="select" data-kind="journal" data-unit="ethos-nas"><span class="logs-src-label">ethos-nas</span></button>`;
 
     rail.innerHTML =
         section('Applications', appHtml) +
