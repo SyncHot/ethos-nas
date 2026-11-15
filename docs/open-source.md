@@ -28,28 +28,52 @@ Status: in progress (see `TODO.md` P5-11).
 
 ## Publishing procedure
 
-The public repository is created from a **single clean commit** — the existing
-private history (runtime data, API keys, tokens) is never published.
+The public repository was created from a **single clean commit** — the private
+history (runtime data, API keys, tokens) is never published. Status: done
+2026-11-15, `SyncHot/ethos-nas`, tag `v2.0.0`, MIT, secret scanning and push
+protection enabled.
 
-1. Prepare and verify the working tree (see "Checklist" below).
-2. Create an empty public repository `SyncHot/ethos-nas`.
-3. From a clean checkout of the private repo:
+The two repositories have **unrelated histories**. Keep the private checkout as
+the working repo and publish each release as one additional snapshot commit:
 
-   ```bash
-   git checkout --orphan public
-   git rm -r --cached . >/dev/null
-   rm -rf docs/archive ETHOS_LOOP_STATUS.md
-   git add -A
-   git commit -m "Initial public release"
-   git remote add public https://github.com/SyncHot/ethos-nas.git
-   git push public public:master
-   ```
+```bash
+# 1. build the publishable tree from the current HEAD (tracked files only)
+rm -rf /tmp/ethos-pub && git clone -q --depth 1 https://github.com/SyncHot/ethos-nas /tmp/ethos-pub
+cd /path/to/private/ethos-nas
+find /tmp/ethos-pub -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+git archive HEAD | tar -x -C /tmp/ethos-pub            # snapshot of HEAD
+rm -rf /tmp/ethos-pub/docs/archive /tmp/ethos-pub/ETHOS_LOOP_STATUS.md
 
-4. Tag the release (`git tag -a v2.0.0 -m "EthOS NAS 2.0.0"` + push the tag).
-5. GitHub settings: branch protection on `master` (required CI), secret
-   scanning + push protection, private vulnerability reporting, Dependabot.
-6. Archive the old private repository on GitHub so the URL redirects readers to
-   the public one.
+# 2. verify, then commit on top of the public history (never force-push)
+cd /tmp/ethos-pub
+git status --short                                     # review what is new
+git add -A
+git commit -m "Release 2.1.0"                          # or a plain sync commit
+git tag -a v2.1.0 -m "EthOS NAS 2.1.0" && git push origin master --follow-tags
+```
+
+`git archive HEAD` only ships tracked files, so `backend/data/`, `users.json`,
+`apks/`, `.env` and the venv can never leak this way; the `rm` step drops the
+archive directory. Do **not** run `git push --force` on the public repo.
+
+## First-release record (what was done)
+
+1. `git archive HEAD` from the private repo into a temporary directory.
+2. `rm -rf docs/archive ETHOS_LOOP_STATUS.md`.
+3. Scans: no `backend/data/`, `users.json`, `.test_token`, `.env`, `*.pyc`,
+   no `/home/<user>`, no `192.168.x` LAN defaults, no private-key/token patterns.
+4. `git init -b master` + one commit authored as `SyncHot
+   <SyncHot@users.noreply.github.com>` (the maintainer's real address is not
+   published).
+5. `gh repo create ethos-nas --public --source . --remote public --push`.
+6. `git tag -a v2.0.0` + push; topics added; secret scanning, push protection
+   and private vulnerability reporting enabled.
+
+Remaining manual steps: branch protection on `master` (requires the `ci` check),
+and archiving the old private repository **only after** every server checkout
+has been repointed — the private repo is still the push target for day-to-day
+work.
+
 
 ## Checklist before the first public push
 
