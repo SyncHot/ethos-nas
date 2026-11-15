@@ -78,6 +78,15 @@ through `core/progress.js` — `startTask` → `update`/`finish`. No bespoke pro
 apps; finished rows persist until cleared. See `.github/instructions/frontend.instructions.md` and
 `docs/progress-ui.md`.
 
+**Updates.** Core releases ship a **signed** `releases/index.json` + `.sig`, produced only by
+`scripts/ethos-release publish` (offline Ed25519 key at `~/.ethos-pack/ethos-packages/repo.key`, public
+half pinned in `backend/config.py` and `setup_scripts/setup_service.sh`). Bump `APP_VERSION` for any
+user-visible change; publish **after** the code commit is pushed; commit the index separately and push.
+Servers apply it through the argument-free root helper `deploy/ethos-update` (verifies the index itself,
+`git reset --hard` + pip as the repo owner, restart, 90 s health probe, auto-rollback). Never hand-edit
+the index, never commit the key, never let the API pass the helper a URL/ref/command. Spec
+`docs/updates.md`; skill `release-core-update`; guard `tests/test_update_helper.py`.
+
 ## Skills — load before working
 
 | Task | Skill |
@@ -95,6 +104,7 @@ apps; finished rows persist until cleared. See `.github/instructions/frontend.in
 | New feature plan doc | `feature-doc` |
 | Repro / debug without touching prod | `isolated-dev-instance` |
 | Android APK release | `release-android-apk` |
+| Core version release / updater change | `release-core-update` |
 | Backend security audit | `security-invariant-review` |
 
 ## Workflow
