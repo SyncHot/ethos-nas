@@ -12,14 +12,22 @@ import { mountShell } from '../core/ui-shell.js';
 const SECTIONS = [
     { id: 'overview', label: 'Overview', title: 'Security Overview', subtitle: 'Firewall state, blocked traffic and login failures.', testId: 'sec-tab-overview' },
     { id: 'ufw', label: 'UFW Firewall', title: 'UFW Firewall', subtitle: 'Rules and defaults managed through UFW.', testId: 'sec-tab-ufw' },
+    { id: 'autoban', label: 'Auto-ban', title: 'Auto-ban', subtitle: 'Temporary, escalating bans for repeat offenders — local networks are never blocked.', testId: 'sec-tab-autoban' },
     { id: 'intrusions', label: 'Intrusion Attempts', title: 'Intrusion Attempts', subtitle: 'Blocked packets from the UFW log, live.', testId: 'sec-tab-intrusions' },
     { id: 'logins', label: 'Failed Logins', title: 'Failed Logins', subtitle: 'Authentication failures grouped by source IP.', testId: 'sec-tab-logins' },
-    { id: 'bans', label: 'Bans', title: 'Bans', subtitle: 'Permanent UFW drop rules tagged ethos-ban.', testId: 'sec-tab-bans' },
+    { id: 'bans', label: 'Bans', title: 'Bans', subtitle: 'Manual (permanent) and automatic (temporary) UFW drop rules.', testId: 'sec-tab-bans' },
 ];
 
 // Rules whose removal can cut off the NAS itself (installed by the backend
 // baseline before `ufw enable`) — deleting them needs an explicit warning.
 const BASELINE_COMMENTS = new Set(['ethos-web', 'ethos-api', 'ethos-lan']);
+
+const TILE_ACTIONS = {
+    'goto-intrusions': 'View attempts →',
+    'goto-bans': 'Manage →',
+    'goto-logins': 'View details →',
+    'goto-autoban': 'Configure →',
+};
 
 let shell = null;
 let navToken = 0;
@@ -31,6 +39,8 @@ let extOnly = false;
 let live = true;
 let liveTimer = null;
 let selectedIps = new Set();
+let autobanPreview = null;
+let autobanTimer = null;
 
 export async function renderAccessControlPage(body) {
     shell?.destroy();
@@ -51,10 +61,13 @@ export async function renderAccessControlPage(body) {
 function _runSection(id) {
     activeTab = id;
     _stopIntrLive();
+    _stopAutobanLive();
     if (shell?.view) {
         shell.view.onclick = null;
         shell.view.onchange = null;
+        shell.view.oninput = null;
         delete shell.view.dataset.loaded;
+        delete shell.view.dataset.dirty;
     }
     const token = ++navToken;
     const isCurrent = () => token === navToken && shell && shell.root.isConnected && activeTab === id;
@@ -82,11 +95,14 @@ async function loadOverview(isCurrent) {
                     ? '<span class="ui-tag is-ok">enabled</span>'
                     : '<span class="ui-tag is-bad">disabled</span>';
 
-        const tile = (testId, label, value, actionLabel, action) => `<section class="ui-panel" data-testid="${testId}">
+        const autoban = data.autoban || {};
+        const autobanValue = autoban.enabled ? (autoban.dry_run ? 'DRY-RUN' : 'ON') : 'OFF';
+        const tile = (testId, label, value, detail, actionLabel, action) => `<section class="ui-panel" data-testid="${testId}">
             <div class="ui-toolbar"><h2>${escapeHtml(label)}</h2>${actionLabel ? `<span class="ui-tag is-info">${escapeHtml(actionLabel)}</span>` : ''}</div>
             <div class="ui-panel-body">
                 <div class="ui-summary-value">${value}</div>
-                ${action ? `<button class="ui-btn small" data-action="${action}">${action === 'goto-intrusions' ? 'View attempts →' : action === 'goto-bans' ? 'Manage →' : 'View details →'}</button>` : ''}
+                <p class="ui-muted">${escapeHtml(detail)}</p>
+                ${action ? `<button class="ui-btn small" data-action="${action}">${escapeHtml(TILE_ACTIONS[action] || 'Open →')}</button>` : ''}
             </div>
         </section>`;
 
@@ -111,9 +127,10 @@ async function loadOverview(isCurrent) {
                         </div>
                     </div>
                 </section>
-                ${tile('sec-card-blocked', 'Blocked packets', Number(data.blocked_packets_24h ?? 0), 'last 24h', 'goto-intrusions')}
-                ${tile('sec-card-bans', 'Active bans', Number(data.bans_count ?? 0), 'ufw drop', 'goto-bans')}
-                ${tile('sec-card-logins', 'Failed logins', Number(data.failed_logins_24h ?? 0), 'last 24h', 'goto-logins')}
+                ${tile('sec-card-blocked', 'Blocked packets', Number(data.blocked_packets_24h ?? 0), 'last 24h', 'View attempts →', 'goto-intrusions')}
+                ${tile('sec-card-bans', 'Active bans', Number(data.bans_count ?? 0), 'manual + auto UFW deny rules', 'Manage →', 'goto-bans')}
+                ${tile('sec-card-logins', 'Failed logins', Number(data.failed_logins_24h ?? 0), 'last 24h', 'View details →', 'goto-logins')}
+                ${tile('sec-card-autoban', 'Auto-ban', autobanValue, `${Number(autoban.banned_today ?? 0)} blocked today · ${Number(autoban.active_bans ?? 0)} active`, 'Configure →', 'goto-autoban')}
             </div>
             ${ufw.installed !== false && !ufw.error && !ufw.logging
                 ? `<div class="ui-callout">${uiIcon('alert', 13)} UFW packet logging is off — intrusion attempts are not recorded.
@@ -136,7 +153,8 @@ function _wireOverviewActions() {
     shell.view.querySelector('[data-action="ufw-disable"]')?.addEventListener('click', () => _setUfw(false));
     shell.view.querySelector('[data-action="add-rule"]')?.addEventListener('click', () => _openRuleForm());
     shell.view.querySelector('[data-action="logging-on"]')?.addEventListener('click', () => _setLogging(true));
-    for (const [action, tab] of [['goto-intrusions', 'intrusions'], ['goto-bans', 'bans'], ['goto-logins', 'logins']]) {
+    for (const [action, tab] of [['goto-intrusions', 'intrusions'], ['goto-bans', 'bans'],
+        ['goto-logins', 'logins'], ['goto-autoban', 'autoban']]) {
         shell.view.querySelector(`[data-action="${action}"]`)?.addEventListener('click', () => shell.setActive(tab));
     }
 }
@@ -604,6 +622,11 @@ async function loadBans(isCurrent) {
         const rows = bans.map((ban, index) => `<tr>
             <td>${ban.num ?? index + 1}</td>
             <td class="path">${escapeHtml(ban.ip)}</td>
+            <td>${ban.kind === 'auto'
+                ? '<span class="ui-tag is-info">auto</span>'
+                : '<span class="ui-tag is-warn">manual</span>'}</td>
+            <td class="ui-muted">${ban.expires_at ? _ts(ban.expires_at) : 'permanent'}</td>
+            <td class="ui-muted">${escapeHtml(ban.reason || '—')}</td>
             <td class="actions"><button class="ui-btn small" data-action="unban" data-ip="${escapeAttr(ban.ip)}"
                 data-testid="sec-unban-${escapeAttr(ban.ip)}">${uiIcon('check', 12)} Unban</button></td>
         </tr>`).join('');
@@ -616,10 +639,10 @@ async function loadBans(isCurrent) {
                 </div>
                 <span class="ui-tag">${bans.length} ban(s)</span>
             </div>
-            <p class="ui-muted">Bans are permanent UFW deny rules (all protocols) tagged <code class="ui-code">ethos-ban</code>. They survive restarts and reboots.</p>
+            <p class="ui-muted">Manual bans are permanent UFW deny rules tagged <code class="ui-code">ethos-ban</code>; automatic bans are temporary rules tagged <code class="ui-code">ethos-autoban</code> that expire on their own. Both survive restarts and reboots.</p>
             ${data.ufw_enabled === false ? '<div class="ui-callout">UFW is disabled — bans are stored as rules but only enforced after the firewall is enabled.</div>' : ''}
             ${bans.length ? `<div class="ui-panel"><div class="ui-table-wrap"><table class="ui-table" data-testid="sec-bans-table">
-                    <thead><tr><th>#</th><th>IP</th><th class="actions"></th></tr></thead>
+                    <thead><tr><th>#</th><th>IP</th><th>Type</th><th>Expires</th><th>Reason</th><th class="actions"></th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table></div></div>`
                 : emptyState({ icon: 'ban', title: 'No active bans', hint: 'Ban an IP here or from Intrusion Attempts.' })}`;
@@ -703,12 +726,331 @@ async function _banSelected() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Auto-ban
+// ════════════════════════════════════════───────────────────────────
+
+function _stopAutobanLive() {
+    if (autobanTimer) { autobanTimer(); autobanTimer = null; }
+}
+
+function _startAutobanPoll(isCurrent) {
+    _stopAutobanLive();
+    autobanTimer = poll(() => loadAutoban(isCurrent || (() => activeTab === 'autoban')), 15000,
+        { appId: 'access-control', immediate: false, name: 'autoban' });
+}
+
+async function loadAutoban(isCurrent) {
+    // Never repaint over a form the admin is editing (the tab polls every 15 s).
+    if (shell.view.dataset.loaded === '1' && shell.view.dataset.dirty === '1') {
+        _startAutobanPoll(isCurrent);
+        return;
+    }
+    if (shell.view.dataset.loaded !== '1') shell.view.innerHTML = skeletonRows(6);
+    shell.setStatus('Loading auto-ban…');
+    try {
+        const data = await apiRequest('/api/security/autoban');
+        if (!isCurrent()) return;
+        shell.view.dataset.loaded = '1';
+        _renderAutoban(data);
+        const cfg = data.config || {};
+        shell.setStatus(
+            cfg.enabled ? (cfg.dry_run ? 'Auto-ban: dry-run' : 'Auto-ban: active') : 'Auto-ban: disabled',
+            cfg.enabled && !cfg.dry_run ? 'ok' : 'warn',
+        );
+    } catch (err) {
+        if (!isCurrent()) return;
+        shell.view.innerHTML = errorState({ detail: _errText(err) });
+        shell.setStatus('Could not read auto-ban', 'error');
+        logError('Security: auto-ban unavailable', _errText(err));
+    }
+    _startAutobanPoll(isCurrent);
+}
+
+function _renderAutoban(data) {
+    const cfg = data.config || {};
+    const fl = cfg.failed_logins || {};
+    const ub = cfg.ufw_blocks || {};
+    const stats = data.stats || {};
+    const active = data.active || [];
+    const history = data.history || [];
+    const dryRun = Boolean(cfg.dry_run);
+    const protectedNets = data.protected_networks || [];
+
+    const stateTag = cfg.enabled
+        ? (dryRun
+            ? '<span class="ui-tag is-warn">enabled · dry-run</span>'
+            : '<span class="ui-tag is-ok">enabled</span>')
+        : '<span class="ui-tag is-bad">disabled</span>';
+
+    const check = (id, label, checked, hint = '') => `<label class="ui-check">
+        <input type="checkbox" id="${id}" ${checked ? 'checked' : ''}> ${escapeHtml(label)}
+    </label>${hint ? `<p class="ui-muted">${escapeHtml(hint)}</p>` : ''}`;
+
+    const activeRows = active.map((ban) => `<tr>
+        <td class="path">${escapeHtml(ban.ip)}</td>
+        <td><span class="ui-tag is-bad">${Number(ban.strikes) || 1}</span></td>
+        <td class="ui-muted">${escapeHtml(ban.reason || '—')}</td>
+        <td class="ui-muted">${_ts(ban.expires_at)}</td>
+        <td class="ui-muted">${_duration(ban.expires_in_seconds)}</td>
+        <td class="actions"><button class="ui-btn small" data-action="ab-unban" data-ip="${escapeAttr(ban.ip)}"
+            data-testid="sec-ab-unban-${escapeAttr(ban.ip)}">${uiIcon('check', 12)} Unban</button></td>
+    </tr>`).join('');
+
+    const historyRows = history.map((entry) => {
+        const tone = entry.event === 'banned' ? 'is-bad'
+            : entry.event === 'unbanned' ? 'is-ok'
+                : entry.event === 'vanished' ? 'is-warn' : '';
+        return `<tr>
+            <td class="ui-muted">${_ts(entry.ts)}</td>
+            <td><span class="ui-tag ${tone}">${escapeHtml(entry.event || '—')}</span></td>
+            <td class="path">${escapeHtml(entry.ip || '—')}</td>
+            <td class="ui-muted">${entry.minutes ? `${Number(entry.minutes)} min` : '—'}</td>
+            <td class="ui-muted">${escapeHtml(entry.reason || '—')}</td>
+        </tr>`;
+    }).join('');
+
+    const preview = autobanPreview;
+    const previewCandidates = preview?.candidates || [];
+    const previewRows = previewCandidates.map((item) => `<tr>
+        <td class="path">${escapeHtml(item.ip)}</td>
+        <td><span class="ui-tag is-bad">${Number(item.count) || 0}</span></td>
+        <td>${(item.sources || []).map((source) => `<span class="ui-tag">${escapeHtml(source)}</span>`).join(' ')}</td>
+        <td class="ui-muted">${escapeHtml(item.reason || '—')}</td>
+        <td class="ui-muted">${_ts(item.last_ts)}</td>
+    </tr>`).join('');
+
+    const protectedTags = protectedNets.map((net) =>
+        `<span class="ui-tag" title="${escapeAttr(net.label || '')}">${escapeHtml(net.cidr)}</span>`).join(' ');
+
+    const allowlist = Array.isArray(cfg.allowlist) ? cfg.allowlist.join('\n') : '';
+
+    shell.view.innerHTML = `
+        <div class="ui-toolbar">
+            <div>
+                <h2 data-testid="sec-ab-state">${stateTag} <span class="ui-muted">last sweep ${escapeHtml(stats.last_run_at ? _ts(stats.last_run_at) : 'never')}</span></h2>
+                <p class="ui-muted">Temporary UFW bans for repeat offenders. Loopback, private LAN, link-local, CGNAT and IPv6 ULA addresses are never blocked.</p>
+            </div>
+            <div class="ui-row">
+                <button class="ui-btn small" data-action="ab-refresh" data-testid="sec-ab-refresh">${uiIcon('refresh', 12)} Refresh</button>
+                <button class="ui-btn small" data-action="ab-preview" data-testid="sec-ab-preview">${uiIcon('activity', 12)} Preview now</button>
+                <button class="ui-btn small danger" data-action="ab-apply" data-testid="sec-ab-apply">${uiIcon('ban', 12)} Apply now</button>
+            </div>
+        </div>
+        ${data.ufw_enabled === false
+            ? '<div class="ui-callout">UFW is disabled — auto-ban can record state, but no rule is enforced until the firewall is enabled.</div>'
+            : ''}
+        ${cfg.enabled && dryRun
+            ? '<div class="ui-callout">Dry-run is on: candidates are shown here and in the log, but UFW is not touched.</div>'
+            : ''}
+        <div class="ui-grid">
+            <section class="ui-panel">
+                <div class="ui-toolbar"><h2>Policy</h2>${stateTag}</div>
+                <div class="ui-panel-body">
+                    <div class="ui-fields">
+                        <div class="ui-field full">
+                            ${check('ab-enabled', 'Enable automatic blocking', cfg.enabled)}
+                            ${check('ab-dry-run', 'Dry-run only (preview, never touch UFW)', dryRun)}
+                            ${check('ab-escalate', 'Escalate repeat offenders (1 h → 24 h → 7 d)', cfg.escalate)}
+                        </div>
+                        <div class="ui-field"><label for="ab-login-threshold">Failed logins before ban</label>
+                            <input id="ab-login-threshold" class="ui-input" type="number" min="1" max="1000" value="${Number(fl.threshold) || 5}"></div>
+                        <div class="ui-field"><label for="ab-login-window">Login window (minutes)</label>
+                            <input id="ab-login-window" class="ui-input" type="number" min="1" max="1440" value="${Number(fl.window_minutes) || 10}"></div>
+                        <div class="ui-field"><label for="ab-login-ban">Login ban (minutes)</label>
+                            <input id="ab-login-ban" class="ui-input" type="number" min="5" max="43200" value="${Number(fl.ban_minutes) || 60}"></div>
+                        <div class="ui-field">${check('ab-login-enabled', 'Use failed logins (sshd + web/PAM)', fl.enabled)}</div>
+                        <div class="ui-field"><label for="ab-block-threshold">Blocked packets before ban</label>
+                            <input id="ab-block-threshold" class="ui-input" type="number" min="1" max="1000" value="${Number(ub.threshold) || 40}"></div>
+                        <div class="ui-field"><label for="ab-block-window">Block window (minutes)</label>
+                            <input id="ab-block-window" class="ui-input" type="number" min="1" max="1440" value="${Number(ub.window_minutes) || 10}"></div>
+                        <div class="ui-field"><label for="ab-block-ban">Block ban (minutes)</label>
+                            <input id="ab-block-ban" class="ui-input" type="number" min="5" max="43200" value="${Number(ub.ban_minutes) || 60}"></div>
+                        <div class="ui-field"><label for="ab-block-ports">Minimum distinct ports</label>
+                            <input id="ab-block-ports" class="ui-input" type="number" min="1" max="100" value="${Number(ub.min_ports) || 5}"></div>
+                        <div class="ui-field">${check('ab-block-enabled', 'Use UFW block floods (scanners)', ub.enabled)}</div>
+                        <div class="ui-field"><label for="ab-max-active">Max active auto-bans</label>
+                            <input id="ab-max-active" class="ui-input" type="number" min="1" max="2000" value="${Number(cfg.max_active_bans) || 200}"></div>
+                        <div class="ui-field"><label for="ab-max-sweep">Max new bans per sweep</label>
+                            <input id="ab-max-sweep" class="ui-input" type="number" min="1" max="100" value="${Number(cfg.max_bans_per_sweep) || 10}"></div>
+                        <div class="ui-field"><label for="ab-max-day">Max new bans per day</label>
+                            <input id="ab-max-day" class="ui-input" type="number" min="1" max="5000" value="${Number(cfg.max_bans_per_day) || 200}"></div>
+                    </div>
+                    <div class="ui-row ui-panel-body">
+                        <button class="ui-btn small primary" data-action="ab-save" data-testid="sec-ab-save">${uiIcon('check', 12)} Save settings</button>
+                        <span class="ui-tag">${Number(stats.active_bans ?? active.length) || 0} active</span>
+                        <span class="ui-tag">${Number(stats.banned_today) || 0} banned today</span>
+                    </div>
+                </div>
+            </section>
+            <section class="ui-panel">
+                <div class="ui-toolbar"><h2>Never blocked</h2><span class="ui-tag is-ok">always on</span></div>
+                <div class="ui-panel-body">
+                    <p class="ui-muted">Detected LAN: <span class="mono">${escapeHtml(data.detected_lan || 'unknown')}</span>. These ranges are refused before any rule is created:</p>
+                    <div class="ui-row">${protectedTags}</div>
+                    <div class="ui-field full">
+                        <label for="ab-allowlist">Allowlist — one IP or CIDR per line</label>
+                        <textarea id="ab-allowlist" class="ui-textarea mono" rows="4" data-testid="sec-ab-allowlist" placeholder="e.g. 45.33.32.156&#10;198.51.100.0/24">${escapeHtml(allowlist)}</textarea>
+                    </div>
+                    <p class="ui-muted">Unbanning an auto-banned address starts a ${Number(data.cooldown_minutes) || 30} min cooldown so it is not re-banned immediately.</p>
+                </div>
+            </section>
+        </div>
+        ${preview ? `<section class="ui-panel" data-testid="sec-ab-preview-panel">
+            <div class="ui-toolbar"><h2>Preview</h2><span class="ui-tag">${previewCandidates.length} candidate(s)</span></div>
+            <div class="ui-panel-body">
+                ${previewCandidates.length ? `<div class="ui-table-wrap"><table class="ui-table" data-testid="sec-ab-preview-table">
+                        <thead><tr><th>IP</th><th>Events</th><th>Source</th><th>Reason</th><th>Last seen</th></tr></thead>
+                        <tbody>${previewRows}</tbody>
+                    </table></div>`
+                    : emptyState({ icon: 'shield', title: 'Nothing crossed the thresholds', hint: 'No address would be banned with the current policy.' })}
+            </div>
+        </section>` : ''}
+        <section class="ui-panel" data-testid="sec-ab-active-panel">
+            <div class="ui-toolbar"><h2>Active auto-bans</h2><span class="ui-tag">${active.length}</span></div>
+            ${active.length ? `<div class="ui-table-wrap"><table class="ui-table" data-testid="sec-ab-active">
+                    <thead><tr><th>IP</th><th>Strike</th><th>Reason</th><th>Expires</th><th>Remaining</th><th class="actions"></th></tr></thead>
+                    <tbody>${activeRows}</tbody>
+                </table></div>`
+                : `<div class="ui-panel-body">${emptyState({ icon: 'ban', title: 'No active auto-bans', hint: 'Temporary bans appear here and expire on their own.' })}</div>`}
+        </section>
+        <section class="ui-panel" data-testid="sec-ab-history-panel">
+            <div class="ui-toolbar"><h2>Recent activity</h2><span class="ui-tag">last ${history.length}</span></div>
+            ${history.length ? `<div class="ui-table-wrap"><table class="ui-table" data-testid="sec-ab-history">
+                    <thead><tr><th>Time</th><th>Event</th><th>IP</th><th>Duration</th><th>Reason</th></tr></thead>
+                    <tbody>${historyRows}</tbody>
+                </table></div>`
+                : `<div class="ui-panel-body">${emptyState({ icon: 'activity', title: 'No auto-ban activity yet', hint: 'Run a preview or enable the engine.' })}</div>`}
+        </section>`;
+
+    _wireAutoban();
+}
+
+function _wireAutoban() {
+    shell.view.oninput = () => { shell.view.dataset.dirty = '1'; };
+    shell.view.querySelector('[data-action="ab-refresh"]')?.addEventListener('click', () => shell.setActive('autoban'));
+    shell.view.querySelector('[data-action="ab-save"]')?.addEventListener('click', () => _saveAutoban());
+    shell.view.querySelector('[data-action="ab-preview"]')?.addEventListener('click', () => _previewAutoban());
+    shell.view.querySelector('[data-action="ab-apply"]')?.addEventListener('click', () => _applyAutoban());
+    shell.view.querySelectorAll('[data-action="ab-unban"]').forEach((button) => {
+        button.addEventListener('click', () => _unbanIp(button.dataset.ip));
+    });
+}
+
+function _autobanFormValues() {
+    const value = (selector, fallback = '') => shell.view.querySelector(selector)?.value ?? fallback;
+    const num = (selector, fallback) => {
+        const parsed = Number(value(selector));
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    };
+    const checked = (selector) => Boolean(shell.view.querySelector(selector)?.checked);
+    return {
+        enabled: checked('#ab-enabled'),
+        dry_run: checked('#ab-dry-run'),
+        escalate: checked('#ab-escalate'),
+        failed_logins: {
+            enabled: checked('#ab-login-enabled'),
+            threshold: num('#ab-login-threshold', 5),
+            window_minutes: num('#ab-login-window', 10),
+            ban_minutes: num('#ab-login-ban', 60),
+        },
+        ufw_blocks: {
+            enabled: checked('#ab-block-enabled'),
+            threshold: num('#ab-block-threshold', 40),
+            window_minutes: num('#ab-block-window', 10),
+            ban_minutes: num('#ab-block-ban', 60),
+            min_ports: num('#ab-block-ports', 5),
+        },
+        allowlist: String(value('#ab-allowlist')).split(/[\s,]+/).map((part) => part.trim()).filter(Boolean),
+        max_active_bans: num('#ab-max-active', 200),
+        max_bans_per_sweep: num('#ab-max-sweep', 10),
+        max_bans_per_day: num('#ab-max-day', 200),
+    };
+}
+
+async function _saveAutoban() {
+    const body = _autobanFormValues();
+    if (body.enabled && !body.dry_run) {
+        const ok = await showConfirm('Enable auto-ban',
+            'Repeat offenders will be blocked with temporary UFW rules. Loopback and local networks are never blocked. Continue?',
+            { danger: true });
+        if (!ok) return;
+    }
+    try {
+        await apiRequest('/api/security/autoban', { method: 'PUT', body });
+        autobanPreview = null;
+        notify({ kind: 'success', message: 'Auto-ban settings saved' });
+        shell.setActive('autoban');
+    } catch (err) {
+        logError('Security: saving auto-ban failed', _errText(err));
+        notify({ kind: 'error', message: _errText(err) });
+    }
+}
+
+async function _previewAutoban() {
+    try {
+        autobanPreview = await apiRequest('/api/security/autoban/run', {
+            method: 'POST', body: { apply: false },
+        });
+        const count = (autobanPreview?.candidates || []).length;
+        notify({ kind: count ? 'info' : 'success', message: count
+            ? `${count} IP(s) would be banned`
+            : 'Nothing would be banned right now' });
+        shell.setActive('autoban');
+    } catch (err) {
+        logError('Security: auto-ban preview failed', _errText(err));
+        notify({ kind: 'error', message: _errText(err) });
+    }
+}
+
+async function _applyAutoban() {
+    const ok = await showConfirm('Apply auto-ban now',
+        'Block every current candidate with a temporary UFW rule? Preview first if you are unsure.',
+        { danger: true });
+    if (!ok) return;
+    try {
+        const result = await apiRequest('/api/security/autoban/run', {
+            method: 'POST', body: { apply: true },
+        });
+        autobanPreview = null;
+        const banned = (result?.banned || []).length;
+        notify({ kind: banned ? 'success' : 'info', message: banned
+            ? `${banned} IP(s) banned`
+            : 'No IP matched the current policy' });
+        for (const failure of result?.errors || []) {
+            notify({ kind: 'error', message: `Could not ban ${failure.ip}: ${failure.error}` });
+        }
+        shell.setActive('autoban');
+    } catch (err) {
+        logError('Security: applying auto-ban failed', _errText(err));
+        notify({ kind: 'error', message: _errText(err) });
+    }
+}
+
+function _duration(seconds) {
+    const total = Number(seconds);
+    if (!Number.isFinite(total) || total <= 0) return '—';
+    if (total < 90) return `${Math.round(total)} s`;
+    if (total < 5400) return `${Math.round(total / 60)} min`;
+    if (total < 172800) return `${Math.round(total / 3600)} h`;
+    return `${Math.round(total / 86400)} d`;
+}
+
+function _errText(err) {
+    const detail = err?.detail;
+    if (Array.isArray(detail)) {
+        return detail.map((item) => item?.msg || String(item)).join('; ');
+    }
+    return detail || err?.message || 'Unknown error';
+}
+
+// ════════════════════════════════════════════════════════════════════════
 // Shared helpers
-// ════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════
 
 const LOADERS = {
     overview: loadOverview,
     ufw: loadUfw,
+    autoban: loadAutoban,
     intrusions: loadIntrusions,
     logins: loadLogins,
     bans: loadBans,

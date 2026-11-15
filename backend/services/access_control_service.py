@@ -33,8 +33,12 @@ logger = logging.getLogger("ethos-nas.services.access_control_service")
 
 UFW_BIN = shutil.which("ufw") or "/usr/sbin/ufw"
 
-# Comment tag marking rules created by the "Ban IP" feature
+# Comment tags marking rules created by the ban features. Manual bans use
+# `ethos-ban`; the auto-ban engine tags its own rules so the two can be listed
+# and expired independently.
 BAN_COMMENT = "ethos-ban"
+AUTOBAN_COMMENT = "ethos-autoban"
+BAN_COMMENT_TOKENS = frozenset({BAN_COMMENT, AUTOBAN_COMMENT})
 
 SUDO_HINT = "Run setup_scripts/setup_service.sh as root to install the NOPASSWD rules."
 
@@ -317,8 +321,15 @@ def _rule_signature(rule: dict) -> tuple:
 
 
 def ufw_add_rule(action: str = "allow", protocol: str = "tcp", port: str = "",
-                 source: str = "", comment: str = "") -> int:
-    """Add a UFW rule. Returns the 1-based rule number of the new rule."""
+                 source: str = "", comment: str = "", position: int | None = None) -> int:
+    """Add a UFW rule. Returns the 1-based rule number of the new rule.
+
+    `position=1` prepends the rule (`ufw insert 1 …`). Ban rules must be
+    prepended: UFW evaluates rules in order, so a `deny from <ip>` appended
+    after a broad `allow 443/tcp` would never match.
+    """
+    if position is not None and (not isinstance(position, int) or not 1 <= position <= 9999):
+        raise RuntimeError(f"Invalid rule position: {position!r}")
     action = (action or "allow").lower()
     if action == "drop":
         # `ufw drop` is not a valid verb; UFW's equivalent is `deny` (DROP).
@@ -355,6 +366,8 @@ def ufw_add_rule(action: str = "allow", protocol: str = "tcp", port: str = "",
         cmd.extend(["from", source])
     if comment:
         cmd.extend(["comment", comment])
+    if position is not None:
+        cmd = ["insert", str(position)] + cmd
     # NB: no `--force` here — ufw 0.36.x rejects global options before
     # allow/deny/reject/limit ("Invalid syntax"); rule adds don't prompt anyway.
     _ufw(cmd, timeout=20)
@@ -393,6 +406,11 @@ def _read_rules_safe() -> list[dict]:
 # firewall never locks out web UI / app access. (Historically UFW was
 # enabled with an empty ruleset → default-deny-incoming dropped port 443
 # and remote phone login stopped working until UFW was disabled again.)
+def detect_lan_subnet() -> str:
+    """Public wrapper around the best-effort LAN detection (assumes /24)."""
+    return _detect_lan_subnet()
+
+
 def _detect_lan_subnet() -> str:
     """Best-effort detection of the host's LAN subnet (assumes /24)."""
     try:
@@ -789,7 +807,7 @@ def _first_ip(from_part: str) -> str:
 
 
 def list_bans(rules: list[dict] | None = None) -> list[dict]:
-    """List manual bans (UFW rules tagged with the `ethos-ban` comment).
+    """List ban rules (manual `ethos-ban` and auto `ethos-autoban`).
 
     Raises RuntimeError when UFW cannot be queried — silently returning []
     made a broken sudo configuration look like "no bans" (and the UI then
@@ -799,13 +817,26 @@ def list_bans(rules: list[dict] | None = None) -> list[dict]:
         rules = ufw_status()["rules"]
     bans = []
     for idx, r in enumerate(rules):
-        if BAN_COMMENT in r["comment"].split():
-            bans.append({"num": r.get("num", idx + 1), "ip": _first_ip(r["from"]) or r["from"]})
+        tokens = r["comment"].split()
+        tag = next((t for t in tokens if t in BAN_COMMENT_TOKENS), None)
+        if tag:
+            bans.append({
+                "num": r.get("num", idx + 1),
+                "ip": _first_ip(r["from"]) or r["from"],
+                "kind": "auto" if tag == AUTOBAN_COMMENT else "manual",
+                "comment": tag,
+            })
     return bans
 
 
-def ban_ip(ip: str) -> dict:
-    """Ban an IP by adding a tagged UFW deny rule. Idempotent per IP."""
+def ban_ip(ip: str, comment: str = BAN_COMMENT) -> dict:
+    """Ban an IP by adding a tagged UFW deny rule. Idempotent per IP.
+
+    Bans are prepended (`ufw insert 1`) so they win over broad allow rules
+    such as the baseline `allow 443/tcp from anywhere`.
+    """
+    if comment not in BAN_COMMENT_TOKENS:
+        raise RuntimeError(f"Invalid ban tag: {comment!r}")
     ip = _validate_ip_or_cidr(ip)
     key = _normalize_ip(ip)
     for b in list_bans():
@@ -813,7 +844,8 @@ def ban_ip(ip: str) -> dict:
             return {"num": b["num"], "ip": ip, "already_banned": True}
     # `protocol="any"` → `ufw deny from <ip>` (all protocols). Banning only
     # tcp left UDP/ICMP traffic from the offender untouched.
-    num = ufw_add_rule(action="deny", protocol="any", source=ip, comment=BAN_COMMENT)
+    num = ufw_add_rule(action="deny", protocol="any", source=ip,
+                       comment=comment, position=1)
     return {"num": num, "ip": ip}
 
 
@@ -833,7 +865,8 @@ def ban_ips(ips: list[str]) -> dict:
             results.append({"ip": ip, "already_banned": True})
             continue
         try:
-            num = ufw_add_rule(action="deny", protocol="any", source=ip, comment=BAN_COMMENT)
+            num = ufw_add_rule(action="deny", protocol="any", source=ip,
+                               comment=BAN_COMMENT, position=1)
             existing.add(key)
             results.append({"ip": ip, "num": num})
         except Exception as exc:  # noqa: BLE001 — report per-IP, keep going

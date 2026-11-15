@@ -55,6 +55,11 @@ def _token(role: str) -> str:
 
 
 def _call(base: str, method: str, path: str, token: str | None = None, body=None) -> int:
+    status, _ = _call_json(base, method, path, token, body)
+    return status
+
+
+def _call_json(base: str, method: str, path: str, token: str | None = None, body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(base + path, data=data, method=method)
     if token:
@@ -62,12 +67,16 @@ def _call(base: str, method: str, path: str, token: str | None = None, body=None
     if data:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+            try:
+                return resp.status, json.loads(raw or b"{}")
+            except ValueError:
+                return resp.status, {}
     except urllib.error.HTTPError as exc:
-        return exc.code
+        return exc.code, {}
     except OSError:
-        return 0
+        return 0, {}
 
 
 def _wait_ready(base: str, proc: subprocess.Popen, log_path: Path, timeout: float = 25.0) -> bool:
@@ -159,6 +168,8 @@ def main() -> int:
             ("GET", "/api/logs/files", None, 403),
             ("POST", "/api/system/update/check", None, 403),
             ("POST", "/api/system/update", None, 403),
+            ("GET", "/api/security/autoban", None, 403),
+            ("GET", "/api/security/bans", None, 403),
         ]:
             got = _call(base, method, path, user, body)
             check(f"{method} {path} -> {expected}", got == expected, f"got {got}")
@@ -187,9 +198,35 @@ def main() -> int:
             ("GET", "/api/system/storage-usage", 200),
             ("GET", "/api/system/update", 200),
             ("GET", "/api/system/update/status", 200),
+            ("GET", "/api/security/autoban", 200),
         ]:
-            got = _call(base, method, path, admin)
-            check(f"{method} {path} -> {expected}", got == expected, f"got {got}")
+            got = _call(base, "GET", path, admin)
+            check(f"GET {path} -> {expected}", got == expected, f"got {got}")
+
+        # `bans` surfaces a broken sudo/UFW setup as 400 by design; on a CI box
+        # without ufw there are no rules to read, so accept both.
+        bans_status = _call(base, "GET", "/api/security/bans", admin)
+        check("GET /api/security/bans -> 200/400", bans_status in (200, 400),
+              f"got {bans_status}")
+
+        print("\n[admin role] auto-ban API")
+        status, data = _call_json(base, "PUT", "/api/security/autoban", admin,
+                                  {"enabled": False, "dry_run": True, "allowlist": []})
+        check("PUT /api/security/autoban -> 200", status == 200, f"got {status}")
+        check("saved config keeps auto-ban disabled",
+              (data.get("config") or {}).get("enabled") is False, str(data)[:200])
+
+        bad_status, _ = _call_json(base, "PUT", "/api/security/autoban", admin,
+                                   {"allowlist": ["not-an-address"]})
+        check("PUT invalid allowlist -> 400", bad_status == 400, f"got {bad_status}")
+
+        run_status, run_data = _call_json(base, "POST", "/api/security/autoban/run",
+                                          admin, {"apply": False})
+        check("POST /api/security/autoban/run (preview) -> 200", run_status == 200,
+              f"got {run_status}")
+        check("preview never applies bans", run_data.get("applied") is False,
+              str(run_data)[:200])
+        check("preview reports candidates list", isinstance(run_data.get("candidates"), list))
     finally:
         proc.terminate()
         try:

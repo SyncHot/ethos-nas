@@ -85,6 +85,10 @@ from backend.services.retention_service import (
     start_retention_sweeper,
     stop_retention_sweeper,
 )
+from backend.services.autoban_service import (
+    start_autoban,
+    stop_autoban,
+)
 
 logging.basicConfig(
     level=(
@@ -205,6 +209,9 @@ async def lifespan(app: FastAPI):
     # Trim caches, the recycle bin and abandoned uploads (services/retention_service.py)
     start_retention_sweeper()
 
+    # Temporary, escalating IP bans from failed logins (services/autoban_service.py)
+    start_autoban()
+
     # Core update check (signed release index) + apply helper result reconcile
     from backend.services.update_service import (
         reconcile_result as _reconcile_update_result,
@@ -244,6 +251,7 @@ async def lifespan(app: FastAPI):
     await stop_health_monitor()
     await stop_net_stats_sampler()
     await stop_retention_sweeper()
+    await stop_autoban()
     await stop_update_checker()
     from backend.services import package_runtime as _package_runtime_stop
     await _package_runtime_stop.shutdown_all()

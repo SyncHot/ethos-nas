@@ -182,10 +182,10 @@ def test_bans():
         ]
         acs.ufw_status = lambda: {"enabled": True, "logging": True, "defaults": {}, "rules": rules}
 
+        expected = [{"num": 2, "ip": "1.2.3.4", "kind": "manual", "comment": "ethos-ban"}]
         bans = acs.list_bans()
-        check("ban list normalizes /32", bans == [{"num": 2, "ip": "1.2.3.4"}], bans)
-        check("list_bans accepts pre-fetched rules",
-              acs.list_bans(rules) == [{"num": 2, "ip": "1.2.3.4"}])
+        check("ban list normalizes /32", bans == expected, bans)
+        check("list_bans accepts pre-fetched rules", acs.list_bans(rules) == expected)
 
         calls = []
 
@@ -223,13 +223,20 @@ def test_unban_bounded():
         acs.list_bans, acs.ufw_delete_rule = original_list, original_delete
 
 
-JOURNAL_SAMPLE = (
-    "2026-11-08T10:00:00+0100 nasos kernel: [UFW BLOCK] IN=eth0 OUT= "
-    "MAC=aa:bb SRC=45.155.205.233 DST=192.168.1.2 LEN=60 PROTO=TCP SPT=51111 DPT=22 "
-    "WINDOW=64240 SYN\n"
-    "2026-11-08T10:00:05+0100 nasos kernel: [UFW BLOCK] IN=eth0 OUT= "
-    "MAC=aa:bb SRC=192.168.1.77 DST=192.168.1.2 LEN=60 PROTO=TCP SPT=40000 DPT=445\n"
-)
+def _journal_sample() -> str:
+    """Two UFW BLOCK lines inside the 24 h window (relative to now)."""
+    now = datetime.now()
+
+    def stamp(minutes_ago: int) -> str:
+        return (now - timedelta(minutes=minutes_ago)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+    return (
+        f"{stamp(1)} nasos kernel: [UFW BLOCK] IN=eth0 OUT= "
+        "MAC=aa:bb SRC=45.155.205.233 DST=192.168.1.2 LEN=60 PROTO=TCP SPT=51111 DPT=22 "
+        "WINDOW=64240 SYN\n"
+        f"{stamp(2)} nasos kernel: [UFW BLOCK] IN=eth0 OUT= "
+        "MAC=aa:bb SRC=192.168.1.77 DST=192.168.1.2 LEN=60 PROTO=TCP SPT=40000 DPT=445\n"
+    )
 
 
 def test_firewall_blocks_journal_fallback():
@@ -242,7 +249,7 @@ def test_firewall_blocks_journal_fallback():
         acs.invalidate_block_cache()
         acs._kernel_log_files = lambda: [Path("/var/log/kern.log")]
         acs._read_file = lambda path, max_bytes=0: ""      # unreadable (root:adm)
-        acs._run = lambda cmd, timeout=15: JOURNAL_SAMPLE  # journalctl
+        acs._run = lambda cmd, timeout=15: _journal_sample()  # journalctl
         acs.ufw_status = lambda: {"enabled": True, "logging": True, "defaults": {}, "rules": []}
 
         data = acs.get_firewall_blocks(hours=24, limit=10)

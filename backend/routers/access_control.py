@@ -23,13 +23,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from backend.routers.auth import require_admin
+from backend.services import autoban_service
 from backend.services.access_control_service import (
     SUDO_HINT,
     ban_ip,
     ban_ips,
     get_failed_logins,
     list_bans,
-    unban_ip,
     get_firewall_blocks,
     ufw_add_rule,
     ufw_delete_rule,
@@ -54,6 +54,36 @@ class UfwRuleCreate(BaseModel):
 
 class BanCreate(BaseModel):
     ip: str
+    model_config = {"extra": "forbid"}
+
+
+class AutobanLoginSource(BaseModel):
+    enabled: bool = True
+    threshold: int = Field(5, ge=1, le=1000)
+    window_minutes: int = Field(10, ge=1, le=1440)
+    ban_minutes: int = Field(60, ge=5, le=43200)
+    model_config = {"extra": "forbid"}
+
+
+class AutobanBlockSource(AutobanLoginSource):
+    min_ports: int = Field(5, ge=1, le=100)
+
+
+class AutobanConfigBody(BaseModel):
+    enabled: bool = False
+    dry_run: bool = True
+    escalate: bool = True
+    failed_logins: AutobanLoginSource = Field(default_factory=AutobanLoginSource)
+    ufw_blocks: AutobanBlockSource = Field(default_factory=AutobanBlockSource)
+    allowlist: list[str] = Field(default_factory=list)
+    max_active_bans: int = Field(200, ge=1, le=2000)
+    max_bans_per_sweep: int = Field(10, ge=1, le=100)
+    max_bans_per_day: int = Field(200, ge=1, le=5000)
+    model_config = {"extra": "forbid"}
+
+
+class AutobanRunBody(BaseModel):
+    apply: bool = False
     model_config = {"extra": "forbid"}
 
 
@@ -115,6 +145,13 @@ async def security_status() -> dict:
                 hours=24, limit=0, ufw_state=ufw_state)["total_events"]
         except Exception as e:
             logger.error("security status firewall log: %s", e)
+        try:
+            status["autoban"] = autoban_service.summary()
+        except Exception as e:
+            logger.error("security status auto-ban: %s", e)
+            status["autoban"] = {"enabled": False, "dry_run": True,
+                                 "active_bans": 0, "banned_today": 0,
+                                 "last_run_at": None}
         return status
 
     try:
@@ -279,11 +316,72 @@ async def get_bans() -> dict:
 
 @router.delete("/bans/{ip:path}")
 async def delete_ban(ip: str) -> dict:
-    """Remove a ban. `{ip:path}` so CIDR bans (a.b.c.0/24) can be unbanned."""
+    """Remove a ban. `{ip:path}` so CIDR bans (a.b.c.0/24) can be unbanned.
+
+    Auto-bans also get a cooldown so the engine does not re-ban the same host
+    while the admin is still looking at it.
+    """
     try:
-        removed = await asyncio.to_thread(unban_ip, ip)
+        result = await asyncio.to_thread(autoban_service.unban, ip)
     except Exception as e:
         _raise_http(e)
-    logger.warning("firewall: unban %s — %s rule(s) removed", ip, removed)
+    removed = result.get("removed", 0)
+    logger.warning("firewall: unban %s — %s rule(s) removed (auto=%s)",
+                   ip, removed, result.get("was_auto"))
     _notify("info", "IP unbanned", f"{ip} is no longer blocked ({removed} rule(s) removed).")
-    return {"status": "unbanned", "ip": ip, "removed": removed}
+    return {"status": "unbanned", "ip": ip, "removed": removed,
+            "was_auto": bool(result.get("was_auto"))}
+
+
+# ── Auto-ban (temporary, escalating, allowlist-protected) ──
+
+@router.get("/autoban")
+async def get_autoban() -> dict:
+    """Auto-ban config, active bans, history and protection rules."""
+    try:
+        return await asyncio.to_thread(autoban_service.status)
+    except Exception as e:
+        _raise_http(e)
+
+
+@router.put("/autoban")
+async def put_autoban(body: AutobanConfigBody) -> dict:
+    try:
+        config = await asyncio.to_thread(autoban_service.save_config, body.model_dump())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        _raise_http(e)
+    logger.info("firewall: auto-ban config updated (enabled=%s, dry_run=%s)",
+                config["enabled"], config["dry_run"])
+    if not config["enabled"]:
+        state = "Disabled"
+    elif config["dry_run"]:
+        state = "Enabled in dry-run mode (no rule is created)"
+    else:
+        state = "Enabled"
+    _notify("info", "Auto-ban settings updated", state)
+    return {"status": "saved", "config": config}
+
+
+@router.post("/autoban/run")
+async def run_autoban(body: AutobanRunBody | None = None) -> dict:
+    """Run one detection pass. `apply=false` is a preview and never touches UFW."""
+    apply = bool(body.apply) if body else False
+    try:
+        result = await asyncio.to_thread(autoban_service.run_sweep, apply=apply)
+    except Exception as e:
+        _raise_http(e)
+    logger.info("firewall: auto-ban run (apply=%s) — %s candidate(s), %s banned",
+                apply, len(result.get("candidates") or []),
+                len(result.get("banned") or []))
+    return result
+
+
+@router.get("/autoban/history")
+async def autoban_history(limit: int = Query(50, ge=1, le=200)) -> dict:
+    try:
+        data = await asyncio.to_thread(autoban_service.status)
+    except Exception as e:
+        _raise_http(e)
+    return {"history": (data.get("history") or [])[:limit]}
