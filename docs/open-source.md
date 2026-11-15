@@ -35,28 +35,43 @@ protection enabled. The JWT secret was rotated on the production host
 (`systemd` drop-in `10-jwt-secret.conf`) so the token that leaked into the old
 history can no longer be used.
 
-The two repositories have **unrelated histories**. Keep the private checkout as
-the working repo and publish each release as one additional snapshot commit:
+**The working checkout now points at the public repository.** `origin` is
+`git@github.com:SyncHot/ethos-nas.git`; the old private repository is kept as a
+read-only remote named `private-archive` (plus the local branch
+`private-history-backup` at the last pre-switch commit). Day-to-day work is a
+normal flow again:
 
 ```bash
-# 1. build the publishable tree from the current HEAD (tracked files only)
-rm -rf /tmp/ethos-pub && git clone -q --depth 1 https://github.com/SyncHot/ethos-nas /tmp/ethos-pub
-cd /path/to/private/ethos-nas
-find /tmp/ethos-pub -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-git archive HEAD | tar -x -C /tmp/ethos-pub            # snapshot of HEAD
-rm -rf /tmp/ethos-pub/docs/archive /tmp/ethos-pub/ETHOS_LOOP_STATUS.md
-
-# 2. verify, then commit on top of the public history (never force-push)
-cd /tmp/ethos-pub
-git status --short                                     # review what is new
-git add -A
-git commit -m "Release 2.1.0"                          # or a plain sync commit
-git tag -a v2.1.0 -m "EthOS NAS 2.1.0" && git push origin master --follow-tags
+git add -A && git commit -m "feat(scope): …" && git push      # CI runs on push
+git tag -a v2.1.0 -m "EthOS NAS 2.1.0" && git push --follow-tags
 ```
 
-`git archive HEAD` only ships tracked files, so `backend/data/`, `users.json`,
-`apks/`, `.env` and the venv can never leak this way; the `rm` step drops the
-archive directory. Do **not** run `git push --force` on the public repo.
+There is **no snapshot step any more**. Anything that must not be public stays
+out through `.gitignore` (`.opencode/`, `qa/`, `backend/data/`, `apks/`, `.env`)
+— never force-add those paths.
+
+Looking up pre-switch history:
+
+```bash
+git log private-history-backup --oneline         # local pointer
+git log private-archive/master --oneline         # the archived private repo
+```
+
+### Repointing another server / checkout
+
+Same directory, no venv or data copy needed:
+
+```bash
+git remote rename origin private-archive          # keep the old one for reference
+git remote add origin git@github.com:SyncHot/ethos-nas.git
+git fetch origin && git reset --hard origin/master
+git clean -nd                                     # review untracked leftovers (optional)
+```
+
+`backend/data/`, `.venv/` and the systemd unit are untouched because the path
+does not change; the service keeps running (only files that the public tree no
+longer contains — `docs/archive/`, `ETHOS_LOOP_STATUS.md`, `.opencode/` —
+disappear from the working tree).
 
 ## First-release record (what was done)
 
@@ -70,11 +85,12 @@ archive directory. Do **not** run `git push --force` on the public repo.
 5. `gh repo create ethos-nas --public --source . --remote public --push`.
 6. `git tag -a v2.0.0` + push; topics added; secret scanning, push protection
    and private vulnerability reporting enabled.
+7. Checkout switched: `origin` → public, old repo → `private-archive`,
+   working tree reset to `origin/master`.
 
 Remaining manual steps: branch protection on `master` (requires the `ci` check),
-and archiving the old private repository **only after** every server checkout
-has been repointed — the private repo is still the push target for day-to-day
-work.
+archiving the old private repository on GitHub, and rotating the admin API key
+and PAM password.
 
 
 ## Checklist before the first public push

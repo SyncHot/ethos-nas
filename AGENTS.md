@@ -102,7 +102,7 @@ apps; finished rows persist until cleared. See `.github/instructions/frontend.in
 - **Server restarts:** never restart the service yourself — ask the user (UI or terminal).
 - **Git:** after each finished task, commit and push: `feat(<scope>): …` / `fix(<scope>): …`.
 - **Backlog:** `TODO.md` is the only backlog. Read only the section you need; full text of completed
-  items is in `docs/archive/todo-done.md`.
+  items is in the private archive repo (`git log private-archive/master`), not in this checkout.
 - **Features:** create `docs/<feature>.md` with plan + file map + status checkboxes, update as work lands.
 - **Android:** any change in `ethos-moments` / `ethos-music` / `ethos-video` requires bumping
   `versionCode`, running `./build.sh`, verifying `/api/app/version?app=<app>` and mirroring the feature

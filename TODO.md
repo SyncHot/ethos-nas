@@ -1,8 +1,8 @@
 # EthOS NAS — Master TODO
 
 > **Open work only.** Completed items are one-line entries below; full detail (problem / fix /
-> evidence) is in [`docs/archive/todo-done.md`](docs/archive/todo-done.md), together with the
-> historical 2026-11-11 audit scorecard and execution plan.
+> evidence) lives in the private archive repository (`private-archive` remote, `SyncHot/ethosnas`),
+> together with the historical 2026-11-11 audit scorecard and execution plan.
 
 ## How to use
 
