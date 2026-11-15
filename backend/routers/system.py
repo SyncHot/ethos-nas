@@ -173,8 +173,32 @@ def _reexec_argv() -> Optional[list]:
     return None
 
 
-def _perform_restart() -> None:
+async def _stop_children_before_restart() -> None:
+    """Stop processes `os.execv` would orphan (it skips the ASGI lifespan).
+
+    Package services are direct children with their own loopback ports; left
+    alive they make the new image's autostart fail with “port already in use”.
+    Camera ffmpeg recordings are the same class of leak.
+    """
+    try:
+        from backend.services import package_runtime
+
+        await package_runtime.shutdown_all()
+    except Exception:
+        logger.error("Pre-restart package shutdown failed", exc_info=True)
+    try:
+        from backend.services.camera_service import stop_all_recordings
+
+        stopped = await asyncio.to_thread(stop_all_recordings)
+        if stopped:
+            logger.info("Pre-restart: stopped %d camera recording(s)", stopped)
+    except Exception:
+        logger.error("Pre-restart recording stop failed", exc_info=True)
+
+
+async def _perform_restart() -> None:
     """Actually restart the server. Runs in a background task, after the HTTP response is sent."""
+    await _stop_children_before_restart()
     if "multiprocessing.spawn" in _read_cmdline(os.getpid()):
         # We are inside a uvicorn supervisor child (multiprocessing spawn context).
         if "--reload" in _read_cmdline(os.getppid()):

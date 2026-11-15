@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import shutil
+import signal
 import socket
 import sys
 import time
@@ -82,6 +83,155 @@ def _service_port(record: dict) -> int:
     if not 1 <= port <= 65535:
         raise PackageError("runtime 'venv' package has no usable service port", 500)
     return port
+
+
+# ── Stale process tracking ──────────────────────────────────────────────────
+#
+# A restart through `/api/system/restart` finishes with `os.execv`, which keeps
+# the PID and never runs the ASGI lifespan shutdown. Package services started by
+# the previous image therefore stay alive as children of the same process, while
+# the new image has no `_Handle` for them — autostart then fails with “port
+# already in use” and Stop/Uninstall cannot reach them. A pidfile written at
+# start (plus the `ETHOS_PACKAGE_ID` env marker) lets the next image stop them.
+
+def _run_dir() -> Path:
+    return packages_store.PACKAGES_ROOT / "run"
+
+
+def _pid_file(pkg_id: str) -> Path:
+    return _run_dir() / f"{pkg_id}.pid"
+
+
+def _write_pidfile(pkg_id: str, pid: int) -> None:
+    try:
+        _run_dir().mkdir(parents=True, exist_ok=True)
+        _pid_file(pkg_id).write_text(str(pid), encoding="utf-8")
+    except OSError:
+        logger.warning("Could not write the runtime pidfile for %s", pkg_id, exc_info=True)
+
+
+def _clear_pidfile(pkg_id: str) -> None:
+    try:
+        _pid_file(pkg_id).unlink(missing_ok=True)
+    except OSError:
+        logger.debug("Could not remove the runtime pidfile for %s", pkg_id, exc_info=True)
+
+
+def _read_cmdline(pid: int) -> str:
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(
+            errors="replace")
+    except OSError:
+        return ""
+
+
+def _pid_running(pid: int) -> bool:
+    """True when the PID exists and is not a zombie."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    parts = stat.rsplit(")", 1)
+    if len(parts) != 2:
+        return False
+    return parts[1].split()[0] != "Z"
+
+
+def _is_package_process(pid: int, pkg_id: str, package_dir: Path) -> bool:
+    """Identify one of our package services without trusting the PID alone."""
+    cmdline = _read_cmdline(pid)
+    if not cmdline or str(package_dir) not in cmdline:
+        return False
+    try:
+        environ = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        # The cmdline already points inside this package directory.
+        return True
+    return f"ETHOS_PACKAGE_ID={pkg_id}".encode() in environ
+
+
+def _find_package_processes(pkg_id: str, package_dir: Path) -> list[int]:
+    """PIDs running this package (including orphans reparented to init)."""
+    found: list[int] = []
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return found
+    me = os.getpid()
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == me:
+            continue
+        if _is_package_process(pid, pkg_id, package_dir):
+            found.append(pid)
+    return found
+
+
+def cleanup_stale(pkg_id: str) -> bool:
+    """Stop a package process left behind by an in-place restart.
+
+    Prefers the pidfile, then falls back to a `/proc` scan marked with
+    `ETHOS_PACKAGE_ID` — the latter also covers orphans reparented to init after
+    a hard crash. Returns True when at least one process was signalled.
+    """
+    package_dir = packages_store.package_dir(pkg_id)
+    pids: list[int] = []
+    try:
+        raw = _pid_file(pkg_id).read_text(encoding="utf-8").strip()
+    except OSError:
+        raw = ""
+    if raw:
+        try:
+            pid = int(raw)
+        except ValueError:
+            pid = 0
+        if pid > 1 and _pid_running(pid) and _is_package_process(pid, pkg_id, package_dir):
+            pids = [pid]
+
+    if not pids:
+        pids = _find_package_processes(pkg_id, package_dir)
+
+    if not pids:
+        _clear_pidfile(pkg_id)
+        return False
+
+    for pid in pids:
+        logger.warning("Stopping stale package process %s (pid %s) left by an in-place restart",
+                       pkg_id, pid)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except OSError as exc:
+            logger.error("Could not signal stale pid %s for %s: %s", pid, pkg_id, exc)
+            continue
+
+        deadline = time.monotonic() + STOP_TIMEOUT
+        while time.monotonic() < deadline and _pid_running(pid):
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except (ChildProcessError, OSError):
+                # Harmless: the PID may not be our child (reparented after a
+                # hard restart) or may already have been reaped.
+                pass
+            time.sleep(0.1)
+        if _pid_running(pid):
+            logger.warning("Package %s ignored SIGTERM; killing pid %s", pkg_id, pid)
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                # Harmless: the process exited between the check and the kill.
+                pass
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except (ChildProcessError, OSError):
+                # Harmless: nothing left to reap for this PID.
+                pass
+
+    _clear_pidfile(pkg_id)
+    return True
 
 
 # ── Process helpers ─────────────────────────────────────────────────────────
@@ -262,6 +412,7 @@ async def _supervise(pkg_id: str) -> None:
         if handle.stopping or _HANDLES.get(pkg_id) is not handle:
             return
         _HANDLES.pop(pkg_id, None)
+        _clear_pidfile(pkg_id)
 
         now = time.time()
         if now - window_start > RESTART_WINDOW:
@@ -301,6 +452,10 @@ async def start(pkg_id: str, record: Optional[dict] = None, job_id: Optional[str
     if is_running(pkg_id):
         return {"package": pkg_id, "status": "running", "port": _service_port(record)}
 
+    # A process can outlive an `os.execv` restart; it would make the port check
+    # below fail even though the package is ours. Stop it first.
+    await asyncio.to_thread(cleanup_stale, pkg_id)
+
     package_dir = packages_store.package_dir(pkg_id)
     python_bin = venv_python(package_dir)
     if not python_bin.exists():
@@ -319,6 +474,7 @@ async def start(pkg_id: str, record: Optional[dict] = None, job_id: Optional[str
         cwd=str(package_dir), env=_base_env(pkg_id, package_dir, port),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
+    _write_pidfile(pkg_id, process.pid)
     handle = _Handle(package_id=pkg_id, process=process, port=port)
     handle.readers = [
         asyncio.create_task(_pipe(pkg_id, process.stdout, "info"), name=f"pkg-out-{pkg_id}"),
@@ -347,7 +503,9 @@ async def stop(pkg_id: str) -> bool:
     """Terminate the service (SIGTERM, then SIGKILL) and drop the handle."""
     handle = _HANDLES.pop(pkg_id, None)
     if not handle:
-        return False
+        # No handle (e.g. autostart failed after an in-place restart): still try
+        # to stop a process identified by the pidfile / env marker.
+        return await asyncio.to_thread(cleanup_stale, pkg_id)
     handle.stopping = True
     process = handle.process
     if process.returncode is None:
@@ -365,6 +523,7 @@ async def stop(pkg_id: str) -> bool:
         reader.cancel()
     if handle.supervisor and not handle.supervisor.done():
         handle.supervisor.cancel()
+    _clear_pidfile(pkg_id)
     logger.info("Stopped package service %s", pkg_id)
     return True
 
@@ -376,12 +535,23 @@ async def restart(pkg_id: str) -> dict:
 
 
 async def shutdown_all() -> None:
-    """Stop every supervised service (called from the app lifespan)."""
+    """Stop every supervised service and any stale process left by a restart."""
     for pkg_id in list(_HANDLES):
         try:
             await stop(pkg_id)
         except Exception:
             logger.error("Could not stop package service %s", pkg_id, exc_info=True)
+    # No handle but a live process: only possible after os.execv / a crash.
+    for record in packages_store.load_installed():
+        if str(record.get("runtime") or "compose") != "venv":
+            continue
+        pkg_id = str(record.get("id") or "")
+        if not pkg_id:
+            continue
+        try:
+            await asyncio.to_thread(cleanup_stale, pkg_id)
+        except Exception:
+            logger.error("Could not clean up stale package process %s", pkg_id, exc_info=True)
 
 
 async def autostart_all() -> None:

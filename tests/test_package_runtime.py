@@ -260,6 +260,21 @@ def test_runtime():
         check("status is running", package_runtime.status(pkg_id) == "running")
         check("entry imported the wheel", (state / "probe.txt").read_text(encoding="utf-8") == "1.0.0")
 
+        pid_path = package_runtime._pid_file(pkg_id)
+        check("pidfile written on start", pid_path.exists())
+        first_pid = int(pid_path.read_text(encoding="utf-8"))
+        check("pidfile names the running process",
+              first_pid == package_runtime._HANDLES[pkg_id].process.pid, str(first_pid))
+
+        # Simulate `/api/system/restart` (os.execv): the new image has no
+        # handles for the still-running children.
+        package_runtime._HANDLES.clear()
+        await package_runtime.start(pkg_id, record)
+        check("start recovers from an in-place restart",
+              package_runtime.status(pkg_id) == "running")
+        check("stale process was replaced",
+              int(pid_path.read_text(encoding="utf-8")) != first_pid)
+
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         conn.request("GET", "/health")
         response = conn.getresponse()
@@ -269,6 +284,7 @@ def test_runtime():
 
         await package_runtime.stop(pkg_id)
         check("status is stopped after stop", package_runtime.status(pkg_id) == "stopped")
+        check("pidfile removed after stop", not pid_path.exists())
         released = False
         deadline = time.time() + 5
         while time.time() < deadline:
