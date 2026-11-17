@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-17T18:11:13+00:00",
+  "generated_at": "2026-11-17T18:19:53+00:00",
   "latest": {
-    "version": "2.3.5",
-    "git_sha": "3c09467",
-    "git_sha_full": "3c094674df75fb1dd858c7d60178e8592f322e3c",
-    "build": 27,
-    "released_at": "2026-11-17T18:11:13+00:00",
-    "notes": "Download Manager: archive-tools host requirement installs bsdtar (7z/rar extraction) through the root helper when available; optional so installs never fail."
+    "version": "2.3.6",
+    "git_sha": "f7e761f",
+    "git_sha_full": "f7e761f4857d6ef09dbce32cac2add5d562a9433",
+    "build": 29,
+    "released_at": "2026-11-17T18:19:53+00:00",
+    "notes": "Download Manager: multi-part archives (part01.rar, r00, zip.001) group into one JDownloader-style package row with aggregate status and package Resume/Pause/Delete."
   },
   "releases": [
+    {
+      "version": "2.3.6",
+      "git_sha": "f7e761f",
+      "git_sha_full": "f7e761f4857d6ef09dbce32cac2add5d562a9433",
+      "build": 29,
+      "released_at": "2026-11-17T18:19:53+00:00",
+      "notes": "Download Manager: multi-part archives (part01.rar, r00, zip.001) group into one JDownloader-style package row with aggregate status and package Resume/Pause/Delete."
+    },
     {
       "version": "2.3.5",
       "git_sha": "3c09467",
