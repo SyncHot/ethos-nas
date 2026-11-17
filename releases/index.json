@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-17T18:29:04+00:00",
+  "generated_at": "2026-11-17T18:37:34+00:00",
   "latest": {
-    "version": "2.3.7",
-    "git_sha": "5385233",
-    "git_sha_full": "538523379821af5890572773b21938d3bd3c53ad",
-    "build": 32,
-    "released_at": "2026-11-17T18:29:04+00:00",
-    "notes": "Updates: the root helper survives its own service restart (systemd scope) and refreshes its installed copy; a stuck running job is detected and finalized after a restart instead of blocking every later update."
+    "version": "2.3.8",
+    "git_sha": "2fe828e",
+    "git_sha_full": "2fe828e485e88cf3ac300268513de7b0f808e90f",
+    "build": 34,
+    "released_at": "2026-11-17T18:37:34+00:00",
+    "notes": "Download Manager: transient failures retry with exponential backoff (permanent errors do not), Retry failed bulk action, and duplicate/skip/overwrite handling for re-added URLs and existing files."
   },
   "releases": [
+    {
+      "version": "2.3.8",
+      "git_sha": "2fe828e",
+      "git_sha_full": "2fe828e485e88cf3ac300268513de7b0f808e90f",
+      "build": 34,
+      "released_at": "2026-11-17T18:37:34+00:00",
+      "notes": "Download Manager: transient failures retry with exponential backoff (permanent errors do not), Retry failed bulk action, and duplicate/skip/overwrite handling for re-added URLs and existing files."
+    },
     {
       "version": "2.3.7",
       "git_sha": "5385233",
