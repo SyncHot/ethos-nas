@@ -125,7 +125,8 @@ Multi-part archives are grouped JDownloader-style: tasks that share `package_key
 one row with the aggregate status (any active → downloading, then waiting/error/paused/completed),
 summed size/speed, `n/m done` and the first error; its actions are package-level Resume / Pause /
 Delete / Details, and filters, search and the Overview “Recent activity” table use the same grouping.
-Single tasks keep their per-row actions.
+Single tasks keep their per-row actions. **Show parts** expands the package into ordinary task
+rows, so one dead/misnamed part can be deleted, reset or resumed without dropping the archive.
 Long actions (reset, delete-with-file, torrent queue) render through `core/progress.js`
 (`startTask`/`finish`). Waiting rows expose a drag handle: dropping a row onto another
 waiting row posts the new order to `/tasks/reorder` (the up/down buttons remain as the
