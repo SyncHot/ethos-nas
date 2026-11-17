@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-15T12:18:49+00:00",
+  "generated_at": "2026-11-17T17:47:10+00:00",
   "latest": {
-    "version": "2.2.0",
-    "git_sha": "c2a33a5",
-    "git_sha_full": "c2a33a5dca632c4cfbc73ef8171ac03f2f1b7669",
-    "build": 9,
-    "released_at": "2026-11-15T12:18:49+00:00",
-    "notes": "Updates can now be installed from Settings → System: signed index, pre-update snapshot, git/pip update as the repo owner, automatic rollback when the service does not come back healthy. Also adds the update status endpoint and helper contract tests."
+    "version": "2.3.3",
+    "git_sha": "9795c3c",
+    "git_sha_full": "9795c3c10210200d4e16f51a704db4b21cb6ed38",
+    "build": 23,
+    "released_at": "2026-11-17T17:47:10+00:00",
+    "notes": "Files: download a folder as a ZIP archive from the folder context menu; the UI now says when the archive is being prepared."
   },
   "releases": [
+    {
+      "version": "2.3.3",
+      "git_sha": "9795c3c",
+      "git_sha_full": "9795c3c10210200d4e16f51a704db4b21cb6ed38",
+      "build": 23,
+      "released_at": "2026-11-17T17:47:10+00:00",
+      "notes": "Files: download a folder as a ZIP archive from the folder context menu; the UI now says when the archive is being prepared."
+    },
     {
       "version": "2.2.0",
       "git_sha": "c2a33a5",
