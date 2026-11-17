@@ -93,7 +93,7 @@ UPDATE_INDEX_URL="${ETHOS_UPDATE_INDEX_URL:-https://raw.githubusercontent.com/Sy
 # Host requirements EthOS may install/remove on a package's behalf. Must match
 # SYSTEM_REQUIREMENTS in backend/services/system_deps.py (guarded by
 # tests/test_system_deps_helper.py); `docker` is absent — it has its own helper.
-SYSTEM_DEPS_IDS="samba"
+SYSTEM_DEPS_IDS="samba archive-tools"
 UNIT_SRC="${REPO_DIR}/deploy/ethos-nas.service"
 UNIT_DST="/etc/systemd/system/ethos-nas.service"
 

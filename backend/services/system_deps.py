@@ -52,6 +52,7 @@ _HELPER_TIMEOUT = 600
 #   serviceable   — EthOS may install AND remove it through HELPER_PATH
 #   autoremove    — may be removed on uninstall when nobody needs it any more
 #   provisionable — handled by a dedicated helper (Docker Engine)
+#   optional      — a recommended extra: a missing tool never fails an install
 SYSTEM_REQUIREMENTS: dict[str, dict] = {
     "docker": {
         "label": "Docker Engine",
@@ -68,6 +69,17 @@ SYSTEM_REQUIREMENTS: dict[str, dict] = {
         "serviceable": True,
         "autoremove": True,
         "provisionable": False,
+    },
+    "archive-tools": {
+        # bsdtar reads .7z/.rar/.zst/.lz4 — the formats the stdlib cannot open.
+        # Declared by download-manager; File Manager extraction uses the binary.
+        "label": "Archive tools (bsdtar)",
+        "bins": ("bsdtar",),
+        "apt": "libarchive-tools",
+        "serviceable": True,
+        "autoremove": True,
+        "provisionable": False,
+        "optional": True,
     },
 }
 
@@ -155,6 +167,7 @@ def probe_one(requirement: str) -> dict:
         "provisionable": bool(meta.get("provisionable")),
         "serviceable": bool(meta.get("serviceable")),
         "autoremove": bool(meta.get("autoremove")),
+        "optional": bool(meta.get("optional")),
         "owned": requirement in _load_owned(),
     }
 
@@ -293,6 +306,19 @@ def ensure(requires: Optional[Iterable[str]], job_id: Optional[str] = None,
 
     for item in probe(names):
         if item["ok"] or item.get("provisionable"):
+            continue
+        if item.get("optional"):
+            # Recommended extra (e.g. archive tools): try the helper, but never
+            # turn a missing extractor into a failed package install/update.
+            if item.get("serviceable") and helper_available():
+                try:
+                    install(item["id"], job_id, package_id)
+                except Exception as exc:  # noqa: BLE001 — optional; keep installing
+                    logger.warning("Optional host requirement %s not installed: %s",
+                                   item["id"], exc)
+            else:
+                logger.info("Optional host requirement %s is missing (helper unavailable)",
+                            item["id"])
             continue
         if item.get("serviceable") and helper_available():
             install(item["id"], job_id, package_id)

@@ -124,7 +124,9 @@ its own per-user separation without trusting anything the browser sent.
 **Host software is never installed by a package.** A package that needs OS binaries declares
 `system_requires` (registry in `backend/services/system_deps.py`); EthOS probes for them before
 deploying and, when they are missing, reports the exact `apt` command instead of running it
-(`docker` is the only provisionable id, through the privileged helper). Samba Shares is the
+(`docker` is the only provisionable id, through the privileged helper). Requirements flagged
+`optional` (e.g. `archive-tools` for the Download Manager) never block an install — EthOS tries the
+helper and otherwise leaves them to the operator. Samba Shares is the
 reference case: `ethos-shares` declares `system_requires: ["samba"]`, Packages disables
 Install with the missing-binary list, and the app itself shows the same warning banner and disables
 “+ Add Share” — both paths read the same probe. See `docs/packages.md` → System requirements.

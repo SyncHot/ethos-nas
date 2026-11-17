@@ -39,6 +39,7 @@ REQ="$2"
 apt_packages() {
     case "$1" in
         samba) echo "samba" ;;
+        archive-tools) echo "libarchive-tools" ;;
         *) return 1 ;;
     esac
 }

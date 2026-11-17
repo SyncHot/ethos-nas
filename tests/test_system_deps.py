@@ -37,6 +37,14 @@ check("samba needs smbd + testparm",
       set(system_deps.SYSTEM_REQUIREMENTS["samba"]["bins"]) == {"smbd", "testparm", "smbpasswd"})
 check("only docker is provisionable",
       {k for k, v in system_deps.SYSTEM_REQUIREMENTS.items() if v.get("provisionable")} == {"docker"})
+check("archive-tools is a known requirement", "archive-tools" in system_deps.SYSTEM_REQUIREMENTS)
+check("archive-tools installs libarchive-tools",
+      system_deps.install_hint("archive-tools") == "sudo apt install libarchive-tools")
+check("archive-tools is optional",
+      system_deps.SYSTEM_REQUIREMENTS["archive-tools"].get("optional") is True)
+check("required requirements stay mandatory",
+      not system_deps.SYSTEM_REQUIREMENTS["samba"].get("optional"))
+check("probe marks optional ids", system_deps.probe_one("archive-tools")["optional"] is True)
 check("install hint is the apt command",
       system_deps.install_hint("samba") == "sudo apt install samba")
 check("unknown requirement has no hint", system_deps.install_hint("nginx") == "")
@@ -71,6 +79,26 @@ try:
         check("detail names the missing binaries", "smbd" in exc.detail, exc.detail[:120])
         check("detail carries the install command", "sudo apt install samba" in exc.detail,
               exc.detail[:160])
+
+    # Optional extras (archive tools) are recommended, not required: a missing
+    # tool must never fail an install, but the helper is used when present.
+    try:
+        system_deps.ensure(["archive-tools"])
+        check("optional requirement never fails an install", True)
+    except PackageError as exc:
+        check("optional requirement never fails an install", False, exc.detail)
+
+    installs = []
+    _orig_install = system_deps.install
+    system_deps.install = lambda req, job_id=None, package_id=None: installs.append(req)
+    system_deps.helper_available = lambda: True
+    try:
+        system_deps.ensure(["archive-tools"], "job", "download-manager")
+        check("optional requirement is installed when the helper is ready",
+              installs == ["archive-tools"], str(installs))
+    finally:
+        system_deps.install = _orig_install
+        system_deps.helper_available = lambda: False
 
     calls = []
     _orig_ensure = docker_host.ensure_system_deps
