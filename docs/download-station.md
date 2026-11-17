@@ -68,6 +68,7 @@ no port). The engine, stores and `/api/downloads/*` stay in EthOS core, so the A
 | `created_at`, `started_at`, `finished_at` | epoch seconds |
 | `_resume_pos`, `_saved_resume_pos`, `_last_resume_save` | HTTP resume bookkeeping |
 | `_retry_count`, `_next_retry_at` | backoff bookkeeping; exposed as `retry_count` / `retry_at` (epoch s) |
+| `_mirrors`, `_mirror_index`, `_active_url` | extra source URLs, which one is in use; exposed as `mirror_count` / `mirror_index` |
 | `_extract_state`, `_extract_dest`, `_extract_error` | `running` / `done` / `error` + destination; exposed as `extract_state` / `extract_dest` / `extract_error` |
 | `provider`, `_debrid_id`, `_debrid_status`, `_debrid_progress`, `_files` | debrid internals |
 | `priority` | higher starts earlier; default 0, FIFO within the same value |
@@ -93,11 +94,12 @@ non-admins are limited to `/home`, `/mnt`, `/media`.
 |---|---|---|---|
 | GET | `/tasks` | user | `status`, `limit` (0..5000), `offset`; returns `{tasks,total,active,max_concurrent}` |
 | GET | `/tasks/{id}` | user | 404 unknown |
-| POST | `/tasks` | user | `{url, name?, folder?, category?}`; explicit folder > category save_path > download_dir |
+| POST | `/tasks` | user | `{url, name?, folder?, category?, mirrors?}`; explicit folder > category save_path > download_dir |
 | POST | `/tasks/torrent` | user | multipart `.torrent` upload (bencode parsed locally) |
 | POST | `/tasks/{id}/pause` | user | active → paused |
 | POST | `/tasks/{id}/resume` | user | paused/error → waiting |
-| POST | `/tasks/{id}/reset` | user | purge partial payload and restart |
+| POST | `/tasks/{id}/reset` | user | purge partial payload and restart (also returns to the primary source) |
+| POST | `/tasks/{id}/mirrors` | user | `{urls:[http(s)…]}` (max 10); 400 for magnet tasks or when no URL is usable |
 | POST | `/tasks/{id}/cancel` | user | `?delete_file=`; removes the record |
 | DELETE | `/tasks/{id}` | user | alias of cancel |
 | POST | `/tasks/pause-all` / `/tasks/resume-all` / `/tasks/clear-completed` | user | bulk |
@@ -139,6 +141,8 @@ Transient failures are retried automatically: the row shows `retry 2/3 in 4m`, t
 **Retry failed** (all error records), and manual Resume/Reset/Retry gives the task a fresh budget.
 Adding the same URL to the same folder returns the existing task with `duplicate: true`; the
 `duplicate_policy` config decides what happens when the target file already exists.
+A task can carry alternative sources: the Add form takes one mirror URL per line, and the row shows
+`mirror 2/3` while a fallback source is in use.
 Completed archives get an **Extract** action (single row or whole package) and show
 `Extracting…` / `Extracted` / `Extract failed`; settings expose **Extract archives after download**
 and **Delete archives after a successful extraction**.
@@ -171,6 +175,13 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
   Permanent messages (dead hoster link, bad token, no provider, disk full) go straight to `error`.
   The pump skips waiting tasks whose retry is in the future; a single `call_later` wakes it. Manual
   Resume/Reset/Retry all clear the counters.
+- **Mirrors / hoster failover**: `mirrors[]` on `POST /tasks` (or `/tasks/{id}/mirrors`) keeps up to 10
+  extra sources. A permanent failure (dead link, 403/404, expired premium link) or an exhausted retry
+  budget switches to the next mirror instead of ending in `error`; the switch drops `<dest>.part`
+  (never resume across hosts), resets size/downloaded and gives the mirror its own retry budget.
+  `url` stays the primary source — identity, duplicate detection and the UI label never change;
+  `_active_url` is what the worker fetches. Mirrors apply to `http` and `debrid_link` tasks only
+  (a magnet has no hoster fallback), and a manual Reset restarts the whole chain from the primary.
 - **Duplicates**: the same URL + destination in `waiting`/`downloading`/`paused` returns the existing
   task (`duplicate: true`, no new record). For HTTP downloads, `duplicate_policy` applies when the
   exact destination name exists (`rename` = ` (1)` suffix, `skip` = 409, `overwrite` = same name).
@@ -211,6 +222,7 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
 - [x] Auto-retry with exponential backoff, Retry failed bulk action, duplicate/skip/overwrite policy
 - [x] Post-download extraction: `auto_extract` / `auto_extract_delete`, package-aware first-volume start,
       manual Extract for a task or package, extract state on the row
+- [x] Mirror / hoster failover: `mirrors[]`, per-source retry budget, cross-host resume reset, row indicator
 - [x] RSS feeds + include/exclude regex rules (background loop, persisted seen ids, manual run)
 - [x] Part-file downloads: transfers write `<dest>.part` and rename atomically on success
       (legacy partials are adopted once); cancel/reset remove the part file

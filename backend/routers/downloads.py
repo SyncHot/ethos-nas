@@ -112,6 +112,16 @@ class AddTaskRequest(BaseModel):
                                description="Absolute path or a subpath of the download dir")
     category: str | None = Field(default=None, max_length=64,
                                  description="Category name; its save_path becomes the destination")
+    mirrors: list[str] | None = Field(default=None, max_length=10,
+                                      description="Alternative URLs tried in order when the source fails")
+
+
+class AddMirrorsRequest(BaseModel):
+    """Body of `POST /api/downloads/tasks/{id}/mirrors`."""
+
+    model_config = {"extra": "forbid"}
+
+    urls: list[str] = Field(min_length=1, max_length=10)
 
 
 class SelectFilesRequest(BaseModel):
@@ -361,12 +371,12 @@ def _debrid_worker(task: dict, stop_event: threading.Event) -> None:
     if is_link:
         # File-hosting link (RapidGator, Mega, …): no torrent — resolve it to a
         # direct download URL through AllDebrid's premium API.
-        info = _ad_link_info(key, task["url"])
+        info = _ad_link_info(key, _source_url(task))
         if info.get("name"):
             task["name"] = os.path.basename(info["name"].replace("\\", "/")) or task["name"]
         if info.get("size"):
             task["size"] = int(info["size"])
-        link = _ad_unlock(key, task["url"], stop_event)
+        link = _ad_unlock(key, _source_url(task), stop_event)
         fname = os.path.basename(link.get("name") or "") or os.path.basename(task["name"].replace("\\", "/")) or "download.bin"
         # Per-task folder (set at creation) wins over the global default dir.
         base_dir = os.path.abspath(task.get("path") or cfg["download_dir"])
@@ -830,6 +840,8 @@ def _public(task: dict) -> dict:
         "category": task.get("category") or task.get("_qb_category") or "",
         "retry_count": int(task.get("_retry_count") or 0),
         "retry_at": int(task.get("_next_retry_at") or 0),
+        "mirror_count": len(_mirror_urls(task)),
+        "mirror_index": int(task.get("_mirror_index") or 0),
         "extract_state": task.get("_extract_state", ""),
         "extract_dest": task.get("_extract_dest", ""),
         "extract_error": task.get("_extract_error", ""),
@@ -890,6 +902,94 @@ def _find_duplicate(url: str, target_dir: str) -> Optional[dict]:
         if os.path.abspath(str(own or "")) == folder:
             return t
     return None
+
+
+# ── Mirror / hoster failover ────────────────────────────────────────────────
+# One file usually exists on several hosters with the same basename. A task
+# keeps the primary `url` (identity, duplicate detection, what the user sees)
+# and an internal `_mirrors` list; `_active_url` is whatever the worker fetches
+# right now. When a source is exhausted the next mirror restarts from byte 0
+# with a fresh retry budget.
+
+_MIRROR_LIMIT = 10
+_MIRROR_KINDS = ("http", "debrid_link")
+
+
+def _source_url(task: dict) -> str:
+    """URL the worker should fetch — a mirror after a failover, else the primary."""
+    return str(task.get("_active_url") or task.get("url") or "")
+
+
+def _mirror_urls(task: dict) -> list[str]:
+    """Primary URL followed by every extra source, de-duplicated."""
+    urls = [str(task.get("url") or "")] + [str(u) for u in (task.get("_mirrors") or [])]
+    return [u for u in dict.fromkeys(urls) if u]
+
+
+def _attach_mirrors(task: dict, extras) -> int:
+    """Validate and store extra source URLs; returns how many are now configured.
+
+    Invalid, non-http(s), private-network (for non-admins) and duplicate URLs are
+    skipped with a log line instead of failing the whole add — a bad mirror must
+    not block the working source.
+    """
+    if task.get("kind") not in _MIRROR_KINDS:
+        return 0
+    primary = str(task.get("url") or "")
+    kept = [str(u) for u in (task.get("_mirrors") or []) if u]
+    for raw in extras or []:
+        url = str(raw or "").strip()
+        if not url or url == primary or url in kept:
+            continue
+        try:
+            url = _validate_url(url)
+            _reject_private_url(url)
+        except HTTPException as exc:
+            logger.info("Downloads: mirror rejected (%s): %s", exc.detail, str(raw)[:160])
+            continue
+        kept.append(url)
+    kept = kept[:_MIRROR_LIMIT]
+    if kept:
+        task["_mirrors"] = kept
+    return len(_mirror_urls(task))
+
+
+def _try_next_mirror(task: dict) -> bool:
+    """Switch the task to its next mirror URL. False when every source was tried."""
+    if task.get("kind") not in _MIRROR_KINDS:
+        return False
+    urls = _mirror_urls(task)
+    index = int(task.get("_mirror_index") or 0)
+    if index + 1 >= len(urls):
+        return False
+    index += 1
+    task["_mirror_index"] = index
+    task["_active_url"] = urls[index]
+    # A different host serves a different byte layout: never resume across mirrors.
+    partial = f"{task.get('path') or ''}.part"
+    try:
+        if partial != ".part" and os.path.isfile(partial):
+            os.remove(partial)
+    except OSError as exc:
+        logger.warning("Download %s: could not drop the partial file for the mirror switch: %s",
+                       task["id"], exc)
+    task["_resume_pos"] = 0
+    task["_saved_resume_pos"] = 0
+    task["downloaded"] = 0
+    task["size"] = 0
+    task["speed"] = 0
+    # Every source gets its own retry budget.
+    task["_retry_count"] = 0
+    task["_next_retry_at"] = 0
+    task["error"] = ""
+    task["status"] = "waiting"
+    _events.pop(task["id"], None)
+    _save_tasks()
+    logger.info(
+        "Download %s: switching to mirror %d/%d (%s)",
+        task["id"], index + 1, len(urls), urls[index][:160],
+    )
+    return True
 
 
 def _queue_order(tasks: Optional[list] = None) -> list:
@@ -960,7 +1060,7 @@ def _schedule_window_pump(cfg: dict) -> None:
 def _download_worker(task: dict, stop_event: threading.Event) -> None:
     """Blocking download in a worker thread. Updates `task` in place."""
     cfg = _load_config()
-    url = task["url"]
+    url = _source_url(task)
     dest = task.get("path") or _unique_dest(cfg["download_dir"], task["name"])
     task["path"] = dest
 
@@ -1108,6 +1208,11 @@ def _fail_task(task: dict, message: str, *, permanent: bool = False) -> None:
             task["id"], task["error"][:160], attempts, limit,
             int(task["_next_retry_at"] - _now()),
         )
+        _schedule_retry_wakeup()
+        return
+    # This source is out of options (dead link, or the retry budget is spent) —
+    # a configured mirror gets a fresh chance before the task is given up.
+    if _try_next_mirror(task):
         _schedule_retry_wakeup()
         return
     task["_next_retry_at"] = 0
@@ -1677,6 +1782,7 @@ async def add_task(payload: AddTaskRequest):
             "started_at": 0,
             "finished_at": 0,
         }
+        _attach_mirrors(task, payload.mirrors)
         _tasks.append(task)
         _save_tasks()
         await _pump()
@@ -1715,6 +1821,7 @@ async def add_task(payload: AddTaskRequest):
         "started_at": 0,
         "finished_at": 0,
     }
+    _attach_mirrors(task, payload.mirrors)
     _tasks.append(task)
     _save_tasks()
     await _pump()
@@ -1800,6 +1907,27 @@ async def resume_task(task_id: str):
     return _public(t)
 
 
+@router.post("/tasks/{task_id}/mirrors")
+async def add_task_mirrors(task_id: str, payload: AddMirrorsRequest):
+    """Add alternative sources to a direct or hoster link download.
+
+    Mirrors keep the task identity (`url`) intact and are tried in order once
+    the current source is exhausted.
+    """
+    t = _find(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if t.get("kind") not in _MIRROR_KINDS:
+        raise HTTPException(status_code=400, detail="Mirrors are only supported for direct and hoster links")
+    before = len(_mirror_urls(t))
+    total = _attach_mirrors(t, payload.urls)
+    if total <= before:
+        raise HTTPException(status_code=400, detail="No usable mirror URL")
+    _save_tasks()
+    logger.info("Download %s: %d mirror(s) added", t["id"], total - before)
+    return _public(t)
+
+
 @router.post("/tasks/{task_id}/reset")
 async def reset_task(task_id: str):
     """Reset a download: delete the partial file(s) and restart from byte 0.
@@ -1808,6 +1936,9 @@ async def reset_task(task_id: str):
     - http        → removes the partial file at task["path"]
     - debrid_link → removes each local copy, re-unlocks on the provider
     - debrid      → removes the downloaded folder (provider-side torrent kept)
+
+    A reset also goes back to the primary source, so a manual retry re-tries the
+    whole mirror chain instead of continuing behind the last failed mirror.
     """
     t = _find(task_id)
     if not t:
@@ -1824,6 +1955,8 @@ async def reset_task(task_id: str):
     t["error"] = ""
     t["_retry_count"] = 0
     t["_next_retry_at"] = 0
+    t["_mirror_index"] = 0
+    t.pop("_active_url", None)
     if wt is not None and not wt.done():
         try:
             await asyncio.wait_for(asyncio.shield(wt), timeout=15)
