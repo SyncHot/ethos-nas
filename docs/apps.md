@@ -30,12 +30,14 @@ and one status line — matching the native package windows.
 | Network | `apps/network.js` | `/api/network` |
 | Logs | `apps/logs.js` | `/api/logs`, `/ws/logs/*` |
 | Search | `apps/search.js` | `/api/files/universal-search` |
-| Settings | `apps/settings.js` (rail: Overview · Updates · Maintenance · Users · Security · Appearance · About) | `/api/system`, `/api/auth`, `/api/health`, `/api/app/version` |
+| Settings | `apps/settings.js` (rail: Health · Updates · Maintenance · Users · Security · Appearance · About) | `/api/system`, `/api/auth`, `/api/health`, `/api/app/version` |
 
 ---
 
 ## Overview
-Live gauges: CPU, RAM/swap, disk, network rate, temperature, uptime, container count.
+The system resource dashboard: live gauges for CPU, RAM/swap, disk, network rate, temperature, uptime,
+and container count. Resource monitoring lives here; Settings is reserved for health checks and
+configuration.
 Polls `/api/system/status` every 2 s and the network history every 60 s; charts are drawn from counter
 deltas (no server-side history beyond `net_stats`). Limit: the 2 s poll is the heaviest frontend loop —
 see TODO.md P3-09 (shared poller). Tested indirectly by `tests/test_network.py`.
@@ -108,8 +110,9 @@ streamed results. Uses `/api/files/universal-search`; per-role path scope applie
 Tested: `tests/test_file_manager_fixes.py` (search cases).
 
 ## Settings
-System (info, restart, health card, app versions, storage usage), Users (PAM-seeded accounts), Security
-(API key, JWT warning), Appearance (wallpapers). Version display comes from `/api/system/version`.
+Health (scheduled checks and manual scan), Updates, Maintenance, Users (PAM-seeded accounts), Security
+(API key, JWT warning), Appearance (wallpapers), and About. Live resource monitoring is in Overview.
+Version display comes from `/api/system/version`.
 Tested: `tests/test_appearance.py`, plus the security invariants.
 
 ## Backup (Packages)

@@ -1,9 +1,9 @@
 // EthOS NAS — Settings window
 //
-// Rail shell: Overview · Updates · Maintenance · Users · Security · Appearance ·
+// Rail shell: Health · Updates · Maintenance · Users · Security · Appearance ·
 // About (docs/app-ui.md). Every section loads lazily into the shared
 // `core/ui-shell.js` view; no inline styles, no window globals, no raw fetch.
-import { escapeAttr, escapeHtml, formatBytes, formatUptime } from '../core/utils.js';
+import { escapeAttr, escapeHtml, formatBytes } from '../core/utils.js';
 import { uiIcon } from '../core/icons.js';
 import { apiRequest } from '../core/api.js';
 import { notify } from '../core/notification-center.js';
@@ -22,7 +22,7 @@ import {
 const SECTION_KEY = 'ethos-settings-section';
 
 const SECTIONS = [
-    { id: 'overview', label: 'Overview', title: 'System Overview', subtitle: 'Host, resources and health at a glance.' },
+    { id: 'overview', label: 'Health', title: 'System Health', subtitle: 'Health checks and system alerts at a glance.' },
     { id: 'updates', label: 'Updates', title: 'Updates', subtitle: 'Core releases and the Android apps.' },
     { id: 'maintenance', label: 'Maintenance', title: 'Maintenance', subtitle: 'Caches, health thresholds and the danger zone.' },
     { id: 'users', label: 'Users', title: 'User Accounts', subtitle: 'Accounts imported from Linux through PAM.' },
@@ -113,87 +113,14 @@ function _rememberedSection() {
 // Overview
 // ════════════════════════════════════════════════════════════════════════════
 
-async function renderOverview(isCurrent) {
-    const healthPromise = apiRequest('/api/health/status').catch((err) => {
+async function renderHealth(isCurrent) {
+    const health = await apiRequest('/api/health/status').catch((err) => {
         logError('Settings: health status unavailable', err?.detail || err?.message);
         return null;
     });
-    const [sys, health] = await Promise.all([apiRequest('/api/system/status'), healthPromise]);
     if (!isCurrent()) return;
 
-    const cpu = Number(sys?.cpu_percent) || 0;
-    const memory = sys?.memory || {};
-    const disk = sys?.disk || {};
-    const network = sys?.network || {};
-
     shell.view.innerHTML = `
-        <div class="ui-summary">
-            <div>
-                <span class="ui-summary-label">Hostname</span>
-                <span class="ui-summary-value small">${_v(sys?.hostname)}</span>
-            </div>
-            <div>
-                <span class="ui-summary-label">Uptime</span>
-                <span class="ui-summary-value small">${escapeHtml(formatUptime(sys?.uptime_seconds || 0))}</span>
-            </div>
-            <div>
-                <span class="ui-summary-label">CPU load</span>
-                <span class="ui-summary-value">${Math.round(cpu)}%</span>
-            </div>
-            <div>
-                <span class="ui-summary-label">Memory</span>
-                <span class="ui-summary-value">${Math.round(Number(memory.percent) || 0)}%</span>
-            </div>
-        </div>
-
-        <div class="ui-grid">
-            <section class="ui-panel">
-                <h2>${uiIcon('chart', 13)} CPU</h2>
-                <div class="ui-panel-body">
-                    ${_bar('cpu', cpu, 'CPU load')}
-                    ${_kv([
-                        ['Cores', String((sys?.cpu_per_core || []).length)],
-                        ['Temperature', sys?.temperature != null ? `${escapeHtml(String(sys.temperature))}°C` : '—'],
-                        ['Platform', 'Linux'],
-                    ])}
-                </div>
-            </section>
-
-            <section class="ui-panel">
-                <h2>${uiIcon('memory', 13)} Memory</h2>
-                <div class="ui-panel-body">
-                    ${_bar('mem', Number(memory.percent) || 0, 'Memory usage')}
-                    ${_kv([
-                        ['Used', escapeHtml(formatBytes(memory.used || 0)), true],
-                        ['Free', escapeHtml(formatBytes(memory.free || 0)), true],
-                        ['Total', escapeHtml(formatBytes(memory.total || 0)), true],
-                    ])}
-                </div>
-            </section>
-
-            <section class="ui-panel">
-                <h2>${uiIcon('disk', 13)} Disk (/)</h2>
-                <div class="ui-panel-body">
-                    ${_bar('disk', Number(disk.percent) || 0, 'Root filesystem usage')}
-                    ${_kv([
-                        ['Used', escapeHtml(formatBytes(disk.used || 0)), true],
-                        ['Free', escapeHtml(formatBytes(disk.free || 0)), true],
-                        ['Total', escapeHtml(formatBytes(disk.total || 0)), true],
-                    ])}
-                </div>
-            </section>
-
-            <section class="ui-panel">
-                <h2>${uiIcon('network', 13)} Network</h2>
-                <div class="ui-panel-body">
-                    ${_kv([
-                        ['Downloaded', escapeHtml(formatBytes(network.bytes_recv || 0)), true],
-                        ['Uploaded', escapeHtml(formatBytes(network.bytes_sent || 0)), true],
-                    ])}
-                </div>
-            </section>
-        </div>
-
         <section class="ui-panel" data-testid="settings-health-panel">
             <div class="ui-toolbar">
                 <div>
@@ -204,10 +131,6 @@ async function renderOverview(isCurrent) {
             </div>
             <div class="ui-panel-body ui-list">${_healthRows(health)}</div>
         </section>`;
-
-    _setBar('cpu', cpu);
-    _setBar('mem', Number(memory.percent) || 0);
-    _setBar('disk', Number(disk.percent) || 0);
 
     shell.view.querySelector('[data-action="health-run"]')?.addEventListener('click', async (event) => {
         const button = event.currentTarget;
@@ -1020,7 +943,7 @@ async function renderAbout(isCurrent) {
 // ════════════════════════════════════════════════════════════════════════════
 
 const RENDERERS = {
-    overview: renderOverview,
+    overview: renderHealth,
     updates: renderUpdates,
     maintenance: renderMaintenance,
     users: renderUsers,
@@ -1029,33 +952,11 @@ const RENDERERS = {
     about: renderAbout,
 };
 
-function _v(value) {
-    return value == null || value === '' ? '—' : escapeHtml(String(value));
-}
-
 function _kv(rows) {
     return `<dl class="ui-kv">${rows.map(([key, value, mono]) => `<div>
             <dt class="ui-kv-key">${escapeHtml(key)}</dt>
             <dd class="ui-kv-value${mono ? ' mono' : ''}">${value}</dd>
         </div>`).join('')}</dl>`;
-}
-
-function _bar(name, percent, label) {
-    const value = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
-    return `<div class="ui-bar" title="${escapeAttr(label)}">
-            <div class="ui-bar-fill ${_tone(value)}" data-bar="${escapeAttr(name)}"></div>
-        </div>`;
-}
-
-function _setBar(name, percent) {
-    const el = shell?.view?.querySelector(`[data-bar="${name}"]`);
-    if (!el) return;
-    el.style.width = `${Math.max(0, Math.min(100, Number(percent) || 0))}%`;
-}
-
-function _tone(percent) {
-    const value = Number(percent) || 0;
-    return value > 80 ? 'bad' : value > 50 ? 'warn' : 'ok';
 }
 
 function _relTime(iso) {

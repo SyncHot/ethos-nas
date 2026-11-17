@@ -128,6 +128,14 @@ def main() -> int:
                 check(f"{section} section renders", page.locator(selector).count() > 0)
                 check(f"{section} sets aria-current",
                       page.locator(f'[data-testid="settings-nav-{section}"][aria-current="page"]').count() == 1)
+                if section == "overview":
+                    check("health section has the Health label",
+                          page.locator('[data-testid="settings-nav-overview"]').inner_text().strip() == "Health")
+                    check("health monitor keeps its manual check action",
+                          page.locator('[data-action="health-run"]').count() == 1)
+                    check("health section has no resource dashboard",
+                          page.locator('[data-testid="settings-shell"] .ui-summary, '
+                                       '[data-testid="settings-shell"] .ui-grid').count() == 0)
 
             # The update controls are admin-only.
             page.click('[data-testid="settings-nav-updates"]')
