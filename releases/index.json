@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-17T17:47:10+00:00",
+  "generated_at": "2026-11-17T18:02:51+00:00",
   "latest": {
-    "version": "2.3.3",
-    "git_sha": "9795c3c",
-    "git_sha_full": "9795c3c10210200d4e16f51a704db4b21cb6ed38",
-    "build": 23,
-    "released_at": "2026-11-17T17:47:10+00:00",
-    "notes": "Files: download a folder as a ZIP archive from the folder context menu; the UI now says when the archive is being prepared."
+    "version": "2.3.4",
+    "git_sha": "58fe49d",
+    "git_sha_full": "58fe49d406e9cae03486cfa84952bf21aae827d4",
+    "build": 25,
+    "released_at": "2026-11-17T18:02:51+00:00",
+    "notes": "Download Manager: Clear failed removes errored records and their leftover .part data without touching finished files."
   },
   "releases": [
+    {
+      "version": "2.3.4",
+      "git_sha": "58fe49d",
+      "git_sha_full": "58fe49d406e9cae03486cfa84952bf21aae827d4",
+      "build": 25,
+      "released_at": "2026-11-17T18:02:51+00:00",
+      "notes": "Download Manager: Clear failed removes errored records and their leftover .part data without touching finished files."
+    },
     {
       "version": "2.3.3",
       "git_sha": "9795c3c",
