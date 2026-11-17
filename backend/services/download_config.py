@@ -30,6 +30,8 @@ DEFAULT_CONFIG = {
     "retry_max": 3,                # retries after the first failure (0 = never)
     "retry_delay": 60,             # base seconds; doubled per attempt
     "duplicate_policy": "rename",  # rename | skip | overwrite when the target file exists
+    "auto_extract": False,          # unpack completed archives next to the download
+    "auto_extract_delete": False,   # remove archives after a successful extraction
     "watch_folder": "",             # legacy single watch folder — migrated into watch_folders on load
     "watch_enabled": False,         # master switch for the watch-folder scanners
     "watch_folders": [              # watched dirs; entry: {name, folder, destination}
@@ -84,10 +86,13 @@ def _migrate_config(from_version: int, to_version: int, data: dict) -> dict:
         data.setdefault("retry_max", 3)
         data.setdefault("retry_delay", 60)
         data.setdefault("duplicate_policy", "rename")
+    if from_version < 7:
+        data.setdefault("auto_extract", False)
+        data.setdefault("auto_extract_delete", False)
     return data
 
 
-_CONFIG_STORE = json_store.get(CONFIG_FILE, version=6, migrate=_migrate_config)
+_CONFIG_STORE = json_store.get(CONFIG_FILE, version=7, migrate=_migrate_config)
 
 
 def parse_hhmm(value) -> Optional[int]:
@@ -248,6 +253,9 @@ def load_config() -> dict:
             merged["retry_delay"] = 60
         if merged.get("duplicate_policy") not in ("rename", "skip", "overwrite"):
             merged["duplicate_policy"] = "rename"
+        for flag in ("auto_extract", "auto_extract_delete"):
+            if not isinstance(merged.get(flag), bool):
+                merged[flag] = False
         for key in ("schedule", "speed_limit"):
             raw = merged.get(key)
             merged[key] = {**DEFAULT_CONFIG[key], **(raw if isinstance(raw, dict) else {})}

@@ -40,12 +40,13 @@ no port). The engine, stores and `/api/downloads/*` stay in EthOS core, so the A
 
 ## Data model
 
-`downloads_config.json` (json_store v5, migrators fold legacy `watch_folder`, categories, RSS and schedule shapes):
+`downloads_config.json` (json_store v7, migrators fold legacy `watch_folder`, categories, RSS and schedule shapes):
 
 ```
 { download_dir, max_concurrent (1..16), auto_download_debrid,
   auto_retry, retry_max (0..10), retry_delay (10..3600 s, doubled per attempt),
   duplicate_policy (rename | skip | overwrite),
+  auto_extract, auto_extract_delete,                            # unpack archives after download
   watch_enabled, watch_folders: [{name, folder, destination}],   # max 8
   schedule: {enabled, start: "HH:MM", end: "HH:MM"},             # daily start window
   speed_limit: {global_bps, per_task_bps},                       # 0 = unlimited
@@ -67,6 +68,7 @@ no port). The engine, stores and `/api/downloads/*` stay in EthOS core, so the A
 | `created_at`, `started_at`, `finished_at` | epoch seconds |
 | `_resume_pos`, `_saved_resume_pos`, `_last_resume_save` | HTTP resume bookkeeping |
 | `_retry_count`, `_next_retry_at` | backoff bookkeeping; exposed as `retry_count` / `retry_at` (epoch s) |
+| `_extract_state`, `_extract_dest`, `_extract_error` | `running` / `done` / `error` + destination; exposed as `extract_state` / `extract_dest` / `extract_error` |
 | `provider`, `_debrid_id`, `_debrid_status`, `_debrid_progress`, `_files` | debrid internals |
 | `priority` | higher starts earlier; default 0, FIFO within the same value |
 | `category` | qBittorrent/Sonarr/Radarr category or a user pick; decides the destination |
@@ -103,6 +105,8 @@ non-admins are limited to `/home`, `/mnt`, `/media`.
 | POST | `/tasks/retry-failed` | user | re-queue every `error` task with a fresh retry budget |
 | POST | `/packages/{key}/pause` · `/packages/{key}/resume` | user | every part of a derived multi-part package |
 | POST | `/packages/{key}/cancel` | user | `?delete_file=`; removes all parts (provider torrents included) |
+| POST | `/packages/{key}/extract` | user | unpack a completed package; 409 unless every part is `completed`, 400 when no archive volume is found |
+| POST | `/tasks/{id}/extract` | user | same for a single completed download |
 | POST | `/tasks/{id}/files/select` | user | `{file_ids:[int|str]}` (debrid) |
 | POST | `/tasks/reorder` | user | `{order:[task_id]}` — first id starts first (sets priorities) |
 | POST | `/tasks/{id}/priority` | user | `{priority:-1000..1000}` |
@@ -135,6 +139,9 @@ Transient failures are retried automatically: the row shows `retry 2/3 in 4m`, t
 **Retry failed** (all error records), and manual Resume/Reset/Retry gives the task a fresh budget.
 Adding the same URL to the same folder returns the existing task with `duplicate: true`; the
 `duplicate_policy` config decides what happens when the target file already exists.
+Completed archives get an **Extract** action (single row or whole package) and show
+`Extracting…` / `Extracted` / `Extract failed`; settings expose **Extract archives after download**
+and **Delete archives after a successful extraction**.
 Long actions (reset, delete-with-file, torrent queue) render through `core/progress.js`
 (`startTask`/`finish`). Waiting rows expose a drag handle: dropping a row onto another
 waiting row posts the new order to `/tasks/reorder` (the up/down buttons remain as the
@@ -167,6 +174,13 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
 - **Duplicates**: the same URL + destination in `waiting`/`downloading`/`paused` returns the existing
   task (`duplicate: true`, no new record). For HTTP downloads, `duplicate_policy` applies when the
   exact destination name exists (`rename` = ` (1)` suffix, `skip` = 409, `overwrite` = same name).
+- **Extraction**: `auto_extract` unpacks a finished archive next to it through
+  `services/files_service.extract_archive` (`.zip`, `.tar.*`, and `.7z`/`.rar` when `bsdtar` is present —
+  the optional `archive-tools` host requirement). Multi-part packages are only unpacked once every part
+  is `completed` and always start from the first volume (`part01`/`.zip`/`.001`); `auto_extract_delete`
+  removes the consumed volumes after success. Password-protected archives fail with the extractor
+  message; manual Extract reuses the same code path. Extraction runs off the event loop
+  (`asyncio.to_thread`) and one job per package key is tracked in `_EXTRACT_JOBS`.
 - **RSS**: one background loop scans enabled feeds once a minute; each feed has its own
   interval, an include regex (required) and an optional exclude regex. Matched items are
   queued through the same `add_task()` path, and seen item ids live in a capped store.
@@ -195,6 +209,8 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
 - [x] Search/sort and the task detail dialog
 - [x] Multi-part archive packages: grouped rows, aggregate status/progress, package Resume/Pause/Delete/Details
 - [x] Auto-retry with exponential backoff, Retry failed bulk action, duplicate/skip/overwrite policy
+- [x] Post-download extraction: `auto_extract` / `auto_extract_delete`, package-aware first-volume start,
+      manual Extract for a task or package, extract state on the row
 - [x] RSS feeds + include/exclude regex rules (background loop, persisted seen ids, manual run)
 - [x] Part-file downloads: transfers write `<dest>.part` and rename atomically on success
       (legacy partials are adopted once); cancel/reset remove the part file

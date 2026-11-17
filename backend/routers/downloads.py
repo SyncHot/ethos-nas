@@ -688,6 +688,127 @@ def _package_tasks(package_key: str) -> list[dict]:
     return [t for t in _tasks if (_package_info(t) or {}).get("package_key") == key]
 
 
+# ── Post-download archive extraction ────────────────────────────────────────
+_ARCHIVE_SUFFIXES = (".zip", ".rar", ".7z", ".tar", ".tgz", ".tbz", ".txz",
+                     ".gz", ".bz2", ".xz", ".zst", ".lz4")
+_FIRST_VOLUME_RE = re.compile(r"(?i)\.part0*1\.(?:rar|zip|7z)$")
+_EXTRACT_JOBS: set = set()
+
+
+def _is_archive_path(path: str) -> bool:
+    return str(path or "").lower().endswith(_ARCHIVE_SUFFIXES)
+
+
+def _local_archive_paths(task: dict) -> list[str]:
+    """Local archive files a finished task left on disk."""
+    if task.get("kind") == "http":
+        candidates = [str(task.get("path") or "")]
+    else:
+        candidates = [str(f.get("dest") or "") for f in (task.get("_files") or [])
+                      if f.get("downloaded")]
+    return [p for p in candidates if p and _is_archive_path(p) and os.path.isfile(p)]
+
+
+def _first_volume(paths: list[str]) -> Optional[str]:
+    """Pick the archive to feed the extractor for a single or multi-part set."""
+    archives = sorted({p for p in paths if _is_archive_path(p) and os.path.isfile(p)})
+    if not archives:
+        return None
+    for path in archives:
+        if _FIRST_VOLUME_RE.search(os.path.basename(path)):
+            return path
+    for path in archives:
+        if path.lower().endswith((".rar", ".zip", ".7z")):
+            return path
+    return archives[0]
+
+
+def _schedule_auto_extract(task: dict) -> None:
+    """Queue extraction once every part of the package is complete."""
+    if not _load_config().get("auto_extract"):
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_auto_extract_task(task))
+
+
+async def _auto_extract_task(task: dict) -> None:
+    info = _package_info(task)
+    group = _package_tasks(info["package_key"]) if info else [task]
+    if not group or any(t.get("status") != "completed" for t in group):
+        return
+    if any(t.get("_extract_state") for t in group):
+        return
+    archive = _first_volume([p for t in group for p in _local_archive_paths(t)])
+    if archive:
+        _start_extract(group, archive)
+
+
+def _start_extract(tasks: list[dict], archive: str) -> None:
+    """Run an extraction in the background and record its state on the tasks."""
+    for t in tasks:
+        t["_extract_state"] = "running"
+        t["_extract_dest"] = ""
+        t["_extract_error"] = ""
+    _save_tasks()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        for t in tasks:
+            t["_extract_state"] = ""
+        _save_tasks()
+        return
+    job = loop.create_task(_run_extract(tasks, archive))
+    _EXTRACT_JOBS.add(job)
+    job.add_done_callback(_EXTRACT_JOBS.discard)
+
+
+async def _run_extract(tasks: list[dict], archive: str) -> None:
+    from backend.services import files_service
+    from backend.services.notifications_service import emit_event
+    try:
+        result = await asyncio.to_thread(files_service.extract_archive, archive)
+        dest = str(result.get("dest_dir") or "")
+        if _load_config().get("auto_extract_delete"):
+            for t in tasks:
+                for path in _local_archive_paths(t):
+                    try:
+                        os.remove(path)
+                    except OSError as exc:
+                        logger.warning("Extract: could not remove %s: %s", path, exc)
+        for t in tasks:
+            t["_extract_state"] = "done"
+            t["_extract_dest"] = dest
+        _save_tasks()
+        logger.info("Extracted %s → %s (%s files)", archive, dest, result.get("extracted_count"))
+        emit_event("success", "Archive extracted",
+                   f"{os.path.basename(archive)} → {dest}", source="downloads")
+    except Exception as exc:  # noqa: BLE001 — extraction must not kill the loop
+        for t in tasks:
+            t["_extract_state"] = "error"
+            t["_extract_error"] = str(exc)
+        _save_tasks()
+        logger.error("Extraction failed for %s: %s", archive, exc, exc_info=True)
+        emit_event("error", "Extraction failed",
+                   f"{os.path.basename(archive)} — {str(exc)[:200]}", source="downloads")
+
+
+def _manual_extract(tasks: list[dict]) -> dict:
+    if not tasks:
+        raise HTTPException(status_code=404, detail="Download not found")
+    if any(t.get("status") != "completed" for t in tasks):
+        raise HTTPException(status_code=409, detail="Only completed downloads can be extracted")
+    if any(t.get("_extract_state") == "running" for t in tasks):
+        raise HTTPException(status_code=409, detail="Extraction is already running")
+    archive = _first_volume([p for t in tasks for p in _local_archive_paths(t)])
+    if not archive:
+        raise HTTPException(status_code=400, detail="No archive found for this download")
+    _start_extract(tasks, archive)
+    return {"ok": True, "status": "extracting", "archive": archive}
+
+
 def _public(task: dict) -> dict:
     """Task dict shaped for the API (drops internal bookkeeping)."""
     out = {
@@ -709,6 +830,9 @@ def _public(task: dict) -> dict:
         "category": task.get("category") or task.get("_qb_category") or "",
         "retry_count": int(task.get("_retry_count") or 0),
         "retry_at": int(task.get("_next_retry_at") or 0),
+        "extract_state": task.get("_extract_state", ""),
+        "extract_dest": task.get("_extract_dest", ""),
+        "extract_error": task.get("_extract_error", ""),
     }
     package = _package_info(task)
     if package:
@@ -939,6 +1063,8 @@ def _set_status(task: dict, status: str) -> None:
         task["_next_retry_at"] = 0
     _save_tasks()
     _notify_status_change(task, prev, status)
+    if status == "completed":
+        _schedule_auto_extract(task)
 
 
 # ── Task retry (JDownloader-style backoff) ──────────────────────────────────
@@ -1813,6 +1939,16 @@ async def delete_task(task_id: str, delete_file: bool = False):
     return await cancel_task(task_id, delete_file)
 
 
+@router.post("/tasks/{task_id}/extract")
+async def extract_task(task_id: str):
+    """Extract one completed download (or its whole package) next to the archive."""
+    t = _find(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    info = _package_info(t)
+    return _manual_extract(_package_tasks(info["package_key"]) if info else [t])
+
+
 # ── Packages (multi-part archives) ───────────────────────────────────────────
 # The UI renders one row per package and calls these to act on every part at
 # once. Keys are derived from the filenames (`_package_info`), so they stay
@@ -1870,6 +2006,12 @@ async def cancel_package(package_key: str, delete_file: bool = False):
     logger.info("Downloads: removed %d task(s) from package %s (delete_file=%s)",
                 len(tasks), package_key, delete_file)
     return {"ok": True, "package": package_key, "deleted": len(tasks)}
+
+
+@router.post("/packages/{package_key}/extract")
+async def extract_package(package_key: str):
+    """Extract a completed package into a folder next to the first archive."""
+    return _manual_extract(_package_tasks(package_key))
 
 
 @router.post("/tasks/pause-all")
@@ -2140,6 +2282,9 @@ async def save_config(request: Request, payload: dict = Body(...)):
             raise HTTPException(status_code=400, detail="retry_delay must be 10..3600 seconds")
     if payload.get("duplicate_policy") in ("rename", "skip", "overwrite"):
         cfg["duplicate_policy"] = payload["duplicate_policy"]
+    for flag in ("auto_extract", "auto_extract_delete"):
+        if isinstance(payload.get(flag), bool):
+            cfg[flag] = payload[flag]
     if "watch_folders" in payload:
         raw = payload["watch_folders"]
         if isinstance(raw, list):
