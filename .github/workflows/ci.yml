@@ -68,6 +68,7 @@ jobs:
                    tests/test_config_export.py \
                    tests/test_config_snapshot_robustness.py \
                    tests/test_desktop_trash.py \
+                   tests/test_desktop_icons_ui.py \
                    tests/test_frontend_escaping.py \
                    tests/test_podcast_feed.py \
                    tests/test_music_search_service.py \

@@ -355,6 +355,38 @@ function _clearDropTarget() {
         .forEach(el => el.classList.remove('drop-target'));
 }
 
+function _cellAtPoint(container, geom, event) {
+    const rect = container.getBoundingClientRect();
+    const col = Math.round((event.clientX - rect.left - geom.leftPad) / STEP_X);
+    const row = Math.round((event.clientY - rect.top - geom.topPad) / STEP_Y);
+    return {
+        c: Math.max(0, Math.min(geom.cols - 1, col)),
+        r: Math.max(0, Math.min(geom.rows - 1, row)),
+    };
+}
+
+function _nearestFreeCell(map, geom, target, movingId = null) {
+    const taken = new Set();
+    for (const [id, cell] of map) {
+        if (id !== movingId) taken.add(cell.c + ':' + cell.r);
+    }
+    const key = (cell) => cell.c + ':' + cell.r;
+    if (!taken.has(key(target))) return target;
+
+    let best = null, bestDist = Infinity;
+    for (let c = 0; c < geom.cols; c++) {
+        for (let r = 0; r < geom.rows; r++) {
+            if (taken.has(c + ':' + r)) continue;
+            const distance = (c - target.c) ** 2 + (r - target.r) ** 2;
+            if (distance < bestDist) {
+                bestDist = distance;
+                best = { c, r };
+            }
+        }
+    }
+    return best || target;
+}
+
 /**
  * Drop handler: put the dragged icon in the grid cell under the pointer and
  * persist it. Dropping onto an occupied cell moves the icon to the nearest free
@@ -362,30 +394,9 @@ function _clearDropTarget() {
  */
 function _placeIconOnDrop(container, appId, e) {
     const { map, geom } = _computePlacement(getVisibleApps());
-    const rect = container.getBoundingClientRect();
-
-    let c = Math.round((e.clientX - rect.left - geom.leftPad) / STEP_X);
-    let r = Math.round((e.clientY - rect.top - geom.topPad) / STEP_Y);
-    c = Math.max(0, Math.min(geom.cols - 1, c));
-    r = Math.max(0, Math.min(geom.rows - 1, r));
-
-    const taken = new Map();
-    for (const [id, cell] of map) {
-        if (id !== appId) taken.set(cell.c + ':' + cell.r, id);
-    }
-    if (taken.has(c + ':' + r)) {
-        let best = null, bestDist = Infinity;
-        for (let cc = 0; cc < geom.cols; cc++) {
-            for (let rr = 0; rr < geom.rows; rr++) {
-                if (taken.has(cc + ':' + rr)) continue;
-                const d = (cc - c) ** 2 + (rr - r) ** 2;
-                if (d < bestDist) { bestDist = d; best = { c: cc, r: rr }; }
-            }
-        }
-        if (best) { c = best.c; r = best.r; }
-    }
-
-    setPosition(appId, c, r);
+    const target = _cellAtPoint(container, geom, e);
+    const cell = _nearestFreeCell(map, geom, target, appId);
+    setPosition(appId, cell.c, cell.r);
     refreshDesktopIcons();
 }
 
@@ -474,9 +485,13 @@ export function initDesktopDropZone() {
         const appId = e.dataTransfer.getData('text/plain');
         if (!appId || !/^[a-z0-9-]+$/i.test(appId)) return;
         e.preventDefault();
-        if (getVisibleApps().includes(appId)) return;
-        // Insert after the icon whose center is closest to the left of the drop point
+        const visible = getVisibleApps();
+        if (visible.includes(appId)) return;
         const container = document.getElementById('desktopIcons');
+        const { map, geom } = _computePlacement(visible);
+        const target = container ? _cellAtPoint(container, geom, e) : { c: 0, r: 0 };
+        const cell = _nearestFreeCell(map, geom, target);
+        // Insert after the icon whose center is closest to the left of the drop point
         let pos = -1;
         if (container) {
             const icons = Array.from(container.querySelectorAll('.desktop-icon'));
@@ -496,6 +511,7 @@ export function initDesktopDropZone() {
             }
         }
         addToDesktop(appId, pos);
+        setPosition(appId, cell.c, cell.r);
         refreshDesktopIcons();
         // Pinned — close the drawer (Ubuntu behavior after dropping on the desktop)
         if (window._closeDrawer) window._closeDrawer();

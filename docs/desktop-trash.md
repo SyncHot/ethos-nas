@@ -43,6 +43,10 @@ it. Deleted items live in per-user recycle-bin namespaces — see
   free grid cell closest to the bottom-right corner before the column-major
   auto-fill. "Auto-arrange" restores it there; dragging it elsewhere stores a
   normal `{c, r}` cell.
+- Desktop app drops map the pointer to a grid cell and persist that position.
+  Occupied cells resolve to the nearest free cell; the grid clamps drops to its
+  bounds. At widths up to 768 px, the desktop switches to a static 3-column
+  mobile grid and ignores free-placement coordinates.
 
 ## API
 
