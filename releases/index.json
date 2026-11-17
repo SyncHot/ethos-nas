@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-17T18:02:51+00:00",
+  "generated_at": "2026-11-17T18:11:13+00:00",
   "latest": {
-    "version": "2.3.4",
-    "git_sha": "58fe49d",
-    "git_sha_full": "58fe49d406e9cae03486cfa84952bf21aae827d4",
-    "build": 25,
-    "released_at": "2026-11-17T18:02:51+00:00",
-    "notes": "Download Manager: Clear failed removes errored records and their leftover .part data without touching finished files."
+    "version": "2.3.5",
+    "git_sha": "3c09467",
+    "git_sha_full": "3c094674df75fb1dd858c7d60178e8592f322e3c",
+    "build": 27,
+    "released_at": "2026-11-17T18:11:13+00:00",
+    "notes": "Download Manager: archive-tools host requirement installs bsdtar (7z/rar extraction) through the root helper when available; optional so installs never fail."
   },
   "releases": [
+    {
+      "version": "2.3.5",
+      "git_sha": "3c09467",
+      "git_sha_full": "3c094674df75fb1dd858c7d60178e8592f322e3c",
+      "build": 27,
+      "released_at": "2026-11-17T18:11:13+00:00",
+      "notes": "Download Manager: archive-tools host requirement installs bsdtar (7z/rar extraction) through the root helper when available; optional so installs never fail."
+    },
     {
       "version": "2.3.4",
       "git_sha": "58fe49d",
