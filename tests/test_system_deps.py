@@ -52,7 +52,9 @@ check("unknown id reports not ok", unknown["ok"] is False and unknown["error"])
 
 # Force both branches of the probe without touching the host.
 _orig_has = system_deps.has_binary
+_orig_helper_available = system_deps.helper_available
 system_deps.has_binary = lambda name: False
+system_deps.helper_available = lambda: False
 try:
     missing = system_deps.missing(["samba"])
     check("missing() surfaces the unsatisfied requirement",
@@ -103,6 +105,7 @@ try:
     check("smb.conf was never written", not Path(str(smb_conf) + ".tmp").exists())
 finally:
     system_deps.has_binary = _orig_has
+    system_deps.helper_available = _orig_helper_available
 
 print("Satisfied host")
 if system_deps.has_binary("smbd"):

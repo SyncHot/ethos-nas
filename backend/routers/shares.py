@@ -18,13 +18,17 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from backend.routers.auth import require_admin
 from backend.services.notifications_service import emit_event
 from backend.services.shares_service import (
     SambaUnavailable,
+    SambaAccountError,
     get_shares,
+    get_samba_accounts,
+    set_samba_password,
+    delete_samba_account,
     add_share,
     update_share,
     delete_share,
@@ -33,6 +37,74 @@ from backend.services.shares_service import (
 
 logger = logging.getLogger("ethos-nas.routers.shares")
 router = APIRouter()
+
+
+class SambaPasswordUpdate(BaseModel):
+    """Request body for setting or resetting an existing account's SMB password."""
+
+    password: str = Field(min_length=8, max_length=128)
+    model_config = {"extra": "forbid"}
+
+    @field_validator("password")
+    @classmethod
+    def reject_password_control_characters(cls, value: str) -> str:
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("Password must not contain control characters")
+        return value
+
+
+@router.get("/accounts", dependencies=[Depends(require_admin)])
+async def api_list_samba_accounts() -> dict:
+    try:
+        return await asyncio.to_thread(get_samba_accounts)
+    except SambaUnavailable as e:
+        raise HTTPException(status_code=503, detail=e.detail)
+    except SambaAccountError as e:
+        logger.error("Failed to list Samba accounts", exc_info=True)
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception:
+        logger.error("Failed to list Samba accounts", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list Samba accounts")
+
+
+@router.put("/accounts/{username}/password", dependencies=[Depends(require_admin)])
+async def api_set_samba_password(username: str, body: SambaPasswordUpdate) -> dict:
+    try:
+        result = await asyncio.to_thread(set_samba_password, username, body.password)
+        emit_event("success", "Samba password updated", username, source="shares")
+        return result
+    except SambaUnavailable as e:
+        raise HTTPException(status_code=503, detail=e.detail)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SambaAccountError as e:
+        logger.error("Failed to set Samba password (username=%s)", username, exc_info=True)
+        emit_event("error", "Samba password update failed", username, source="shares")
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception:
+        logger.error("Failed to set Samba password (username=%s)", username, exc_info=True)
+        emit_event("error", "Samba password update failed", username, source="shares")
+        raise HTTPException(status_code=500, detail="Failed to set Samba password")
+
+
+@router.delete("/accounts/{username}", dependencies=[Depends(require_admin)])
+async def api_delete_samba_account(username: str) -> dict:
+    try:
+        result = await asyncio.to_thread(delete_samba_account, username)
+        emit_event("warning", "Samba account removed", username, source="shares")
+        return result
+    except SambaUnavailable as e:
+        raise HTTPException(status_code=503, detail=e.detail)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except SambaAccountError as e:
+        logger.error("Failed to remove Samba account (username=%s)", username, exc_info=True)
+        emit_event("error", "Samba account removal failed", username, source="shares")
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception:
+        logger.error("Failed to remove Samba account (username=%s)", username, exc_info=True)
+        emit_event("error", "Samba account removal failed", username, source="shares")
+        raise HTTPException(status_code=500, detail="Failed to remove Samba account")
 
 
 class ShareCreate(BaseModel):
@@ -47,6 +119,8 @@ class ShareCreate(BaseModel):
     valid_users: str = ""
     create_mask: str = "0755"
     directory_mask: str = "0755"
+    read_users: Optional[list[str]] = None
+    write_users: Optional[list[str]] = None
     model_config = {"extra": "forbid"}
 
 
@@ -64,6 +138,8 @@ class ShareUpdate(BaseModel):
     valid_users: Optional[str] = None
     create_mask: Optional[str] = None
     directory_mask: Optional[str] = None
+    read_users: Optional[list[str]] = None
+    write_users: Optional[list[str]] = None
     model_config = {"extra": "forbid"}
 
 
@@ -74,6 +150,7 @@ async def api_list_shares() -> dict:
         shares = await asyncio.to_thread(get_shares)
         return {"shares": shares, "total": len(shares)}
     except Exception as e:
+        logger.error("Failed to list Samba shares", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -83,6 +160,7 @@ async def api_share_status() -> dict:
     try:
         return await asyncio.to_thread(get_status)
     except Exception as e:
+        logger.error("Failed to read Samba service status", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -103,6 +181,8 @@ async def api_add_share(body: ShareCreate) -> dict:
             valid_users=body.valid_users,
             create_mask=body.create_mask,
             directory_mask=body.directory_mask,
+            read_users=body.read_users,
+            write_users=body.write_users,
         )
         emit_event("success", "Samba share added", f"{body.name} → {body.path}", source="shares")
         return result
@@ -111,6 +191,8 @@ async def api_add_share(body: ShareCreate) -> dict:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except PermissionError:
+        logger.error("Permission denied while adding Samba share (name=%s)", body.name, exc_info=True)
+        emit_event("error", "Samba share creation failed", body.name, source="shares")
         raise HTTPException(
             status_code=403,
             detail=(
@@ -119,6 +201,8 @@ async def api_add_share(body: ShareCreate) -> dict:
             ),
         )
     except Exception as e:
+        logger.error("Failed to add Samba share (name=%s)", body.name, exc_info=True)
+        emit_event("error", "Samba share creation failed", body.name, source="shares")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -139,6 +223,8 @@ async def api_update_share(name: str, body: ShareUpdate) -> dict:
             valid_users=body.valid_users,
             create_mask=body.create_mask,
             directory_mask=body.directory_mask,
+            read_users=body.read_users,
+            write_users=body.write_users,
         )
         emit_event("info", "Samba share updated", name, source="shares")
         return result
@@ -147,6 +233,8 @@ async def api_update_share(name: str, body: ShareUpdate) -> dict:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except PermissionError:
+        logger.error("Permission denied while updating Samba share (name=%s)", name, exc_info=True)
+        emit_event("error", "Samba share update failed", name, source="shares")
         raise HTTPException(
             status_code=403,
             detail=(
@@ -155,6 +243,8 @@ async def api_update_share(name: str, body: ShareUpdate) -> dict:
             ),
         )
     except Exception as e:
+        logger.error("Failed to update Samba share (name=%s)", name, exc_info=True)
+        emit_event("error", "Samba share update failed", name, source="shares")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -170,6 +260,8 @@ async def api_delete_share(name: str) -> dict:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except PermissionError:
+        logger.error("Permission denied while deleting Samba share (name=%s)", name, exc_info=True)
+        emit_event("error", "Samba share deletion failed", name, source="shares")
         raise HTTPException(
             status_code=403,
             detail=(
@@ -178,4 +270,6 @@ async def api_delete_share(name: str) -> dict:
             ),
         )
     except Exception as e:
+        logger.error("Failed to delete Samba share (name=%s)", name, exc_info=True)
+        emit_event("error", "Samba share deletion failed", name, source="shares")
         raise HTTPException(status_code=500, detail=str(e))

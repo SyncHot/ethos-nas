@@ -25,7 +25,7 @@ and one status line — matching the native package windows.
 | Process manager | `apps/processes.js` | `/api/processes` |
 | Services | `apps/services.js` | `/api/systemd`, `/api/ethos-nas-service` |
 | SMART | `apps/smart.js` | `/api/smart` |
-| Samba shares | `ethos-packages/ethos-shares/frontend/app.js` (package) | `/api/shares` |
+| Samba shares | `ethos-packages/ethos-shares/frontend/app-shell.js` (package) | `/api/shares` |
 | Books | `ethos-packages/ethos-books/frontend/app.js` (package) | `/api/files`, `/api/files/raw` + the package's own venv service (`docs/books.md`) |
 | Network | `apps/network.js` | `/api/network` |
 | Logs | `apps/logs.js` | `/api/logs`, `/ws/logs/*` |
@@ -83,9 +83,13 @@ Per-disk SMART attributes and pass/fail, plus the trend rows the health monitor 
 `/api/system/doctor`). Tested: `tests/test_health_monitor.py` covers the trend logic.
 
 ## Samba shares
-Create/update/delete shares, validation via `testparm`, `smb.conf` written through the narrow sudo rule,
-service reload. Mutations admin-only and run off the event loop. Emits Notification Center events.
-Tested: `tests/test_shares_service.py` (unit).
+Create/update/delete shares with file/directory masks and per-user/group read/write ACLs. Admins can
+also set/reset or remove Samba credentials for existing Linux users; Linux accounts are never
+created/deleted. Config validation uses `testparm`; reload failures restore the prior config and
+surface an error. Passdb changes use the root-owned `ethos-samba-accounts` helper installed by
+`setup_scripts/setup_service.sh`. Mutations are admin-only and run off the event loop. Details:
+`docs/samba-shares.md`. Tested: `tests/test_shares_service.py`, `tests/test_shares_acl.py`,
+`tests/test_shares_accounts_api.py`, `tests/test_shares_package_ui.py`.
 
 ## Network
 Interfaces, addresses, throughput and the RX/TX history sampler (`net_stats.json`, 60 s cadence).

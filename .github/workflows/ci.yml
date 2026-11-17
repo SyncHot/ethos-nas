@@ -74,6 +74,11 @@ jobs:
                    tests/test_music_catalog_api.py \
                    tests/test_pwa_assets.py \
                    tests/test_poller.py \
+                   tests/test_shares_service.py \
+                   tests/test_shares_acl.py \
+                   tests/test_shares_accounts.py \
+                   tests/test_shares_accounts_api.py \
+                   tests/test_samba_accounts_helper.py \
                    tests/test_downloads.py \
                    tests/test_qb_compat.py \
                    tests/test_bencode.py \

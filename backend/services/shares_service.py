@@ -6,6 +6,7 @@ Uses configparser for safe parsing and testparm for validation.
 
 import configparser
 import grp
+import json
 import logging
 import os
 import pwd
@@ -18,10 +19,15 @@ from backend.services import system_deps
 logger = logging.getLogger("ethos-nas.services.shares_service")
 
 SMB_CONF = "/etc/samba/smb.conf"
+SAMBA_ACCOUNTS_HELPER = "/usr/local/bin/ethos-samba-accounts"
 
 # Share names become [section] headers in smb.conf — anything beyond plain
 # alphanumerics/underscore/dash/dot can corrupt the file or inject directives.
 _SHARE_NAME_RE = re.compile(r"^[A-Za-z0-9_\-\.]{1,64}$")
+_SAMBA_USERNAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
+_SHARE_MASK_RE = re.compile(r"^0?[0-7]{3}$")
+_VALID_USER_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.$%@+&/\\-]{1,128}$")
+_SPECIAL_SECTIONS = {"global", "homes", "printers", "print$"}
 
 
 class SambaUnavailable(RuntimeError):
@@ -34,6 +40,10 @@ class SambaUnavailable(RuntimeError):
     def __init__(self, detail: str):
         super().__init__(detail)
         self.detail = detail
+
+
+class SambaAccountError(RuntimeError):
+    """A safe, non-sensitive failure from the Samba passdb helper."""
 
 
 def _samba_status() -> dict:
@@ -74,7 +84,7 @@ def _apply_guest_write_fix(config: configparser.ConfigParser, name: str) -> None
     file operation run with write access — public shares then just work.
     """
     guest_ok = config.get(name, "guest ok", fallback="no").lower() == "yes"
-    read_only = config.get(name, "read only", fallback="no").lower() == "yes"
+    read_only = _share_is_read_only(config, name)
     if not (guest_ok and not read_only):
         return
     path = config.get(name, "path", fallback="")
@@ -85,6 +95,16 @@ def _apply_guest_write_fix(config: configparser.ConfigParser, name: str) -> None
         return
     config[name]["force user"] = user
     config[name]["force group"] = group
+
+
+def _share_is_read_only(config: configparser.ConfigParser, name: str) -> bool:
+    read_only = config.get(name, "read only", fallback=None)
+    if read_only is not None:
+        return read_only.strip().lower() not in {"no", "false", "0"}
+    writable = config.get(name, "writable", fallback=None)
+    if writable is None:
+        writable = config.get(name, "writeable", fallback=None)
+    return writable is None or writable.strip().lower() not in {"yes", "true", "1"}
 
 
 def _run_smb_command(args: list[str]) -> subprocess.CompletedProcess:
@@ -102,7 +122,7 @@ def _run_smb_command(args: list[str]) -> subprocess.CompletedProcess:
 
 def _load_config() -> configparser.ConfigParser:
     """Load smb.conf safely."""
-    config = configparser.ConfigParser()
+    config = configparser.ConfigParser(interpolation=None)
     if os.path.exists(SMB_CONF):
         config.read(SMB_CONF)
     return config
@@ -112,25 +132,195 @@ def get_shares() -> list[dict]:
     """List all Samba shares (excluding special [global], [homes], [printers], [print$])."""
     config = _load_config()
     shares = []
-    skip_sections = {"global", "homes", "printers", "print$"}
     for section in config.sections():
-        if section.lower() in skip_sections:
+        if section.casefold() in _SPECIAL_SECTIONS:
             continue
         share = {
             "name": section,
             "path": config.get(section, "path", fallback=""),
             "comment": config.get(section, "comment", fallback=""),
-            "read_only": config.get(section, "read only", fallback="no").lower() == "yes",
+            "read_only": _share_is_read_only(config, section),
             "browsable": config.get(section, "browseable", fallback="yes").lower() == "yes",
             "guest_ok": config.get(section, "guest ok", fallback="no").lower() == "yes",
             "valid_users": config.get(section, "valid users", fallback=""),
-            "writable": config.get(section, "writable", fallback="yes").lower() == "yes",
+            "read_users": _principal_option(config, section, "read list"),
+            "write_users": _principal_option(config, section, "write list"),
+            "writable": not _share_is_read_only(config, section),
             "create_mask": config.get(section, "create mask", fallback=""),
             "directory_mask": config.get(section, "directory mask", fallback=""),
         }
         shares.append(share)
     shares.sort(key=lambda s: s["name"])
     return shares
+
+
+def _principal_option(config: configparser.ConfigParser, section: str, option: str) -> list[str]:
+    value = config.get(section, option, fallback="")
+    return [item for item in re.split(r"[\s,]+", value.strip()) if item]
+
+
+def _validate_principal(principal: str) -> str:
+    is_group = principal.startswith("@")
+    name = principal[1:] if is_group else principal
+    if not _SAMBA_USERNAME_RE.fullmatch(name) or name in {"root", "ethos-nas", "nobody"}:
+        raise ValueError(f"Invalid share account or group: {principal}")
+    try:
+        account_id = grp.getgrnam(name).gr_gid if is_group else pwd.getpwnam(name).pw_uid
+    except KeyError:
+        raise ValueError(f"Share account or group not found: {principal}") from None
+    if account_id < 1000:
+        raise ValueError(f"System accounts and groups cannot be shared: {principal}")
+    return principal
+
+
+def _parse_valid_users(value: str) -> list[str]:
+    if not value:
+        return []
+    if len(value) > 2048 or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("Invalid valid users value")
+    principals = [item for item in re.split(r"[\s,]+", value.strip()) if item]
+    if any(item in {".", ".."} or not _VALID_USER_TOKEN_RE.fullmatch(item) for item in principals):
+        raise ValueError("Invalid valid users value")
+    return list(dict.fromkeys(principals))
+
+
+def _validate_acl_list(values: Optional[list[str]]) -> Optional[list[str]]:
+    if values is None:
+        return None
+    if len(values) > 256:
+        raise ValueError("A share can have at most 256 user or group ACL entries")
+    return list(dict.fromkeys(_validate_principal(item) for item in values))
+
+
+def _apply_user_acl(
+    config: configparser.ConfigParser,
+    name: str,
+    read_users: Optional[list[str]],
+    write_users: Optional[list[str]],
+) -> None:
+    if read_users is None and write_users is None:
+        return
+    current_read = _principal_option(config, name, "read list")
+    current_write = _principal_option(config, name, "write list")
+    readers = _validate_acl_list(current_read if read_users is None else read_users) or []
+    writers = _validate_acl_list(current_write if write_users is None else write_users) or []
+    overlap = set(readers) & set(writers)
+    if overlap:
+        raise ValueError("An account or group cannot have both read-only and write access")
+    allowed = list(dict.fromkeys(readers + writers))
+    if allowed:
+        config[name]["valid users"] = " ".join(allowed)
+    else:
+        config[name].pop("valid users", None)
+    if readers:
+        config[name]["read list"] = " ".join(readers)
+    else:
+        config[name].pop("read list", None)
+    if writers:
+        config[name]["write list"] = " ".join(writers)
+    else:
+        config[name].pop("write list", None)
+    config[name]["read only"] = "yes"
+
+
+def _validate_share_directory(path: str) -> None:
+    if not isinstance(path, str) or not path or not os.path.isabs(path):
+        raise ValueError("Share path must be an absolute directory path")
+    if any(ord(char) < 32 or ord(char) == 127 for char in path):
+        raise ValueError("Invalid share path")
+    if not os.path.isdir(path):
+        raise ValueError(f"Path is not an existing directory: {path}")
+
+
+def _validate_mask(value: str, label: str) -> str:
+    if not isinstance(value, str) or not _SHARE_MASK_RE.fullmatch(value):
+        raise ValueError(f"{label} must be an octal permission mask, for example 0755")
+    return value if len(value) == 4 else "0" + value
+
+
+def _run_samba_accounts(request: dict) -> dict:
+    """Call the fixed-operation root helper without exposing credentials."""
+    action = request.get("action", "unknown")
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", SAMBA_ACCOUNTS_HELPER],
+            input=json.dumps(request),
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.error("Samba account helper timed out (action=%s)", action, exc_info=True)
+        raise SambaAccountError("Samba account operation timed out") from None
+    except FileNotFoundError as exc:
+        logger.error("Samba account helper is unavailable (action=%s)", action, exc_info=True)
+        raise SambaAccountError("Samba account helper is unavailable; rerun setup_service.sh") from None
+    if result.returncode != 0:
+        logger.error("Samba account helper failed (action=%s, exit=%s)", action, result.returncode)
+        raise SambaAccountError("Samba account operation failed")
+    try:
+        response = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError):
+        logger.error("Samba account helper returned invalid data (action=%s)", action)
+        raise SambaAccountError("Samba account helper returned an invalid response") from None
+    if not isinstance(response, dict):
+        logger.error("Samba account helper returned an invalid response (action=%s)", action)
+        raise SambaAccountError("Samba account helper returned an invalid response")
+    return response
+
+
+def get_samba_accounts() -> dict:
+    """List eligible existing Linux users/groups and their Samba account state."""
+    require_samba()
+    passdb = _run_samba_accounts({"action": "list"})
+    samba_users = set(passdb.get("users") or [])
+    users = [
+        {"username": account.pw_name, "samba_enabled": account.pw_name in samba_users}
+        for account in pwd.getpwall()
+        if account.pw_uid >= 1000 and account.pw_name not in {"ethos-nas", "nobody"}
+    ]
+    groups = [
+        {"name": group.gr_name}
+        for group in grp.getgrall()
+        if group.gr_gid >= 1000 and group.gr_name not in {"ethos-nas", "nogroup"}
+    ]
+    users.sort(key=lambda item: item["username"].casefold())
+    groups.sort(key=lambda item: item["name"].casefold())
+    return {"users": users, "groups": groups}
+
+
+def set_samba_password(username: str, password: str) -> dict:
+    """Create or update a Samba password for an existing non-system account."""
+    require_samba()
+    _validate_samba_username(username)
+    response = _run_samba_accounts({
+        "action": "set_password", "username": username, "password": password,
+    })
+    return {"username": response.get("username", username), "status": "updated"}
+
+
+def delete_samba_account(username: str) -> dict:
+    """Remove a user's Samba credentials without affecting its Linux account."""
+    require_samba()
+    _validate_samba_username(username)
+    accounts = _run_samba_accounts({"action": "list"}).get("users", [])
+    if username not in accounts:
+        raise ValueError(f"Samba account '{username}' not found")
+    response = _run_samba_accounts({"action": "delete", "username": username})
+    return {"username": response.get("username", username), "status": "deleted"}
+
+
+def _validate_samba_username(username: str) -> None:
+    if not isinstance(username, str) or not _SAMBA_USERNAME_RE.fullmatch(username):
+        raise ValueError("Invalid Samba username")
+    if username in {"root", "ethos-nas"}:
+        raise ValueError("This account cannot be managed by Samba Shares")
+    try:
+        account = pwd.getpwnam(username)
+    except KeyError:
+        raise ValueError("Linux account not found") from None
+    if account.pw_uid < 1000:
+        raise ValueError("System accounts cannot be managed by Samba Shares")
 
 
 def add_share(
@@ -143,6 +333,8 @@ def add_share(
     valid_users: str = "",
     create_mask: str = "0755",
     directory_mask: str = "0755",
+    read_users: Optional[list[str]] = None,
+    write_users: Optional[list[str]] = None,
 ) -> dict:
     """Add a new Samba share.
 
@@ -169,12 +361,20 @@ def add_share(
         raise ValueError(
             "Invalid share name — use letters, digits, '_', '-' or '.' (max 64 chars)"
         )
-    if not os.path.exists(path):
-        raise ValueError(f"Path does not exist: {path}")
+    _validate_share_directory(path)
+    create_mask = _validate_mask(create_mask, "Create mask")
+    directory_mask = _validate_mask(directory_mask, "Directory mask")
+    parsed_valid_users = _parse_valid_users(valid_users)
+    read_users = _validate_acl_list(read_users)
+    write_users = _validate_acl_list(write_users)
+    if read_only and write_users:
+        raise ValueError("A read-only share cannot grant write access to selected users or groups")
+    if guest_ok and (parsed_valid_users or read_users or write_users):
+        raise ValueError("Guest access cannot be combined with a user/group access list")
     require_samba()
 
     config = _load_config()
-    if name in config.sections():
+    if any(section.casefold() == name.casefold() for section in config.sections()):
         raise ValueError(f"Share '{name}' already exists")
 
     config[name] = {
@@ -186,13 +386,14 @@ def add_share(
         "create mask": create_mask,
         "directory mask": directory_mask,
     }
-    if valid_users:
-        config[name]["valid users"] = valid_users
+    if parsed_valid_users:
+        config[name]["valid users"] = " ".join(parsed_valid_users)
+
+    _apply_user_acl(config, name, read_users, write_users)
 
     _apply_guest_write_fix(config, name)
 
-    _write_config(config)
-    _reload_samba()
+    _apply_config(config)
     return {"name": name, "path": path, "status": "added"}
 
 
@@ -206,6 +407,8 @@ def update_share(
     valid_users: Optional[str] = None,
     create_mask: Optional[str] = None,
     directory_mask: Optional[str] = None,
+    read_users: Optional[list[str]] = None,
+    write_users: Optional[list[str]] = None,
 ) -> dict:
     """Update an existing Samba share.
 
@@ -230,12 +433,13 @@ def update_share(
     """
     require_samba()
     config = _load_config()
+    if name.casefold() in _SPECIAL_SECTIONS:
+        raise ValueError("Special Samba sections cannot be managed as shares")
     if name not in config.sections():
         raise ValueError(f"Share '{name}' not found")
 
     if path is not None:
-        if not os.path.exists(path):
-            raise ValueError(f"Path does not exist: {path}")
+        _validate_share_directory(path)
         config[name]["path"] = path
     if comment is not None:
         config[name]["comment"] = comment
@@ -246,18 +450,39 @@ def update_share(
     if guest_ok is not None:
         config[name]["guest ok"] = "yes" if guest_ok else "no"
     if valid_users is not None:
-        config[name]["valid users"] = valid_users
+        parsed_valid_users = _parse_valid_users(valid_users)
+        if parsed_valid_users:
+            config[name]["valid users"] = " ".join(parsed_valid_users)
+        else:
+            config[name].pop("valid users", None)
     if create_mask is not None:
-        config[name]["create mask"] = create_mask
+        config[name]["create mask"] = _validate_mask(create_mask, "Create mask")
     if directory_mask is not None:
-        config[name]["directory mask"] = directory_mask
+        config[name]["directory mask"] = _validate_mask(directory_mask, "Directory mask")
+
+    read_users = _validate_acl_list(read_users)
+    write_users = _validate_acl_list(write_users)
+    current_write_users = _principal_option(config, name, "write list")
+    effective_write_users = current_write_users if write_users is None else write_users
+    effective_read_only = _share_is_read_only(config, name)
+    if effective_read_only and effective_write_users:
+        raise ValueError("A read-only share cannot grant write access to selected users or groups")
+    effective_guest = config.get(name, "guest ok", fallback="no").lower() == "yes"
+    access_changed = any(value is not None for value in (guest_ok, valid_users, read_users, write_users))
+    has_user_restrictions = bool(
+        config.get(name, "valid users", fallback="").strip()
+        or _principal_option(config, name, "read list")
+        or _principal_option(config, name, "write list")
+    )
+    if effective_guest and access_changed and has_user_restrictions:
+        raise ValueError("Guest access cannot be combined with a user/group access list")
+    _apply_user_acl(config, name, read_users, write_users)
 
     # Self-heal: re-apply force user/group to the (possibly new) path owner so
     # public writable shares keep working after edits.
     _apply_guest_write_fix(config, name)
 
-    _write_config(config)
-    _reload_samba()
+    _apply_config(config)
     return {"name": name, "status": "updated"}
 
 
@@ -275,12 +500,13 @@ def delete_share(name: str) -> dict:
     """
     require_samba()
     config = _load_config()
+    if name.casefold() in _SPECIAL_SECTIONS:
+        raise ValueError("Special Samba sections cannot be managed as shares")
     if name not in config.sections():
         raise ValueError(f"Share '{name}' not found")
 
     config.remove_section(name)
-    _write_config(config)
-    _reload_samba()
+    _apply_config(config)
     return {"name": name, "status": "deleted"}
 
 
@@ -309,15 +535,8 @@ def _validate_smb_content(content: str) -> None:
         os.unlink(tmp.name)
 
 
-def _write_config(config: configparser.ConfigParser) -> None:
-    """Write config to smb.conf.
-
-    The serialized content is validated with testparm BEFORE the live file is
-    replaced, so a rejected change can never leave a broken smb.conf behind.
-    Tries direct write first (works when running as root), falls back to
-    `sudo tee` for unprivileged users. Requires NOPASSWD sudo rule for the
-    fallback path — see setup_scripts/setup_service.sh.
-    """
+def _serialize_config(config: configparser.ConfigParser) -> str:
+    """Return a validated Samba config serialization."""
     # Ensure [global] section exists with sensible defaults
     if "global" not in config.sections():
         config["global"] = {}
@@ -334,17 +553,18 @@ def _write_config(config: configparser.ConfigParser) -> None:
     if "map to guest" not in config["global"]:
         config["global"]["map to guest"] = "bad user"
 
-    # Serialize config to string
     import io
 
     buf = io.StringIO()
     config.write(buf, space_around_delimiters=True)
     content = buf.getvalue()
-
-    # Validate BEFORE committing — a failed testparm must not corrupt the live file.
     _validate_smb_content(content)
+    return content
 
-    # Strategy 1: Try direct write (works when running as root)
+
+def _write_smb_content(content: str) -> None:
+    """Write raw config content using the narrow direct-write/tee paths."""
+
     try:
         with open(SMB_CONF + ".tmp", "w") as f:
             f.write(content)
@@ -354,7 +574,6 @@ def _write_config(config: configparser.ConfigParser) -> None:
     except PermissionError:
         pass  # Fall through to sudo tee
 
-    # Strategy 2: Use sudo tee for unprivileged users
     try:
         result = subprocess.run(
             ["sudo", "-n", "tee", SMB_CONF],
@@ -374,6 +593,60 @@ def _write_config(config: configparser.ConfigParser) -> None:
         raise RuntimeError("sudo not found — cannot write Samba config")
 
 
+def _write_config(config: configparser.ConfigParser) -> None:
+    """Validate and write a serialized Samba config."""
+    if "global" not in config.sections():
+        config["global"] = {}
+    if "workgroup" not in config["global"]:
+        config["global"]["workgroup"] = "WORKGROUP"
+    if "server string" not in config["global"]:
+        config["global"]["server string"] = "EthOS NAS"
+    if "netbios name" not in config["global"]:
+        import socket
+
+        config["global"]["netbios name"] = socket.gethostname().upper()
+    if "security" not in config["global"]:
+        config["global"]["security"] = "user"
+    if "map to guest" not in config["global"]:
+        config["global"]["map to guest"] = "bad user"
+    _write_smb_content(_serialize_config(config))
+
+
+def _apply_config(config: configparser.ConfigParser) -> None:
+    """Write and reload a config, restoring the old file if reload fails."""
+    try:
+        with open(SMB_CONF, encoding="utf-8") as source:
+            previous = source.read()
+    except FileNotFoundError:
+        previous = None
+    except OSError as exc:
+        logger.error("Cannot snapshot Samba config before update", exc_info=True)
+        raise RuntimeError("Cannot safely update Samba config") from None
+
+    _write_config(config)
+    try:
+        _reload_samba()
+    except Exception:
+        logger.error("Samba config reload failed; restoring prior config state", exc_info=True)
+        if previous is not None:
+            try:
+                _write_smb_content(previous)
+                _reload_samba()
+            except Exception:
+                logger.error("Failed to restore previous Samba config", exc_info=True)
+                raise RuntimeError("Samba reload failed and previous config could not be restored") from None
+        else:
+            try:
+                defaults = configparser.ConfigParser()
+                defaults["global"] = {}
+                _write_config(defaults)
+                _reload_samba()
+            except Exception:
+                logger.error("Failed to restore Samba defaults after reload failure", exc_info=True)
+                raise RuntimeError("Samba reload failed and prior config state could not be restored") from None
+        raise RuntimeError("Samba config reload failed; prior config state was restored") from None
+
+
 def _reload_samba() -> None:
     """Reload Samba configuration without restarting the service.
 
@@ -382,84 +655,65 @@ def _reload_samba() -> None:
     — see setup_scripts/setup_service.sh.
     """
     try:
-        # First validate config with testparm (read-only, no sudo needed)
         result = subprocess.run(
-            ["testparm", "-s", SMB_CONF],
-            capture_output=True,
-            text=True,
-            timeout=10,
+            ["testparm", "-s", SMB_CONF], capture_output=True, text=True, timeout=10,
         )
-        if result.returncode != 0:
-            logger.error("Samba config validation failed: %s", result.stderr)
-            raise ValueError(f"Invalid Samba config: {result.stderr}")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        logger.error("Could not validate Samba config before reload", exc_info=True)
+        raise RuntimeError("Could not validate Samba config") from None
+    if result.returncode != 0:
+        logger.error("Samba config validation failed (testparm exit=%s)", result.returncode)
+        raise ValueError("Invalid Samba config; testparm rejected the change")
 
-        # Reload Samba — prefer samba.service (unified), fall back to smbd
-        service_name = "samba" if os.path.exists("/usr/lib/systemd/system/samba.service") else "smbd"
-
-        # Strategy 1: Try direct systemctl (works when running as root)
-        result = subprocess.run(
-            ["systemctl", "reload", service_name],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            logger.info("Samba configuration reloaded (direct)")
-            return
-
-        # Strategy 2: Fall back to sudo systemctl for unprivileged users
-        result = subprocess.run(
-            ["sudo", "-n", "systemctl", "reload", service_name],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            logger.info("Samba configuration reloaded (via sudo)")
-            return
-
-        # Both failed — warn but don't raise (config is still saved)
-        logger.warning(
-            "Failed to reload Samba via systemctl or sudo: %s. Config saved but not applied.",
-            result.stderr,
-        )
-    except FileNotFoundError:
-        logger.warning("Samba tools not found — config saved but not applied")
-    except Exception as e:
-        logger.warning("Failed to reload Samba: %s", e)
+    service_files = (
+        ("samba", "/usr/lib/systemd/system/samba.service", "/lib/systemd/system/samba.service"),
+        ("smbd", "/usr/lib/systemd/system/smbd.service", "/lib/systemd/system/smbd.service"),
+    )
+    candidates = [
+        unit for unit, *paths in service_files if any(os.path.exists(path) for path in paths)
+    ]
+    for unit in candidates or ["smbd", "samba"]:
+        for command in (["systemctl", "reload", unit], ["sudo", "-n", "systemctl", "reload", unit]):
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                logger.error("Samba reload command failed (unit=%s)", unit, exc_info=True)
+                continue
+            if result.returncode == 0:
+                logger.info("Samba configuration reloaded (unit=%s)", unit)
+                return
+    logger.error("Could not reload Samba using available service units")
+    raise RuntimeError("Samba config was not applied; could not reload the Samba service")
 
 
 def get_status() -> dict:
     """Get Samba service status (active, enabled, config path) plus host preflight."""
     samba = _samba_status()
-    smbd_active = False
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-active", "smbd"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        smbd_active = result.stdout.strip() == "active"
-    except Exception:
-        logger.warning("Could not read smbd active state", exc_info=True)
-
-    smbd_enabled = False
-    try:
-        result = subprocess.run(
-            ["systemctl", "is-enabled", "smbd"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        smbd_enabled = result.stdout.strip() == "enabled"
-    except Exception:
-        logger.warning("Could not read smbd enabled state", exc_info=True)
+    units = ("samba", "smbd")
+    active_unit = None
+    active = enabled = False
+    for unit in units:
+        try:
+            state = subprocess.run(
+                ["systemctl", "is-active", unit], capture_output=True, text=True, timeout=5,
+            )
+            if state.stdout.strip() == "active":
+                active = True
+                active_unit = unit
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            logger.warning("Could not read Samba active state (unit=%s)", unit, exc_info=True)
+        try:
+            state = subprocess.run(
+                ["systemctl", "is-enabled", unit], capture_output=True, text=True, timeout=5,
+            )
+            enabled = enabled or state.stdout.strip() == "enabled"
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            logger.warning("Could not read Samba enabled state (unit=%s)", unit, exc_info=True)
 
     return {
-        "service": "smbd",
-        "active": smbd_active,
-        "enabled": smbd_enabled,
+        "service": active_unit or "smbd",
+        "active": active,
+        "enabled": enabled,
         "config_path": SMB_CONF if os.path.exists(SMB_CONF) else None,
         # Host preflight: without these the app can neither validate nor apply
         # anything, so the UI must say so instead of showing a dead toggle.

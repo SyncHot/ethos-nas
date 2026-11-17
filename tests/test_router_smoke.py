@@ -38,6 +38,7 @@ SKIP = {
     "/api/disk-clean/top-files",
     "/api/disk-clean/suggestions",
     "/api/system/shutdown",
+    "/api/shares/accounts",  # Requires Samba tools and the installed passdb helper.
 }
 
 _results: list[tuple[str, bool, str]] = []

@@ -13,8 +13,9 @@
 #       cannot save into shares owned by the developer account
 #   3. ONE sudoers file /etc/sudoers.d/ethos-nas with the full narrow rule
 #      inventory (shares + firewall + USB + power), visudo-validated before install
-#   4. Privileged helpers /usr/local/bin/ethos-usb-partition (USB only) and
-#      /usr/local/bin/ethos-docker-install (Docker Engine provisioning), plus
+#   4. Privileged helpers /usr/local/bin/ethos-usb-partition (USB only),
+#      /usr/local/bin/ethos-docker-install (Docker Engine provisioning), and
+#      /usr/local/bin/ethos-samba-accounts (fixed Samba passdb operations), plus
 #      shadow-group membership (pam_unix needs /etc/shadow to verify PAM logins)
 #   5. Docker group membership when /var/run/docker.sock exists (no sudo for docker).
 #      ETHOS_INSTALL_DOCKER=1 installs Docker Engine first, so one restart covers it.
@@ -45,8 +46,8 @@ Usage: sudo bash setup_scripts/setup_service.sh [user] [--uninstall]
 
   user         Target service account (default: ethos-nas). Created as a system
                user with a nologin shell if it does not exist.
-  --uninstall  Remove the systemd unit, /etc/sudoers.d/ethos-nas and the USB
-               helper. The user itself is kept.
+  --uninstall  Remove the systemd unit, /etc/sudoers.d/ethos-nas and the
+               installed helpers. The user itself is kept.
 USAGE
 }
 
@@ -79,6 +80,7 @@ SUDOERS_FILE="${SUDOERS_DIR}/ethos-nas"
 WRAPPER_BIN="/usr/local/bin/ethos-usb-partition"
 DOCKER_HELPER_BIN="/usr/local/bin/ethos-docker-install"
 SYSTEM_DEPS_HELPER_BIN="/usr/local/bin/ethos-system-deps"
+SAMBA_ACCOUNTS_HELPER_BIN="/usr/local/bin/ethos-samba-accounts"
 # Core update helper (deploy/ethos-update). The sudoers rule is argument-free;
 # the helper validates the signed release index and its own conf file.
 UPDATE_HELPER_BIN="/usr/local/bin/ethos-update"
@@ -107,8 +109,9 @@ if [ "${UNINSTALL}" = 1 ]; then
     rm -f "${WRAPPER_BIN}"
     rm -f "${DOCKER_HELPER_BIN}"
     rm -f "${SYSTEM_DEPS_HELPER_BIN}"
+    rm -f "${SAMBA_ACCOUNTS_HELPER_BIN}"
     rm -f "${UPDATE_HELPER_BIN}" "${UPDATE_CONF}" "${UPDATE_PUBKEY_PEM}"
-    echo "✓ removed: ${UNIT_DST}, ${SUDOERS_FILE}, ${WRAPPER_BIN}, ${DOCKER_HELPER_BIN}, ${SYSTEM_DEPS_HELPER_BIN}, ${UPDATE_HELPER_BIN}"
+    echo "✓ removed: ${UNIT_DST}, ${SUDOERS_FILE}, ${WRAPPER_BIN}, ${DOCKER_HELPER_BIN}, ${SYSTEM_DEPS_HELPER_BIN}, ${SAMBA_ACCOUNTS_HELPER_BIN}, ${UPDATE_HELPER_BIN}"
     echo "  user '${TARGET_USER}' kept (remove manually with: userdel ${TARGET_USER})"
     exit 0
 fi
@@ -219,6 +222,9 @@ RULES=(
     "${TARGET_USER} ALL=(root) NOPASSWD: ${TEE_BIN} /etc/samba/smb.conf"
     "${TARGET_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} reload samba"
     "${TARGET_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} reload smbd"
+    # Samba passdb operations accept a strict JSON request on stdin; the root
+    # helper validates the action and existing Unix account before invoking tools.
+    "${TARGET_USER} ALL=(root) NOPASSWD: ${SAMBA_ACCOUNTS_HELPER_BIN}"
     # Power — system buttons (see routers/system.py; no wildcards in args)
     "${TARGET_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} reboot"
     "${TARGET_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} shutdown"
@@ -503,6 +509,13 @@ SYSTEM_DEPS_SRC="${REPO_DIR}/deploy/ethos-system-deps"
 if [ -f "${SYSTEM_DEPS_SRC}" ]; then
     install -m 0755 -o root -g root "${SYSTEM_DEPS_SRC}" "${SYSTEM_DEPS_HELPER_BIN}"
     echo "✓ ${SYSTEM_DEPS_HELPER_BIN} installed (host dependency helper: ${SYSTEM_DEPS_IDS})"
+fi
+
+# ── 4d-ter. Samba passdb helper (fixed operations; JSON request via stdin) ──
+SAMBA_ACCOUNTS_SRC="${REPO_DIR}/deploy/ethos-samba-accounts"
+if [ -f "${SAMBA_ACCOUNTS_SRC}" ]; then
+    install -m 0755 -o root -g root "${SAMBA_ACCOUNTS_SRC}" "${SAMBA_ACCOUNTS_HELPER_BIN}"
+    echo "✓ ${SAMBA_ACCOUNTS_HELPER_BIN} installed (Samba passdb helper)"
 fi
 
 # ── 4d-bis. Core update helper + its config and public key ──────────────────

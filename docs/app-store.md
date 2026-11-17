@@ -110,7 +110,7 @@ Nothing user-facing is left except the system apps in the table above. The four 
 
 | App | What stayed in core |
 |---|---|
-| Samba Shares | `/etc/samba/smb.conf` writes through the narrow sudoers rule, `testparm`, `systemctl restart smbd` |
+| Samba Shares | `/etc/samba/smb.conf` writes through the narrow sudoers rule, `testparm`, reload of `samba`/`smbd`, passdb operations through `ethos-samba-accounts` |
 | Docker Manager | the engine helper `ethos-docker-install`, compose policy/runtime and `/api/docker/*` — every container package depends on them |
 | Code Editor / Git Diff | file reads/writes through `path_scope`, git and PTY/agent handling |
 | Disk Cleaner | every scan and delete through the scoped file service |

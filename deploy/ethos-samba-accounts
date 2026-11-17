@@ -1,0 +1,114 @@
+#!/usr/bin/python3
+"""Narrow root helper for Samba passdb operations."""
+
+import json
+import os
+import pwd
+import re
+import subprocess
+import sys
+
+
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$")
+_MAX_REQUEST_BYTES = 65536
+
+
+class HelperError(ValueError):
+    pass
+
+
+def _username(value):
+    if not isinstance(value, str) or not _USERNAME_RE.fullmatch(value):
+        raise HelperError("Invalid username")
+    if value in {".", "..", "root", "ethos-nas"}:
+        raise HelperError("This account cannot be managed by Samba Shares")
+    try:
+        account = pwd.getpwnam(value)
+    except KeyError:
+        raise HelperError("Linux account not found") from None
+    if account.pw_uid < 1000:
+        raise HelperError("System accounts cannot be managed by Samba Shares")
+    return value
+
+
+def _run(args, *, input_text=None):
+    try:
+        result = subprocess.run(
+            args, input=input_text, capture_output=True, text=True, timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        raise HelperError("Samba account tool is unavailable or timed out") from None
+    if result.returncode:
+        raise HelperError("Samba account operation failed")
+    return result.stdout
+
+
+def _samba_users():
+    output = _run(["pdbedit", "-L"])
+    users = []
+    for line in output.splitlines():
+        username = line.partition(":")[0]
+        if _USERNAME_RE.fullmatch(username):
+            users.append(username)
+    return sorted(set(users), key=str.casefold)
+
+
+def handle_request(request):
+    if not isinstance(request, dict):
+        raise HelperError("Invalid request")
+    action = request.get("action")
+    if action == "list":
+        if set(request) != {"action"}:
+            raise HelperError("Invalid request")
+        return {"users": _samba_users()}
+
+    if action == "set_password":
+        if set(request) != {"action", "username", "password"}:
+            raise HelperError("Invalid request")
+        username = _username(request.get("username"))
+        password = request.get("password")
+        if (not isinstance(password, str) or not 8 <= len(password) <= 128
+                or any(ord(char) < 32 or ord(char) == 127 for char in password)):
+            raise HelperError("Password must be 8–128 characters without control characters")
+        args = ["smbpasswd", "-s"]
+        if username not in _samba_users():
+            args.append("-a")
+        args.append(username)
+        _run(args, input_text=f"{password}\n{password}\n")
+        return {"ok": True, "username": username}
+
+    if action == "delete":
+        if set(request) != {"action", "username"}:
+            raise HelperError("Invalid request")
+        username = _username(request.get("username"))
+        if username not in _samba_users():
+            raise HelperError("Samba account not found")
+        _run(["smbpasswd", "-x", username])
+        return {"ok": True, "username": username}
+
+    raise HelperError("Unknown Samba account operation")
+
+
+def main():
+    if os.geteuid() != 0:
+        print("Samba account helper must run as root", file=sys.stderr)
+        return 1
+    if len(sys.argv) != 1:
+        print("This helper accepts requests only through stdin", file=sys.stderr)
+        return 1
+    raw = sys.stdin.buffer.read(_MAX_REQUEST_BYTES + 1)
+    if len(raw) > _MAX_REQUEST_BYTES:
+        print("Request too large", file=sys.stderr)
+        return 1
+    try:
+        request = json.loads(raw)
+        response = handle_request(request)
+    except (UnicodeDecodeError, json.JSONDecodeError, HelperError):
+        print("Invalid or failed Samba account request", file=sys.stderr)
+        return 1
+    sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
