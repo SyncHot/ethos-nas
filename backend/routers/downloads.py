@@ -1685,6 +1685,57 @@ async def resume_all():
     return {"ok": True, "resumed": n}
 
 
+def _remove_failed_partial(task: dict) -> None:
+    """Delete the unfinished payload of a failed task (best effort).
+
+    A failed HTTP download leaves `<dest>.part`; `debrid_link` tasks track one
+    destination per file. Finished files and debrid destination folders are left
+    alone — the per-task Delete action (`cancel?delete_file=true`) stays the
+    explicit "remove the data too" path.
+    """
+    candidates: list[str] = []
+    if task.get("kind") == "http":
+        dest = str(task.get("path") or "")
+        if dest:
+            candidates.append(_part_path(dest))
+    elif task.get("kind") == "debrid_link":
+        for entry in task.get("_files") or []:
+            dest = str(entry.get("dest") or "")
+            if dest:
+                candidates.append(_part_path(dest))
+    for path in candidates:
+        try:
+            if path and os.path.isfile(path):
+                os.remove(path)
+        except OSError as exc:
+            logger.warning("Failed-download cleanup: could not remove %s: %s", path, exc)
+
+
+@router.post("/tasks/clear-failed")
+async def clear_failed():
+    """Remove every failed task record (status `error`) from the list.
+
+    Partial `.part` payloads are deleted; anything already completed on disk and
+    debrid destination folders stay. Mirrors `clear-completed`, which only
+    removes `completed` records.
+    """
+    keep = []
+    removed = 0
+    for t in _tasks:
+        if t["status"] != "error":
+            keep.append(t)
+            continue
+        _remove_failed_partial(t)
+        _active.pop(t["id"], None)
+        _events.pop(t["id"], None)
+        removed += 1
+    if removed:
+        _tasks[:] = keep
+        _save_tasks()
+        logger.info("Downloads: cleared %d failed task(s)", removed)
+    return {"ok": True, "removed": removed}
+
+
 @router.post("/tasks/clear-completed")
 async def clear_completed():
     """Remove all completed task records from the list (bulk cleanup).

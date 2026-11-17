@@ -90,6 +90,7 @@ non-admins are limited to `/home`, `/mnt`, `/media`.
 | POST | `/tasks/{id}/cancel` | user | `?delete_file=`; removes the record |
 | DELETE | `/tasks/{id}` | user | alias of cancel |
 | POST | `/tasks/pause-all` / `/tasks/resume-all` / `/tasks/clear-completed` | user | bulk |
+| POST | `/tasks/clear-failed` | user | removes every `error` record; deletes leftover `.part` payloads, keeps finished files and debrid folders |
 | POST | `/tasks/{id}/files/select` | user | `{file_ids:[int|str]}` (debrid) |
 | POST | `/tasks/reorder` | user | `{order:[task_id]}` — first id starts first (sets priorities) |
 | POST | `/tasks/{id}/priority` | user | `{priority:-1000..1000}` |
