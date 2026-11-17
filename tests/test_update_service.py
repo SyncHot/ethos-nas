@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 DATA_DIR = Path(tempfile.mkdtemp(prefix="ethos-update-test-"))
@@ -180,7 +181,9 @@ def main() -> int:
         check("starts the helper once", spawned["n"] == 1, str(spawned))
         check("reports updating", started.get("status") == "updating")
 
-        (DATA_DIR / "update" / "job.json").write_text(json.dumps({"status": "running"}), encoding="utf-8")
+        (DATA_DIR / "update" / "job.json").write_text(json.dumps({
+            "status": "running", "step": "apply", "at": update_service._iso(time.time()),
+        }), encoding="utf-8")
         try:
             asyncio.run(update_service.request_apply())
             check("refuses while a job is running", False, "no exception")
@@ -189,6 +192,28 @@ def main() -> int:
     finally:
         update_service._spawn_helper = original_spawn
         config_archive.take_snapshot = original_snapshot
+
+    print("\n[stale job]")
+    job_file = DATA_DIR / "update" / "job.json"
+    original_start = update_service._process_started_at
+    try:
+        update_service._process_started_at = lambda: time.time()
+        job_file.write_text(json.dumps({
+            "status": "running", "step": "restart",
+            "at": update_service._iso(time.time() - 3600),
+        }), encoding="utf-8")
+        status = update_service.apply_status()
+        check("stale restart job is not running", status["running"] is False, str(status))
+        check("stale flag is exposed", status.get("stale") is True, str(status))
+        job_file.write_text(json.dumps({
+            "status": "running", "step": "restart",
+            "at": update_service._iso(time.time() + 30),
+        }), encoding="utf-8")
+        status = update_service.apply_status()
+        check("a restart job from the current process is still running",
+              status["running"] is True, str(status))
+    finally:
+        update_service._process_started_at = original_start
 
     print("\n[reconcile]")
     emitted: list[tuple] = []
@@ -211,6 +236,31 @@ def main() -> int:
         update_service.reconcile_result()
         check("reports a successful update",
               len(emitted) == 2 and emitted[1][0][0] == "success", str(emitted))
+
+        print("\n[reconcile stale job]")
+        (DATA_DIR / "update" / "result.json").unlink(missing_ok=True)
+        (DATA_DIR / "update" / "job.json").write_text(json.dumps({
+            "status": "running", "step": "restart",
+            "at": update_service._iso(time.time() - 3600),
+            "to": "abc1234", "version": "2.2.0",
+        }), encoding="utf-8")
+        update_service._save({"checked_at": 1})
+        original_current = update_service.current_release
+        original_start = update_service._process_started_at
+        update_service.current_release = lambda: {"version": "2.2.0", "git_sha": "abc1234", "build": 1}
+        update_service._process_started_at = lambda: time.time()
+        try:
+            emitted.clear()
+            update_service.reconcile_result()
+            result = json.loads((DATA_DIR / "update" / "result.json").read_text())
+            job = json.loads((DATA_DIR / "update" / "job.json").read_text())
+            check("stale job is finalized from the checkout",
+                  result.get("status") == "ok" and job.get("status") == "ok", str(result))
+            check("finalizing emits one success notification",
+                  len(emitted) == 1 and emitted[0][0][0] == "success", str(emitted))
+        finally:
+            update_service.current_release = original_current
+            update_service._process_started_at = original_start
     finally:
         update_service.emit_event = original_emit
 

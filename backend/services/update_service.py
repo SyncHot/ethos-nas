@@ -279,6 +279,47 @@ def _read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _process_started_at() -> float:
+    """Epoch seconds when this Python process started (0.0 when unknown)."""
+    try:
+        ticks = os.sysconf("SC_CLK_TCK")
+        with open("/proc/self/stat", encoding="utf-8") as fh:
+            fields = fh.read().split()
+        start_ticks = int(fields[21])
+        with open("/proc/uptime", encoding="utf-8") as fh:
+            uptime = float(fh.read().split()[0])
+        return time.time() - (uptime - start_ticks / ticks)
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
+def _job_started_at(job: dict) -> float:
+    try:
+        return datetime.fromisoformat(str(job.get("at") or "")).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _job_is_stale(job: dict) -> bool:
+    """A `running` job that cannot still be alive.
+
+    The helper performs the service restart itself. An older helper lived in
+    the unit's cgroup and was killed by that restart, leaving `job.json` at
+    step `restart` forever — every later update then answered 409 "already
+    running". A restart/verify step that predates this process means the helper
+    is gone; a job whose last step is over two hours old is treated as hung.
+    """
+    if not isinstance(job, dict) or job.get("status") != "running":
+        return False
+    started = _job_started_at(job)
+    if started <= 0:
+        return True
+    process_start = _process_started_at()
+    if job.get("step") in ("restart", "verify") and process_start and started < process_start:
+        return True
+    return (time.time() - started) > 2 * 3600
+
+
 def helper_available() -> bool:
     path = Path(settings.UPDATE_HELPER)
     return path.is_file() and os.access(path, os.X_OK)
@@ -288,9 +329,14 @@ def apply_status() -> dict:
     """Progress/result written by `ethos-update` (no network, no privileged call)."""
     job = _read_json(_state_dir() / "job.json")
     result = _read_json(_state_dir() / "result.json")
+    stale = _job_is_stale(job)
+    if stale:
+        logger.warning("Stale update job (step %s, at %s) — not treated as running",
+                       job.get("step"), job.get("at"))
     return {
         "helper": helper_available(),
-        "running": job.get("status") == "running",
+        "running": job.get("status") == "running" and not stale,
+        "stale": stale,
         "job": job or None,
         "result": result or None,
     }
@@ -353,7 +399,45 @@ async def request_apply() -> dict:
 
 def reconcile_result() -> None:
     """After a restart: report the helper outcome once and remember it."""
-    result = _read_json(_state_dir() / "result.json")
+    state_dir = _state_dir()
+    result = _read_json(state_dir / "result.json")
+    if not result:
+        job = _read_json(state_dir / "job.json")
+        if _job_is_stale(job):
+            # The old helper was killed by its own restart. The checkout tells
+            # us whether the update actually landed.
+            current = current_release()
+            target_version = str(job.get("version") or "")
+            running_version = str(current.get("version") or "")
+            completed = bool(target_version) and not version_gt(target_version, running_version)
+            result = {
+                "status": "ok" if completed else "failed",
+                "step": "done",
+                "from": job.get("from", ""),
+                "to": job.get("to", ""),
+                "version": running_version or target_version,
+                "at": _iso(time.time()),
+                "detail": (
+                    f"helper was stopped by its restart; running {running_version} "
+                    f"is at least {target_version}"
+                    if completed else
+                    f"helper stopped at step {job.get('step') or '?'}; "
+                    f"running {running_version or 'unknown'}"
+                ),
+            }
+            try:
+                (state_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+                os.chmod(state_dir / "result.json", 0o644)
+                job.update({"status": result["status"], "step": "done",
+                            "detail": result["detail"], "at": result["at"]})
+                (state_dir / "job.json").write_text(json.dumps(job), encoding="utf-8")
+                os.chmod(state_dir / "job.json", 0o644)
+                stale_request = state_dir / "request.json"
+                if stale_request.exists():
+                    stale_request.unlink()
+                logger.info("Finalized stale update job as %s", result["status"])
+            except OSError:
+                logger.warning("Could not finalize the stale update job", exc_info=True)
     if not result:
         return
     stamp = str(result.get("at") or "")

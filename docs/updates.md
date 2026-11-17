@@ -77,6 +77,7 @@ Helper flow (git-checkout installs):
 fetch signed index → verify Ed25519 (openssl) → take the signed commit
 → git fetch → git reset --hard <sha>   (as the repo owner, never root)
 → .venv/bin/pip install -r requirements.txt
+→ install the refreshed helper atomically (/usr/local/bin/ethos-update)
 → systemctl restart ethos-nas
 → poll :9000/api/system/status for 90 s
 ```
@@ -87,6 +88,16 @@ commit, reinstall the previous requirements, restart, probe again. Progress and
 the outcome are written to `<DATA_DIR>/update/{job,result}.json`; the backend
 reports a successful/rolled-back result once after the restart through the
 Notification Center.
+
+The helper re-execs itself once into a transient `systemd-run --scope` unit
+(`ETHOS_UPDATE_SCOPED=1`), so the `systemctl restart` it performs cannot kill it
+mid-job (the unit runs with `KillMode=control-group`). An older helper lived in
+the unit cgroup, was killed at its own `restart` step and left `job.json` at
+`running` forever — every later update then answered 409 “already running”. The
+backend now treats a `restart`/`verify` job older than the current process (or
+any job idle for two hours) as **stale**, finalizes it from the checkout at
+startup (`reconcile_result`) and reports the outcome once. A plain service
+restart is enough to clear an already-stuck install; no state file surgery.
 
 Limits (deliberate):
 

@@ -49,6 +49,10 @@ def main() -> int:
     check("git/pip run as the repo owner, not root",
           'runuser -u "${REPO_OWNER}"' in helper and "runuser -u \"${REPO_OWNER}\" -- \"${INSTALL_DIR}/.venv/bin/pip\"" in helper)
     check("restarts the unit", 'systemctl restart "${SERVICE_UNIT}"' in helper)
+    check("runs itself in a systemd scope so the restart cannot kill it",
+          "systemd-run --scope" in helper and "ETHOS_UPDATE_SCOPED" in helper)
+    check("refreshes its installed copy atomically",
+          "ethos-update.new" in helper and "mv -f" in helper)
     check("health probe with timeout",
           "api/system/status" in helper and "HEALTH_TIMEOUT=90" in helper)
     check("auto-rollback restores the previous commit",

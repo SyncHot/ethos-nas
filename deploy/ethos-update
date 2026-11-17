@@ -37,6 +37,18 @@ fi
 if [ "$#" -ne 0 ]; then
     die "this helper takes no arguments" 2
 fi
+
+# ── Survive the restart this helper performs ────────────────────────────────
+# `systemctl restart ethos-nas` stops every process in the unit's cgroup, which
+# used to kill this helper at its own "restart" step: job.json stayed
+# "running" forever and every later update was refused with 409. Re-exec once
+# in a transient systemd scope owned by PID 1, which the restart leaves alone.
+if [ -z "${ETHOS_UPDATE_SCOPED:-}" ] && [ -d /run/systemd/system ] \
+        && command -v systemd-run >/dev/null 2>&1; then
+    exec systemd-run --scope --collect --quiet --unit="ethos-update-$$" \
+        --setenv=ETHOS_UPDATE_SCOPED=1 -- "$0"
+fi
+
 [ -r "${CONF}" ] || die "missing ${CONF} — re-run setup_scripts/setup_service.sh"
 
 # shellcheck disable=SC1090
@@ -193,6 +205,17 @@ step "deps" "pip install"
 runuser -u "${REPO_OWNER}" -- "${INSTALL_DIR}/.venv/bin/pip" install \
     --disable-pip-version-check -q -r "${INSTALL_DIR}/requirements.txt" \
     || rollback "dependency install failed"
+
+# Refresh the installed helper from the signed checkout. The running script is
+# replaced atomically (.new + mv), so subsequent updates get the scoped variant
+# above without a manual setup_service.sh run.
+step "helper" "install updated ethos-update"
+if install -m 0755 "${INSTALL_DIR}/deploy/ethos-update" "/usr/local/bin/ethos-update.new"; then
+    mv -f "/usr/local/bin/ethos-update.new" "/usr/local/bin/ethos-update" \
+        || log "warning: could not replace the installed helper — continuing"
+else
+    log "warning: could not stage the updated helper — continuing"
+fi
 
 step "restart" "${SERVICE_UNIT}"
 systemctl restart "${SERVICE_UNIT}" || rollback "systemctl restart failed"
