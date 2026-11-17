@@ -124,6 +124,8 @@ def _qb_torrent_obj(t: dict) -> dict:
         "debrid_downloading": "downloading",
         "debrid_selecting": "metaDL",
         "paused": "pausedDL",
+        # A skipped part is excluded from the package: Radarr/Sonarr must not import it.
+        "skipped": "pausedDL",
         # NzbDrone maps uploading/stalledUP/… → Completed, which triggers import.
         "completed": "uploading",
         "error": "error",

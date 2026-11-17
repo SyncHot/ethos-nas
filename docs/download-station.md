@@ -63,7 +63,7 @@ no port). The engine, stores and `/api/downloads/*` stay in EthOS core, so the A
 |---|---|
 | `id` | `dl_<UTCtimestamp>_<hex>` |
 | `url`, `name`, `path`, `kind` | `http` \| `debrid` \| `debrid_link` |
-| `status` | `waiting`, `downloading`, `debrid_downloading`, `paused`, `completed`, `error`, `canceled` |
+| `status` | `waiting`, `downloading`, `debrid_downloading`, `paused`, `completed`, `error`, `canceled`, `skipped` |
 | `size`, `downloaded`, `speed`, `error`, `progress` | `progress` is derived (`0..1`) |
 | `created_at`, `started_at`, `finished_at` | epoch seconds |
 | `_resume_pos`, `_saved_resume_pos`, `_last_resume_save` | HTTP resume bookkeeping |
@@ -99,6 +99,8 @@ non-admins are limited to `/home`, `/mnt`, `/media`.
 | POST | `/tasks/{id}/pause` | user | active → paused |
 | POST | `/tasks/{id}/resume` | user | paused/error → waiting |
 | POST | `/tasks/{id}/reset` | user | purge partial payload and restart (also returns to the primary source) |
+| POST | `/tasks/{id}/skip` | user | exclude the record from the queue/package without deleting it (409 for completed) |
+| POST | `/tasks/{id}/unskip` | user | back to `waiting` |
 | POST | `/tasks/{id}/mirrors` | user | `{urls:[http(s)…]}` (max 10); 400 for magnet tasks or when no URL is usable |
 | POST | `/tasks/{id}/cancel` | user | `?delete_file=`; removes the record |
 | DELETE | `/tasks/{id}` | user | alias of cancel |
@@ -142,7 +144,9 @@ Transient failures are retried automatically: the row shows `retry 2/3 in 4m`, t
 Adding the same URL to the same folder returns the existing task with `duplicate: true`; the
 `duplicate_policy` config decides what happens when the target file already exists.
 A task can carry alternative sources: the Add form takes one mirror URL per line, and the row shows
-`mirror 2/3` while a fallback source is in use.
+`mirror 2/3` while a fallback source is in use. A broken volume of a package can be **Skipped**
+(and **Unskipped**) from its expanded part row: the record stays visible, keeps its package slot but
+never starts again.
 Completed archives get an **Extract** action (single row or whole package) and show
 `Extracting…` / `Extracted` / `Extract failed`; settings expose **Extract archives after download**
 and **Delete archives after a successful extraction**.
@@ -175,6 +179,11 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
   Permanent messages (dead hoster link, bad token, no provider, disk full) go straight to `error`.
   The pump skips waiting tasks whose retry is in the future; a single `call_later` wakes it. Manual
   Resume/Reset/Retry all clear the counters.
+- **Skipped parts**: `skipped` is a terminal status outside the queue — the pump never starts it, the
+  retry timer ignores it, the qB shim reports `pausedDL` (NzbDrone must not import it) and
+  `_auto_extract_task` refuses to unpack a package with a skipped volume (the archive would be
+  incomplete). Skipping drops the `.part` payload but keeps the record and its package key, so the
+  part row and the aggregate counts stay meaningful; `unskip` re-queues it with a fresh retry budget.
 - **Mirrors / hoster failover**: `mirrors[]` on `POST /tasks` (or `/tasks/{id}/mirrors`) keeps up to 10
   extra sources. A permanent failure (dead link, 403/404, expired premium link) or an exhausted retry
   budget switches to the next mirror instead of ending in `error`; the switch drops `<dest>.part`
@@ -223,6 +232,7 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
 - [x] Post-download extraction: `auto_extract` / `auto_extract_delete`, package-aware first-volume start,
       manual Extract for a task or package, extract state on the row
 - [x] Mirror / hoster failover: `mirrors[]`, per-source retry budget, cross-host resume reset, row indicator
+- [x] Per-part skip / unskip: excluded records stay in the package without blocking (except extraction)
 - [x] RSS feeds + include/exclude regex rules (background loop, persisted seen ids, manual run)
 - [x] Part-file downloads: transfers write `<dest>.part` and rename atomically on success
       (legacy partials are adopted once); cancel/reset remove the part file

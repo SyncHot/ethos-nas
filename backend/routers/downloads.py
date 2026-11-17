@@ -1154,7 +1154,7 @@ def _notify_status_change(task: dict, prev: str | None, status: str) -> None:
 def _set_status(task: dict, status: str) -> None:
     prev = task.get("status")
     task["status"] = status
-    if status in ("completed", "error", "canceled"):
+    if status in ("completed", "error", "canceled", "skipped"):
         task["speed"] = 0
         task["finished_at"] = task.get("finished_at") or _now()
     if status == "completed":
@@ -1901,6 +1901,59 @@ async def resume_task(task_id: str):
     t["_retry_count"] = 0
     t["_next_retry_at"] = 0
     # Fresh event for the new worker.
+    _events.pop(t["id"], None)
+    _save_tasks()
+    await _pump()
+    return _public(t)
+
+
+@router.post("/tasks/{task_id}/skip")
+async def skip_task(task_id: str):
+    """Exclude one download (usually a broken package part) without deleting it.
+
+    A skipped record stops running, keeps its row but never restarts, and the
+    package it belongs to no longer counts it as a missing part. `unskip`
+    returns it to the queue.
+    """
+    t = _find(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if t.get("status") == "completed":
+        raise HTTPException(status_code=409, detail="Completed downloads cannot be skipped")
+    if t.get("status") == "skipped":
+        return _public(t)
+    ev = _events.get(t["id"])
+    if ev:
+        ev.set()  # worker exits on the next chunk check / poll tick
+    t["status"] = "skipped"
+    t["speed"] = 0
+    t["error"] = ""
+    t["_next_retry_at"] = 0
+    t["finished_at"] = t.get("finished_at") or _now()
+    part = f"{t.get('path') or ''}.part"
+    if t.get("kind") == "http" and part != ".part":
+        try:
+            if os.path.isfile(part):
+                os.remove(part)
+        except OSError as exc:
+            logger.warning("Download %s: could not remove the part file: %s", t["id"], exc)
+    _save_tasks()
+    logger.info("Download %s skipped by the user", t["id"])
+    return _public(t)
+
+
+@router.post("/tasks/{task_id}/unskip")
+async def unskip_task(task_id: str):
+    t = _find(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if t.get("status") != "skipped":
+        return _public(t)
+    t["status"] = "waiting"
+    t["error"] = ""
+    t["finished_at"] = 0
+    t["_retry_count"] = 0
+    t["_next_retry_at"] = 0
     _events.pop(t["id"], None)
     _save_tasks()
     await _pump()
