@@ -44,6 +44,8 @@ no port). The engine, stores and `/api/downloads/*` stay in EthOS core, so the A
 
 ```
 { download_dir, max_concurrent (1..16), auto_download_debrid,
+  auto_retry, retry_max (0..10), retry_delay (10..3600 s, doubled per attempt),
+  duplicate_policy (rename | skip | overwrite),
   watch_enabled, watch_folders: [{name, folder, destination}],   # max 8
   schedule: {enabled, start: "HH:MM", end: "HH:MM"},             # daily start window
   speed_limit: {global_bps, per_task_bps},                       # 0 = unlimited
@@ -64,6 +66,7 @@ no port). The engine, stores and `/api/downloads/*` stay in EthOS core, so the A
 | `size`, `downloaded`, `speed`, `error`, `progress` | `progress` is derived (`0..1`) |
 | `created_at`, `started_at`, `finished_at` | epoch seconds |
 | `_resume_pos`, `_saved_resume_pos`, `_last_resume_save` | HTTP resume bookkeeping |
+| `_retry_count`, `_next_retry_at` | backoff bookkeeping; exposed as `retry_count` / `retry_at` (epoch s) |
 | `provider`, `_debrid_id`, `_debrid_status`, `_debrid_progress`, `_files` | debrid internals |
 | `priority` | higher starts earlier; default 0, FIFO within the same value |
 | `category` | qBittorrent/Sonarr/Radarr category or a user pick; decides the destination |
@@ -97,6 +100,7 @@ non-admins are limited to `/home`, `/mnt`, `/media`.
 | DELETE | `/tasks/{id}` | user | alias of cancel |
 | POST | `/tasks/pause-all` / `/tasks/resume-all` / `/tasks/clear-completed` | user | bulk |
 | POST | `/tasks/clear-failed` | user | removes every `error` record; deletes leftover `.part` payloads, keeps finished files and debrid folders |
+| POST | `/tasks/retry-failed` | user | re-queue every `error` task with a fresh retry budget |
 | POST | `/packages/{key}/pause` · `/packages/{key}/resume` | user | every part of a derived multi-part package |
 | POST | `/packages/{key}/cancel` | user | `?delete_file=`; removes all parts (provider torrents included) |
 | POST | `/tasks/{id}/files/select` | user | `{file_ids:[int|str]}` (debrid) |
@@ -127,6 +131,10 @@ summed size/speed, `n/m done` and the first error; its actions are package-level
 Delete / Details, and filters, search and the Overview “Recent activity” table use the same grouping.
 Single tasks keep their per-row actions. **Show parts** expands the package into ordinary task
 rows, so one dead/misnamed part can be deleted, reset or resumed without dropping the archive.
+Transient failures are retried automatically: the row shows `retry 2/3 in 4m`, the toolbar has
+**Retry failed** (all error records), and manual Resume/Reset/Retry gives the task a fresh budget.
+Adding the same URL to the same folder returns the existing task with `duplicate: true`; the
+`duplicate_policy` config decides what happens when the target file already exists.
 Long actions (reset, delete-with-file, torrent queue) render through `core/progress.js`
 (`startTask`/`finish`). Waiting rows expose a drag handle: dropping a row onto another
 waiting row posts the new order to `/tasks/reorder` (the up/down buttons remain as the
@@ -151,6 +159,14 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
   confined to `download_dir` instead.
 - **Partial files**: in-flight data lives in `<dest>.part`; Gallery/indexers and
   Radarr/Sonarr only ever see the final name after the atomic rename.
+- **Retry**: a failed task is re-queued (`waiting`) with `_retry_count`/`_next_retry_at` while
+  `auto_retry` is on and the message is transient; the delay doubles from `retry_delay` (cap 6 h).
+  Permanent messages (dead hoster link, bad token, no provider, disk full) go straight to `error`.
+  The pump skips waiting tasks whose retry is in the future; a single `call_later` wakes it. Manual
+  Resume/Reset/Retry all clear the counters.
+- **Duplicates**: the same URL + destination in `waiting`/`downloading`/`paused` returns the existing
+  task (`duplicate: true`, no new record). For HTTP downloads, `duplicate_policy` applies when the
+  exact destination name exists (`rename` = ` (1)` suffix, `skip` = 409, `overwrite` = same name).
 - **RSS**: one background loop scans enabled feeds once a minute; each feed has its own
   interval, an include regex (required) and an optional exclude regex. Matched items are
   queued through the same `add_task()` path, and seen item ids live in a capped store.
@@ -178,6 +194,7 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
       `downloaded_to_nas`; search box and sort selector (persisted in localStorage)
 - [x] Search/sort and the task detail dialog
 - [x] Multi-part archive packages: grouped rows, aggregate status/progress, package Resume/Pause/Delete/Details
+- [x] Auto-retry with exponential backoff, Retry failed bulk action, duplicate/skip/overwrite policy
 - [x] RSS feeds + include/exclude regex rules (background loop, persisted seen ids, manual run)
 - [x] Part-file downloads: transfers write `<dest>.part` and rename atomically on success
       (legacy partials are adopted once); cancel/reset remove the part file

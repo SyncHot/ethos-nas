@@ -614,7 +614,6 @@ def _debrid_worker(task: dict, stop_event: threading.Event) -> None:
 
 def _finalize_debrid(t: dict, worker: "asyncio.Task") -> None:
     """Set the final status of a debrid task once its worker coroutine exits."""
-    prev_status = t.get("status")
     try:
         exc = worker.exception()
     except BaseException:
@@ -626,20 +625,13 @@ def _finalize_debrid(t: dict, worker: "asyncio.Task") -> None:
         return
     if exc is not None:
         logger.error("Debrid task %s failed: %s", t["id"], exc, exc_info=True)
-        t["status"] = "error"
-        t["error"] = str(exc)
-        t["speed"] = 0
-        _save_tasks()
-        _notify_status_change(t, prev_status, "error")
+        _fail_task(t, str(exc))
         return
     selected = [f for f in (t.get("_files") or []) if f.get("is_selected")]
     if selected and all(f.get("downloaded") for f in selected):
         _set_status(t, "completed")
     else:
-        t["status"] = "error"
-        t["error"] = "Debrid transfer ended before all files finished"
-        _save_tasks()
-        _notify_status_change(t, prev_status, "error")
+        _fail_task(t, "Debrid transfer ended before all files finished")
 
 
 async def _run_debrid(task: dict, stop_event: threading.Event) -> None:
@@ -715,6 +707,8 @@ def _public(task: dict) -> dict:
         "kind": task.get("kind", "http"),
         "priority": int(task.get("priority") or 0),
         "category": task.get("category") or task.get("_qb_category") or "",
+        "retry_count": int(task.get("_retry_count") or 0),
+        "retry_at": int(task.get("_next_retry_at") or 0),
     }
     package = _package_info(task)
     if package:
@@ -752,6 +746,24 @@ def _progress(task: dict) -> float:
 def _find(task_id: str) -> Optional[dict]:
     for t in _tasks:
         if t["id"] == task_id:
+            return t
+    return None
+
+
+def _find_duplicate(url: str, target_dir: str) -> Optional[dict]:
+    """Active/waiting/paused task for the same URL and destination folder."""
+    url = str(url or "")
+    if not url:
+        return None
+    folder = os.path.abspath(str(target_dir or ""))
+    for t in _tasks:
+        if str(t.get("url") or "") != url:
+            continue
+        if t.get("status") not in ("waiting", "downloading", "debrid_downloading", "paused"):
+            continue
+        kind = t.get("kind")
+        own = t.get("path") if kind in ("debrid", "debrid_link") else os.path.dirname(str(t.get("path") or ""))
+        if os.path.abspath(str(own or "")) == folder:
             return t
     return None
 
@@ -923,8 +935,87 @@ def _set_status(task: dict, status: str) -> None:
         task["finished_at"] = task.get("finished_at") or _now()
     if status == "completed":
         task["_resume_pos"] = 0
+        task["_retry_count"] = 0
+        task["_next_retry_at"] = 0
     _save_tasks()
     _notify_status_change(task, prev, status)
+
+
+# ── Task retry (JDownloader-style backoff) ──────────────────────────────────
+# A network hiccup must not leave a download dead until the user notices. A
+# permanent failure (dead hoster link, bad debrid key, full disk) is not
+# retried — otherwise a package of expired links would hammer the provider.
+_PERMANENT_ERROR_RE = re.compile(
+    r"(?i)(not available|not found|404|410|invalid|expired|bad[_ ]?token|"
+    r"no debrid provider|no longer configured|not configured|unsupported|forbidden|403|quota|"
+    r"permission|no space|disk is full|already exists)"
+)
+
+
+def _is_retryable(message: str) -> bool:
+    """False for failures another identical attempt cannot fix."""
+    return not _PERMANENT_ERROR_RE.search(str(message or ""))
+
+
+def _retry_delay(cfg: dict, attempt: int) -> int:
+    """Exponential base * 2^(attempt-1), capped at six hours."""
+    base = max(10, int(cfg.get("retry_delay") or 60))
+    return min(6 * 3600, base * (2 ** max(0, attempt - 1)))
+
+
+def _fail_task(task: dict, message: str, *, permanent: bool = False) -> None:
+    """Mark a task failed, re-queueing transient errors with backoff."""
+    cfg = _load_config()
+    task["error"] = str(message or "Download failed")
+    task["speed"] = 0
+    attempts = int(task.get("_retry_count") or 0)
+    limit = int(cfg.get("retry_max") or 0) if cfg.get("auto_retry", True) else 0
+    if not permanent and limit and attempts < limit and _is_retryable(task["error"]):
+        attempts += 1
+        task["_retry_count"] = attempts
+        task["_next_retry_at"] = _now() + _retry_delay(cfg, attempts)
+        task["status"] = "waiting"
+        _events.pop(task["id"], None)
+        _save_tasks()
+        logger.warning(
+            "Download %s failed (%s) — retry %d/%d in %ds",
+            task["id"], task["error"][:160], attempts, limit,
+            int(task["_next_retry_at"] - _now()),
+        )
+        _schedule_retry_wakeup()
+        return
+    task["_next_retry_at"] = 0
+    _set_status(task, "error")
+
+
+_retry_timer: Optional[asyncio.TimerHandle] = None
+
+
+def _schedule_retry_wakeup() -> None:
+    """Re-run the pump when the earliest waiting retry is due."""
+    global _retry_timer
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    if _retry_timer is not None and not _retry_timer.cancelled():
+        _retry_timer.cancel()
+    _retry_timer = None
+    now = _now()
+    pending = [float(t.get("_next_retry_at") or 0) for t in _tasks
+               if t.get("status") == "waiting"
+               and float(t.get("_next_retry_at") or 0) > now]
+    if not pending:
+        return
+    delay = max(1.0, min(pending) - now)
+
+    def _go() -> None:
+        global _retry_timer
+        _retry_timer = None
+        loop.create_task(_pump())
+
+    _retry_timer = loop.call_later(delay, _go)
+    logger.info("Next download retry in %.0f s", delay)
 
 
 async def _run_download(task: dict, stop_event: threading.Event) -> None:
@@ -934,8 +1025,7 @@ async def _run_download(task: dict, stop_event: threading.Event) -> None:
         await loop.run_in_executor(_worker_pool, _download_worker, task, stop_event)
     except Exception as exc:  # noqa: BLE001 — surface as task error, never crash the pool
         logger.error("Download %s failed: %s", task["id"], exc, exc_info=True)
-        task["error"] = str(exc)  # set before _set_status so the notification carries the detail
-        _set_status(task, "error")
+        _fail_task(task, str(exc))
         return
     # Worker returned normally:
     if stop_event.is_set():
@@ -980,6 +1070,8 @@ async def _pump() -> None:
                 continue
             if t["id"] in _active:
                 continue
+            if float(t.get("_next_retry_at") or 0) > _now():
+                continue  # backoff — the retry timer will call the pump again
             if len(_active) + len(started) >= limit:
                 break
             disk_error = _check_disk_space(t, cfg)
@@ -1016,6 +1108,7 @@ async def _pump() -> None:
             else:
                 t["status"] = "downloading"
                 wt = loop.create_task(_run_download(t, ev))
+            t["_next_retry_at"] = 0
             t["started_at"] = t.get("started_at") or _now()
             t["speed"] = 0
             wt.add_done_callback(lambda _w, _id=t["id"], _ev=ev: _on_worker_done(_id, _w, _ev))
@@ -1023,6 +1116,7 @@ async def _pump() -> None:
             started.append(t)
         if started:
             _save_tasks()
+        _schedule_retry_wakeup()
 
 
 # ── Watch folders ───────────────────────────────────────────────────────────────
@@ -1400,6 +1494,13 @@ async def add_task(payload: AddTaskRequest):
     else:
         target_dir = cfg["download_dir"]
 
+    duplicate = _find_duplicate(raw_url, target_dir)
+    if duplicate:
+        logger.info("Downloads: duplicate URL ignored (%s)", raw_url[:160])
+        out = _public(duplicate)
+        out["duplicate"] = True
+        return out
+
     # ── Magnet link → debrid task ───────────────────────────────────────────
     if raw_url.lower().startswith("magnet:?"):
         provider, key = _active_debrid(cfg)
@@ -1464,7 +1565,11 @@ async def add_task(payload: AddTaskRequest):
         os.makedirs(target_dir, exist_ok=True)
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"Download folder is not writable: {exc}") from exc
-    dest = _unique_dest(target_dir, name)
+    policy = str(cfg.get("duplicate_policy") or "rename")
+    existing = os.path.join(target_dir, name)
+    if policy == "skip" and os.path.exists(existing):
+        raise HTTPException(status_code=409, detail=f"File already exists: {name}")
+    dest = existing if policy == "overwrite" else _unique_dest(target_dir, name)
 
     task = {
         "id": _uid(),
@@ -1560,6 +1665,8 @@ async def resume_task(task_id: str):
         return _public(t)
     t["status"] = "waiting"
     t["error"] = ""
+    t["_retry_count"] = 0
+    t["_next_retry_at"] = 0
     # Fresh event for the new worker.
     _events.pop(t["id"], None)
     _save_tasks()
@@ -1589,6 +1696,8 @@ async def reset_task(task_id: str):
     # worker cannot overwrite our state with "error".
     t["status"] = "waiting"
     t["error"] = ""
+    t["_retry_count"] = 0
+    t["_next_retry_at"] = 0
     if wt is not None and not wt.done():
         try:
             await asyncio.wait_for(asyncio.shield(wt), timeout=15)
@@ -1740,6 +1849,8 @@ async def resume_package(package_key: str):
             t["status"] = "waiting"
             t["error"] = ""
             t["speed"] = 0
+            t["_retry_count"] = 0
+            t["_next_retry_at"] = 0
             _events.pop(t["id"], None)
             resumed += 1
     if resumed:
@@ -1786,6 +1897,8 @@ async def resume_all():
         if t["status"] == "paused":
             t["status"] = "waiting"
             t["error"] = ""
+            t["_retry_count"] = 0
+            t["_next_retry_at"] = 0
             _events.pop(t["id"], None)
             n += 1
     if n:
@@ -1843,6 +1956,27 @@ async def clear_failed():
         _save_tasks()
         logger.info("Downloads: cleared %d failed task(s)", removed)
     return {"ok": True, "removed": removed}
+
+
+@router.post("/tasks/retry-failed")
+async def retry_failed():
+    """Re-queue every failed task (manual "Retry all failed")."""
+    retried = 0
+    for t in _tasks:
+        if t["status"] != "error":
+            continue
+        t["status"] = "waiting"
+        t["error"] = ""
+        t["speed"] = 0
+        t["_retry_count"] = 0
+        t["_next_retry_at"] = 0
+        _events.pop(t["id"], None)
+        retried += 1
+    if retried:
+        _save_tasks()
+        await _pump()
+        logger.info("Downloads: retry-all re-queued %d task(s)", retried)
+    return {"ok": True, "retried": retried}
 
 
 @router.post("/tasks/clear-completed")
@@ -1992,6 +2126,20 @@ async def save_config(request: Request, payload: dict = Body(...)):
         cfg["download_dir"] = p
     if isinstance(payload.get("auto_download_debrid"), bool):
         cfg["auto_download_debrid"] = payload["auto_download_debrid"]
+    if isinstance(payload.get("auto_retry"), bool):
+        cfg["auto_retry"] = payload["auto_retry"]
+    if "retry_max" in payload:
+        try:
+            cfg["retry_max"] = max(0, min(10, int(payload["retry_max"])))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="retry_max must be a number between 0 and 10")
+    if "retry_delay" in payload:
+        try:
+            cfg["retry_delay"] = max(10, min(3600, int(payload["retry_delay"])))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="retry_delay must be 10..3600 seconds")
+    if payload.get("duplicate_policy") in ("rename", "skip", "overwrite"):
+        cfg["duplicate_policy"] = payload["duplicate_policy"]
     if "watch_folders" in payload:
         raw = payload["watch_folders"]
         if isinstance(raw, list):

@@ -26,6 +26,10 @@ DEFAULT_CONFIG = {
     "download_dir": str(Path.home() / "Downloads"),
     "max_concurrent": 3,
     "auto_download_debrid": True,   # auto-pull cached debrid files to the NAS
+    "auto_retry": True,            # re-queue transient failures with backoff
+    "retry_max": 3,                # retries after the first failure (0 = never)
+    "retry_delay": 60,             # base seconds; doubled per attempt
+    "duplicate_policy": "rename",  # rename | skip | overwrite when the target file exists
     "watch_folder": "",             # legacy single watch folder — migrated into watch_folders on load
     "watch_enabled": False,         # master switch for the watch-folder scanners
     "watch_folders": [              # watched dirs; entry: {name, folder, destination}
@@ -75,10 +79,15 @@ def _migrate_config(from_version: int, to_version: int, data: dict) -> dict:
         data.setdefault("categories", [])
     if from_version < 5:
         data.setdefault("rss_feeds", [])
+    if from_version < 6:
+        data.setdefault("auto_retry", True)
+        data.setdefault("retry_max", 3)
+        data.setdefault("retry_delay", 60)
+        data.setdefault("duplicate_policy", "rename")
     return data
 
 
-_CONFIG_STORE = json_store.get(CONFIG_FILE, version=5, migrate=_migrate_config)
+_CONFIG_STORE = json_store.get(CONFIG_FILE, version=6, migrate=_migrate_config)
 
 
 def parse_hhmm(value) -> Optional[int]:
@@ -227,6 +236,18 @@ def load_config() -> dict:
         merged["download_dir"] = os.path.abspath(os.path.expanduser(str(merged.get("download_dir", DEFAULT_CONFIG["download_dir"]))))
         if not isinstance(merged.get("auto_download_debrid"), bool):
             merged["auto_download_debrid"] = True
+        if not isinstance(merged.get("auto_retry"), bool):
+            merged["auto_retry"] = True
+        try:
+            merged["retry_max"] = max(0, min(10, int(merged.get("retry_max", 3))))
+        except (TypeError, ValueError):
+            merged["retry_max"] = 3
+        try:
+            merged["retry_delay"] = max(10, min(3600, int(merged.get("retry_delay", 60))))
+        except (TypeError, ValueError):
+            merged["retry_delay"] = 60
+        if merged.get("duplicate_policy") not in ("rename", "skip", "overwrite"):
+            merged["duplicate_policy"] = "rename"
         for key in ("schedule", "speed_limit"):
             raw = merged.get(key)
             merged[key] = {**DEFAULT_CONFIG[key], **(raw if isinstance(raw, dict) else {})}
