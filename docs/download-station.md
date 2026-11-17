@@ -72,6 +72,12 @@ no port). The engine, stores and `/api/downloads/*` stay in EthOS core, so the A
 Never persisted: `_events`, `_debrid_key` (rehydrated from config at task start). Terminal history is
 capped at 500 records (`MAX_TASK_HISTORY`).
 
+Derived at read time (also never persisted): `package`, `package_key`, `part` — multi-part archive
+grouping. `.partNN.rar/.zip/.7z`, legacy `.r00` and split `.z01`/`.001` volumes are matched after
+stripping a trailing `.html` (file-host landing pages like `…part02.rar.html`); `package_key =
+sha1(destination folder + base name)[:12]` and `part` is the volume number. Because it is derived
+from the name and destination, older task records group without any store migration.
+
 ## API
 
 All `/api/downloads/*` routes require a JWT (`Authorization: Bearer`). The router mounts
@@ -91,6 +97,8 @@ non-admins are limited to `/home`, `/mnt`, `/media`.
 | DELETE | `/tasks/{id}` | user | alias of cancel |
 | POST | `/tasks/pause-all` / `/tasks/resume-all` / `/tasks/clear-completed` | user | bulk |
 | POST | `/tasks/clear-failed` | user | removes every `error` record; deletes leftover `.part` payloads, keeps finished files and debrid folders |
+| POST | `/packages/{key}/pause` · `/packages/{key}/resume` | user | every part of a derived multi-part package |
+| POST | `/packages/{key}/cancel` | user | `?delete_file=`; removes all parts (provider torrents included) |
 | POST | `/tasks/{id}/files/select` | user | `{file_ids:[int|str]}` (debrid) |
 | POST | `/tasks/reorder` | user | `{order:[task_id]}` — first id starts first (sets priorities) |
 | POST | `/tasks/{id}/priority` | user | `{priority:-1000..1000}` |
@@ -113,6 +121,11 @@ qBittorrent shim (`/api/downloads/qb/api[/v2]`) is outside the JWT middleware; e
 `poll(() => fetchTasks(), 2000, {appId:'downloads'})` — visibility-aware and auto-stopped on
 `onAppClose`. Fetch responses carry a sequence token so stale responses are discarded. The **Select
 Files** dialog keeps a per-task draft (`_selectDrafts`) because every poll replaces `lastFetchedTasks`.
+Multi-part archives are grouped JDownloader-style: tasks that share `package_key` (2+ parts) render as
+one row with the aggregate status (any active → downloading, then waiting/error/paused/completed),
+summed size/speed, `n/m done` and the first error; its actions are package-level Resume / Pause /
+Delete / Details, and filters, search and the Overview “Recent activity” table use the same grouping.
+Single tasks keep their per-row actions.
 Long actions (reset, delete-with-file, torrent queue) render through `core/progress.js`
 (`startTask`/`finish`). Waiting rows expose a drag handle: dropping a row onto another
 waiting row posts the new order to `/tasks/reorder` (the up/down buttons remain as the
@@ -163,6 +176,7 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
 - [x] Task detail dialog: ETA, timestamps, priority, provider state, destination, per-file
       `downloaded_to_nas`; search box and sort selector (persisted in localStorage)
 - [x] Search/sort and the task detail dialog
+- [x] Multi-part archive packages: grouped rows, aggregate status/progress, package Resume/Pause/Delete/Details
 - [x] RSS feeds + include/exclude regex rules (background loop, persisted seen ids, manual run)
 - [x] Part-file downloads: transfers write `<dest>.part` and rename atomically on success
       (legacy partials are adopted once); cancel/reset remove the part file

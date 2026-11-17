@@ -33,6 +33,7 @@ Data files live in backend/data/ alongside the other routers' state:
 
 import asyncio
 import concurrent.futures
+import hashlib
 import ipaddress
 import logging
 import os
@@ -647,6 +648,54 @@ async def _run_debrid(task: dict, stop_event: threading.Event) -> None:
     await loop.run_in_executor(_worker_pool, _debrid_worker, task, stop_event)
 
 
+# ── Download packages (multi-part archives) ───────────────────────────────────
+# A course release is usually split into `.part01.rar` … `.partNN.rar` (or
+# `.r00` / `.zip.001` volumes). JDownloader-style grouping keeps those parts in
+# one row: the fields are derived from the display name and destination on
+# every read, so old task records group exactly like new ones and nothing is
+# migrated or duplicated in `downloads_tasks.json`.
+_PART_PATTERNS = (
+    re.compile(r"(?i)^(?P<base>.+?)\.part0*(?P<part>\d{1,4})\.(?:rar|zip|7z)$"),
+    re.compile(r"(?i)^(?P<base>.+?)\.r(?P<part>\d{2})$"),
+    re.compile(r"(?i)^(?P<base>.+?)\.z(?P<part>\d{2})$"),
+    re.compile(r"(?i)^(?P<base>.+?)\.(?P<part>\d{3})$"),
+)
+
+
+def _package_info(task: dict) -> Optional[dict]:
+    """Package membership for a multi-part archive, or None for a plain file."""
+    name = os.path.basename(str(task.get("name") or "").replace("\\", "/")).strip()
+    # Aggregator links are file-host landing pages (`…part02.rar.html`).
+    name = re.sub(r"(?i)\.html?$", "", name).strip()
+    if not name:
+        return None
+    for pattern in _PART_PATTERNS:
+        match = pattern.match(name)
+        if not match:
+            continue
+        base = match.group("base").strip().rstrip(".")
+        if not base:
+            return None
+        path = str(task.get("path") or "")
+        # HTTP tasks store the destination file; debrid tasks the folder.
+        folder = path if task.get("kind") in ("debrid", "debrid_link") else os.path.dirname(path)
+        digest = hashlib.sha1(f"{folder}\0{base.lower()}".encode("utf-8")).hexdigest()
+        return {
+            "package": base,
+            "package_key": digest[:12],
+            "part": int(match.group("part") or 0),
+        }
+    return None
+
+
+def _package_tasks(package_key: str) -> list[dict]:
+    """Tasks that belong to one derived package key."""
+    key = str(package_key or "").strip().lower()
+    if not key:
+        return []
+    return [t for t in _tasks if (_package_info(t) or {}).get("package_key") == key]
+
+
 def _public(task: dict) -> dict:
     """Task dict shaped for the API (drops internal bookkeeping)."""
     out = {
@@ -667,6 +716,9 @@ def _public(task: dict) -> dict:
         "priority": int(task.get("priority") or 0),
         "category": task.get("category") or task.get("_qb_category") or "",
     }
+    package = _package_info(task)
+    if package:
+        out.update(package)
     if task.get("kind") in ("debrid", "debrid_link"):
         out["provider"] = task.get("provider", "")
         out["debrid_status"] = task.get("_debrid_status", "")
@@ -1650,6 +1702,63 @@ async def cancel_task(task_id: str, delete_file: bool = False):
 @router.delete("/tasks/{task_id}")
 async def delete_task(task_id: str, delete_file: bool = False):
     return await cancel_task(task_id, delete_file)
+
+
+# ── Packages (multi-part archives) ───────────────────────────────────────────
+# The UI renders one row per package and calls these to act on every part at
+# once. Keys are derived from the filenames (`_package_info`), so they stay
+# stable across restarts and need no migration of existing task records.
+
+@router.post("/packages/{package_key}/pause")
+async def pause_package(package_key: str):
+    tasks = _package_tasks(package_key)
+    if not tasks:
+        raise HTTPException(status_code=404, detail="Package not found")
+    paused = 0
+    for t in tasks:
+        if t["status"] in ("downloading", "debrid_downloading", "waiting"):
+            t["status"] = "paused"
+            t["speed"] = 0
+            ev = _events.get(t["id"])
+            if ev:
+                ev.set()
+            paused += 1
+    if paused:
+        _save_tasks()
+        logger.info("Downloads: paused %d task(s) in package %s", paused, package_key)
+    return {"ok": True, "package": package_key, "paused": paused, "total": len(tasks)}
+
+
+@router.post("/packages/{package_key}/resume")
+async def resume_package(package_key: str):
+    tasks = _package_tasks(package_key)
+    if not tasks:
+        raise HTTPException(status_code=404, detail="Package not found")
+    resumed = 0
+    for t in tasks:
+        if t["status"] in ("paused", "error"):
+            t["status"] = "waiting"
+            t["error"] = ""
+            t["speed"] = 0
+            _events.pop(t["id"], None)
+            resumed += 1
+    if resumed:
+        _save_tasks()
+        await _pump()
+        logger.info("Downloads: resumed %d task(s) in package %s", resumed, package_key)
+    return {"ok": True, "package": package_key, "resumed": resumed, "total": len(tasks)}
+
+
+@router.post("/packages/{package_key}/cancel")
+async def cancel_package(package_key: str, delete_file: bool = False):
+    tasks = list(_package_tasks(package_key))
+    if not tasks:
+        raise HTTPException(status_code=404, detail="Package not found")
+    for t in tasks:
+        await cancel_task(t["id"], delete_file)
+    logger.info("Downloads: removed %d task(s) from package %s (delete_file=%s)",
+                len(tasks), package_key, delete_file)
+    return {"ok": True, "package": package_key, "deleted": len(tasks)}
 
 
 @router.post("/tasks/pause-all")
