@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-17T18:19:53+00:00",
+  "generated_at": "2026-11-17T18:29:04+00:00",
   "latest": {
-    "version": "2.3.6",
-    "git_sha": "f7e761f",
-    "git_sha_full": "f7e761f4857d6ef09dbce32cac2add5d562a9433",
-    "build": 29,
-    "released_at": "2026-11-17T18:19:53+00:00",
-    "notes": "Download Manager: multi-part archives (part01.rar, r00, zip.001) group into one JDownloader-style package row with aggregate status and package Resume/Pause/Delete."
+    "version": "2.3.7",
+    "git_sha": "5385233",
+    "git_sha_full": "538523379821af5890572773b21938d3bd3c53ad",
+    "build": 32,
+    "released_at": "2026-11-17T18:29:04+00:00",
+    "notes": "Updates: the root helper survives its own service restart (systemd scope) and refreshes its installed copy; a stuck running job is detected and finalized after a restart instead of blocking every later update."
   },
   "releases": [
+    {
+      "version": "2.3.7",
+      "git_sha": "5385233",
+      "git_sha_full": "538523379821af5890572773b21938d3bd3c53ad",
+      "build": 32,
+      "released_at": "2026-11-17T18:29:04+00:00",
+      "notes": "Updates: the root helper survives its own service restart (systemd scope) and refreshes its installed copy; a stuck running job is detected and finalized after a restart instead of blocking every later update."
+    },
     {
       "version": "2.3.6",
       "git_sha": "f7e761f",
