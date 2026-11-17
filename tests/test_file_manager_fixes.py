@@ -16,9 +16,9 @@ removed at the end.
 Run:  .venv/bin/python tests/test_file_manager_fixes.py   (server must be up)
       ETHOS_TEST_BASE=http://127.0.0.1:9002 to target an isolated instance.
 """
+import io
 import json
 import os
-
 def _require_test_password() -> str:
     """Test credentials are never committed — export ETHOS_TEST_PASSWORD."""
     pw = os.environ.get("ETHOS_TEST_PASSWORD", "")
@@ -31,6 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 
 from fixture_dir import service_writable_tmpdir
 
@@ -196,6 +197,28 @@ def main() -> int:
         check("match at root found", os.path.join(fixture, "needle-root.txt") in paths, str(paths))
         check("node_modules not crawled",
               os.path.join(fixture, "node_modules", "needle.txt") not in paths, str(paths))
+
+        print("Step 7: folder download as ZIP (the folder context-menu action)")
+        zipdir = os.path.join(fixture, "zipdir")
+        os.makedirs(os.path.join(zipdir, "nested"), exist_ok=True)
+        with open(os.path.join(zipdir, "top.txt"), "w") as f:
+            f.write("top")
+        with open(os.path.join(zipdir, "nested", "deep.txt"), "w") as f:
+            f.write("deep")
+        req = urllib.request.Request(
+            f"{BASE}/api/files/zip?path={urllib.parse.quote(json.dumps([zipdir]))}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                content_type = r.headers.get("content-type", "")
+                payload = r.read()
+            names = zipfile.ZipFile(io.BytesIO(payload)).namelist()
+            check("folder zip → application/zip", content_type.startswith("application/zip"), content_type)
+            check("zip keeps folder + nested file",
+                  "zipdir/top.txt" in names and "zipdir/nested/deep.txt" in names, str(names))
+        except (urllib.error.HTTPError, zipfile.BadZipFile) as exc:
+            check("folder zip download", False, str(exc))
     finally:
         shutil.rmtree(fixture, ignore_errors=True)
 

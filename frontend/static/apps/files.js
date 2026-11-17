@@ -1889,13 +1889,28 @@ function _fmReportOpResult(result, title, doneVerb) {
     addNotification(`${title}: ${result.succeeded} ok, ${failed.length} failed — ${reasons}${more}`, 'error');
 }
 
-// Download selected items as ZIP archive — calls GET /api/files/zip with comma-separated paths
-export function fmZipSelected() { const root = _getActiveFmRoot(); if (!root) return; const state = _getFmStateForRoot(root); if (!state || state.selected.size === 0) return addNotification('No items selected for ZIP', 'info');
+// Download selected items as ZIP archive — calls GET /api/files/zip with a JSON path list.
+// `explicitPaths` lets the folder context menu ask for exactly one folder without
+// depending on the current selection.
+export function fmZipSelected(explicitPaths) {
+    const explicit = Array.isArray(explicitPaths) ? explicitPaths.filter(Boolean) : [];
+    const root = _getActiveFmRoot();
+    const state = root ? _getFmStateForRoot(root) : null;
+
+    if (!explicit.length && (!state || state.selected.size === 0)) {
+        return addNotification('No items selected for ZIP', 'info');
+    }
     // Build a proper JSON array of paths — the endpoint parses it with json.loads,
     // so per-element encoding alone breaks on names containing quotes.
     // Resolve through the rendered rows: in the search view the items are not
     // inside state.path (a name-only lookup could target a different file).
-    const paths = _fmResolveSelectedPaths(state, root);
+    const paths = explicit.length ? explicit : _fmResolveSelectedPaths(state, root);
+    if (!paths.length) return addNotification('No items selected for ZIP', 'info');
+    // The archive is built before any response is sent, so large folders show
+    // nothing for a while. Say so instead of leaving the user with a blank tab.
+    addNotification(paths.length === 1
+        ? 'Preparing ZIP — large folders can take a while. The download starts when the archive is ready.'
+        : `Preparing ZIP with ${paths.length} items — the download starts when the archive is ready.`, 'info');
     // Include JWT token in query so direct browser navigation (new tab) passes auth middleware
     const _token = localStorage.getItem('token') || '';
     window.open(`/api/files/zip?path=${encodeURIComponent(JSON.stringify(paths))}&token=${encodeURIComponent(_token)}`, '_blank');  // Open zip in new tab — user can save it
@@ -2180,6 +2195,10 @@ export function fmShowItemContextMenu(e, path, name, isDir) {
 
     if (isDir && name !== '..') {
         items.push({ testid: 'fm-ctx-open-project', label: 'Open as Project\u2026', icon: '<path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>', action: () => { window.__fmProjectCtx = { path }; window.openApp('editor'); } });
+        // Folders have no single-file download endpoint — the NAS builds a ZIP
+        // server-side. Without this entry the only way was: select the tile and
+        // press the toolbar ZIP button, which users rarely discover.
+        items.push({ testid: 'fm-ctx-download-zip', label: 'Download Folder (.zip)', icon: '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/>', action: () => { _closeContextMenu(); fmZipSelected([path]); } });
         sep();
     }
 

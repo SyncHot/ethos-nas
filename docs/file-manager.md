@@ -37,8 +37,7 @@ Scope: `frontend/static/apps/files.js`, `frontend/static/apps/fm-controls.js`,
 | U7 | list view | "Kind" header is not clickable although `kind` sorting is implemented | clickable header |
 | U8 | uploads | after an upload the grid only refreshes via the WS event; if the socket is down the list stays stale | upload-engine fires `ethos:uploads-settled`, `files.js` silently refetches |
 | U12 | uploads | uploading showed **no status at all**: `startUpload()` added rows before `#uploadProgressBody` existed, and the placeholder in `index.html` kept its inline `display:none` | panel is built before the first row, always unhidden; rows keyed by a client `jobId` |
-| U13 | uploads | finished transfers vanished after 3 s; failures showed only `Chunk upload failed (400)` | rows persist until cleared, server `detail` + Retry on failed rows, status-bar chip mirrors progress |
-| U9 | shortcuts | no shortcut for a new folder (only Ctrl+N = new file) | Ctrl+Shift+N = new folder |
+| U13 | uploads | finished transfers vanished after 3 s; failures showed only `Chunk upload failed (400)` | rows persist until cleared, server `detail` + Retry on failed rows, status-bar chip mirrors progress || U15 | folder download | a folder had **no Download action** — right-click only offered Download for files; the only route was selecting the tile and pressing the toolbar ZIP button, which most users never found | folder context menu gained **Download Folder (.zip)** (calls `fmZipSelected([path])`) and both routes now show a "Preparing ZIP" notice while the server builds the archive || U9 | shortcuts | no shortcut for a new folder (only Ctrl+N = new file) | Ctrl+Shift+N = new folder |
 | U10 | search performance | `_walk_search` crawls `.git`, `node_modules`, `__pycache__`, `.cache`, virtualenvs | prune well-known heavy dirs |
 | U11 | bulk trash | multi-item "move to trash" fires N parallel requests and reports `${ok}/${state.selected.size}` after the selection may have changed | capture the count up front |
 
@@ -60,7 +59,11 @@ Scope: `frontend/static/apps/files.js`, `frontend/static/apps/fm-controls.js`,
 - [ ] Uploading a file whose name already exists overwrites it silently — needs a
       conflict prompt / "keep both" policy (`_unique_dest()` already exists for copy/move).
 - [ ] Show directory sizes on demand (`/api/files/stat` returns `item_count`, not bytes).
+- [ ] ZIP downloads build the complete archive in `DATA_DIR/temp` before sending a byte, so a
+      large folder needs free space equal to its size and shows no progress (empty directories
+      are not added). Stream the archive or expose an op with progress.
 - [x] Bulk trash via one background op instead of N requests (U14).
+- [x] Folder download from the context menu + "Preparing ZIP" notice (U15).
 
 ## 2. Implementation checklist
 
