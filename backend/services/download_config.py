@@ -8,6 +8,7 @@ corrupt config is quarantined and a newer schema is never overwritten.
 import json
 import logging
 import os
+import re
 import secrets
 from pathlib import Path
 from typing import Optional
@@ -46,6 +47,7 @@ DEFAULT_CONFIG = {
         "global_bps": 0,
         "per_task_bps": 0,
     },
+    "package_limits": {},           # {package_key: bps} — a shared cap for one multi-part package
     "categories": [],               # [{name, save_path}] — "" = <download_dir>/<name>
     "rss_feeds": [],                # [{id,url,enabled,pattern,exclude,category,destination,interval_minutes}]
     "debrid": {
@@ -89,10 +91,12 @@ def _migrate_config(from_version: int, to_version: int, data: dict) -> dict:
     if from_version < 7:
         data.setdefault("auto_extract", False)
         data.setdefault("auto_extract_delete", False)
+    if from_version < 8:
+        data.setdefault("package_limits", {})
     return data
 
 
-_CONFIG_STORE = json_store.get(CONFIG_FILE, version=7, migrate=_migrate_config)
+_CONFIG_STORE = json_store.get(CONFIG_FILE, version=8, migrate=_migrate_config)
 
 
 def parse_hhmm(value) -> Optional[int]:
@@ -225,6 +229,33 @@ def norm_watch_folders(cfg: dict) -> None:
     cfg["watch_folders"] = (entries or [{"name": "Default", "folder": "", "destination": ""}])[:8]
 
 
+PACKAGE_LIMIT_MAX = 10 * 1000 * 1000 * 1000  # 10 Gbit/s is "effectively unlimited"
+PACKAGE_LIMIT_ENTRIES = 50
+
+
+def norm_package_limits(raw) -> dict:
+    """Normalize `package_limits`: {12-hex package_key: bytes/s}, bounded.
+
+    An entry with a 0/negative/absurd value is dropped instead of storing a
+    no-op — the key only exists while a limit is actually in force.
+    """
+    out: dict = {}
+    for key, value in (raw.items() if isinstance(raw, dict) else []):
+        name = str(key or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{6,32}", name):
+            continue
+        try:
+            bps = int(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if bps <= 0:
+            continue
+        out[name] = min(PACKAGE_LIMIT_MAX, bps)
+        if len(out) >= PACKAGE_LIMIT_ENTRIES:
+            break
+    return out
+
+
 def load_config() -> dict:
     try:
         # json_store gives us quarantine-on-corruption, the migration and the
@@ -272,6 +303,7 @@ def load_config() -> dict:
                 limit[edge] = 0
         merged["categories"] = norm_categories(merged.get("categories"))
         merged["rss_feeds"] = norm_rss_feeds(merged.get("rss_feeds"))
+        merged["package_limits"] = norm_package_limits(merged.get("package_limits"))
         db = default_debrid()
         user_db = data.get("debrid") or {}
         if isinstance(user_db, dict):

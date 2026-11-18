@@ -84,6 +84,26 @@ class RateLimiter:
 
 GLOBAL_LIMITER = RateLimiter()
 
+# Per-package limiters: every part of one package consumes from the same bucket,
+# so a "package speed limit" caps the group instead of each connection.
+_SHARED_LIMITERS: dict[str, RateLimiter] = {}
+_SHARED_LOCK = threading.Lock()
+
+
+def shared_limiter(key: str) -> RateLimiter:
+    """The process-wide limiter for `key` (one bucket per package)."""
+    with _SHARED_LOCK:
+        limiter = _SHARED_LIMITERS.get(key)
+        if limiter is None:
+            limiter = _SHARED_LIMITERS[key] = RateLimiter()
+        return limiter
+
+
+def forget_shared_limiter(key: str) -> None:
+    """Drop a package bucket (limit removed); a running part keeps its old one."""
+    with _SHARED_LOCK:
+        _SHARED_LIMITERS.pop(key, None)
+
 
 def check_disk_space(task: dict, cfg: dict) -> str:
     """Return a human error when the task's target filesystem is too full."""
@@ -105,7 +125,8 @@ def check_disk_space(task: dict, cfg: dict) -> str:
 
 
 def stream_to_file(url: str, state: dict, resume_from: int, stop_event: threading.Event,
-                   on_chunk=None, on_open=None, limit_bps: int = 0, global_bps: int = 0) -> int:
+                   on_chunk=None, on_open=None, limit_bps: int = 0, global_bps: int = 0,
+                   limit_key: str = "") -> int:
     """Stream `url` into `state["dest"]`, resuming from `resume_from` bytes on disk.
 
     `state` is a mutable dict holding at least {"dest": str}; callers may change
@@ -123,7 +144,8 @@ def stream_to_file(url: str, state: dict, resume_from: int, stop_event: threadin
     pos = max(0, int(resume_from or 0))
     retries = 0
     last_disk_check = 0.0
-    own_limiter = RateLimiter()
+    # A package limit is shared by every part; a per-task limit spaces only this file.
+    own_limiter = shared_limiter(limit_key) if limit_key else RateLimiter()
     while True:
         if stop_event.is_set():
             return pos

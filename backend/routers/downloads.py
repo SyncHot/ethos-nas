@@ -62,6 +62,7 @@ from backend.services.download_transfer import finalize_part as _finalize_part
 from backend.services.download_transfer import part_path as _part_path
 from backend.services.download_transfer import resume_source as _resume_source
 from backend.services.download_transfer import stream_to_file as _stream_to_file
+from backend.services.download_transfer import forget_shared_limiter as _forget_shared_limiter
 
 logger = logging.getLogger("ethos-nas.routers.downloads")
 
@@ -122,6 +123,14 @@ class AddMirrorsRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     urls: list[str] = Field(min_length=1, max_length=10)
+
+
+class PackageLimitRequest(BaseModel):
+    """Body of `POST /api/downloads/packages/{key}/limit` (0 clears the limit)."""
+
+    model_config = {"extra": "forbid"}
+
+    bps: int = Field(ge=0, le=10_000_000_000, description="Shared bytes/s for the whole package")
 
 
 class SelectFilesRequest(BaseModel):
@@ -608,11 +617,14 @@ def _debrid_worker(task: dict, stop_event: threading.Event) -> None:
                 last_t = now
 
         holder = {"dest": dest}
-        limits = _load_config().get("speed_limit") or {}
+        cfg_now = _load_config()
+        limits = cfg_now.get("speed_limit") or {}
+        pkg_key, pkg_limit = _package_limit(task, cfg_now)
         final_pos = _stream_to_file(
             url, holder, resume, stop_event, _on_chunk, _on_open,
-            limit_bps=int(limits.get("per_task_bps") or 0),
+            limit_bps=pkg_limit or int(limits.get("per_task_bps") or 0),
             global_bps=int(limits.get("global_bps") or 0),
+            limit_key=f"pkg:{pkg_key}" if pkg_limit else "",
         )
         # Only mark complete when the transfer actually finished — a pause
         # mid-file must leave it resumable instead of corrupting on re-scan.
@@ -696,6 +708,20 @@ def _package_tasks(package_key: str) -> list[dict]:
     if not key:
         return []
     return [t for t in _tasks if (_package_info(t) or {}).get("package_key") == key]
+
+
+def _package_limit(task: dict, cfg: dict) -> tuple[str, int]:
+    """(package_key, bytes/s) for a package-wide cap; ("", 0) when none is set."""
+    info = _package_info(task)
+    if not info:
+        return "", 0
+    limits = cfg.get("package_limits") or {}
+    try:
+        bps = int(limits.get(info["package_key"]) or 0)
+    except (TypeError, ValueError):
+        bps = 0
+    key = info["package_key"]
+    return (key, bps) if bps > 0 else ("", 0)
 
 
 # ── Post-download archive extraction ────────────────────────────────────────
@@ -1117,9 +1143,11 @@ def _download_worker(task: dict, stop_event: threading.Event) -> None:
 
     os.makedirs(os.path.dirname(state["dest"]), exist_ok=True)
     limits = cfg.get("speed_limit") or {}
+    pkg_key, pkg_limit = _package_limit(task, cfg)
     _stream_to_file(url, state, resume, stop_event, _on_chunk, _on_open,
-                    limit_bps=int(limits.get("per_task_bps") or 0),
-                    global_bps=int(limits.get("global_bps") or 0))
+                    limit_bps=pkg_limit or int(limits.get("per_task_bps") or 0),
+                    global_bps=int(limits.get("global_bps") or 0),
+                    limit_key=f"pkg:{pkg_key}" if pkg_limit else "")
     task["speed"] = 0
     _save_tasks()
 
@@ -2198,6 +2226,31 @@ async def cancel_package(package_key: str, delete_file: bool = False):
 async def extract_package(package_key: str):
     """Extract a completed package into a folder next to the first archive."""
     return _manual_extract(_package_tasks(package_key))
+
+
+@router.post("/packages/{package_key}/limit")
+async def set_package_limit(package_key: str, payload: PackageLimitRequest):
+    """Cap the bandwidth of one multi-part package (0 removes the cap).
+
+    The limit is shared by every part of the package through one token bucket in
+    `services/download_transfer.py`, so two parts downloading at once split the
+    budget instead of each using it.
+    """
+    key = str(package_key or "").strip().lower()
+    tasks = _package_tasks(key)
+    if not tasks:
+        raise HTTPException(status_code=404, detail="Package not found")
+    cfg = _load_config()
+    limits = dict(cfg.get("package_limits") or {})
+    if payload.bps > 0:
+        limits[key] = int(payload.bps)
+    else:
+        limits.pop(key, None)
+        _forget_shared_limiter(f"pkg:{key}")
+    cfg["package_limits"] = limits
+    _save_config(cfg)
+    logger.info("Downloads: package %s limit set to %d B/s", key, payload.bps)
+    return {"ok": True, "package": key, "bps": int(payload.bps), "tasks": len(tasks)}
 
 
 @router.post("/tasks/pause-all")

@@ -40,7 +40,7 @@ no port). The engine, stores and `/api/downloads/*` stay in EthOS core, so the A
 
 ## Data model
 
-`downloads_config.json` (json_store v7, migrators fold legacy `watch_folder`, categories, RSS and schedule shapes):
+`downloads_config.json` (json_store v8, migrators fold legacy `watch_folder`, categories, RSS and schedule shapes):
 
 ```
 { download_dir, max_concurrent (1..16), auto_download_debrid,
@@ -50,6 +50,7 @@ no port). The engine, stores and `/api/downloads/*` stay in EthOS core, so the A
   watch_enabled, watch_folders: [{name, folder, destination}],   # max 8
   schedule: {enabled, start: "HH:MM", end: "HH:MM"},             # daily start window
   speed_limit: {global_bps, per_task_bps},                       # 0 = unlimited
+  package_limits: {"<package_key>": bps},                        # shared cap per multi-part package
   categories: [{name, save_path}],                               # "" = <download_dir>/<name>
   rss_feeds: [{id, url, enabled, pattern, exclude, category, destination, interval_minutes}],
   debrid: { provider: ""|realdebrid|alldebrid|torbox,
@@ -99,6 +100,7 @@ non-admins are limited to `/home`, `/mnt`, `/media`.
 | POST | `/tasks/{id}/pause` | user | active → paused |
 | POST | `/tasks/{id}/resume` | user | paused/error → waiting |
 | POST | `/tasks/{id}/reset` | user | purge partial payload and restart (also returns to the primary source) |
+| POST | `/packages/{key}/limit` | user | `{bps}` (0 = remove); shared bandwidth cap for every part |
 | POST | `/tasks/{id}/skip` | user | exclude the record from the queue/package without deleting it (409 for completed) |
 | POST | `/tasks/{id}/unskip` | user | back to `waiting` |
 | POST | `/tasks/{id}/mirrors` | user | `{urls:[http(s)…]}` (max 10); 400 for magnet tasks or when no URL is usable |
@@ -144,7 +146,8 @@ Transient failures are retried automatically: the row shows `retry 2/3 in 4m`, t
 Adding the same URL to the same folder returns the existing task with `duplicate: true`; the
 `duplicate_policy` config decides what happens when the target file already exists.
 A task can carry alternative sources: the Add form takes one mirror URL per line, and the row shows
-`mirror 2/3` while a fallback source is in use. A broken volume of a package can be **Skipped**
+`mirror 2/3` while a fallback source is in use. A package row also has a **Limit** selector
+(off / 1–50 MB/s) that caps the whole package instead of the single file. A broken volume of a package can be **Skipped**
 (and **Unskipped**) from its expanded part row: the record stays visible, keeps its package slot but
 never starts again.
 Completed archives get an **Extract** action (single row or whole package) and show
@@ -179,6 +182,11 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
   Permanent messages (dead hoster link, bad token, no provider, disk full) go straight to `error`.
   The pump skips waiting tasks whose retry is in the future; a single `call_later` wakes it. Manual
   Resume/Reset/Retry all clear the counters.
+- **Package speed limit**: `package_limits[key]` overrides `speed_limit.per_task_bps` for the parts of
+  one package and is enforced by a **shared** token bucket (`download_transfer.shared_limiter("pkg:<key>")`),
+  so two parts downloading at once split the budget instead of each consuming it. The global limit still
+  applies on top; removing the limit drops the bucket (`forget_shared_limiter`). At most 50 entries,
+  keys are the derived 12-hex package keys.
 - **Skipped parts**: `skipped` is a terminal status outside the queue — the pump never starts it, the
   retry timer ignores it, the qB shim reports `pausedDL` (NzbDrone must not import it) and
   `_auto_extract_task` refuses to unpack a package with a skipped volume (the archive would be
@@ -233,6 +241,7 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
       manual Extract for a task or package, extract state on the row
 - [x] Mirror / hoster failover: `mirrors[]`, per-source retry budget, cross-host resume reset, row indicator
 - [x] Per-part skip / unskip: excluded records stay in the package without blocking (except extraction)
+- [x] Per-package speed limit: shared token bucket per package key, selector on the package row
 - [x] RSS feeds + include/exclude regex rules (background loop, persisted seen ids, manual run)
 - [x] Part-file downloads: transfers write `<dest>.part` and rename atomically on success
       (legacy partials are adopted once); cancel/reset remove the part file

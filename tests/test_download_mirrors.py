@@ -145,7 +145,7 @@ def main() -> int:
         original_stream = downloads._stream_to_file
 
         def fake_stream(url, state, resume, stop_event, on_chunk, on_open,
-                        limit_bps=0, global_bps=0):
+                        limit_bps=0, global_bps=0, limit_key=""):
             seen.append(url)
             if "a.example" in url:
                 raise RuntimeError("HTTP 404 not found")
