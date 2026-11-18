@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-17T20:22:06+00:00",
+  "generated_at": "2026-11-18T07:57:16+00:00",
   "latest": {
-    "version": "2.3.11",
-    "git_sha": "1b8cf19",
-    "git_sha_full": "1b8cf197130b4c8e1dd1ff036aa12c7ba6deb85e",
-    "build": 40,
-    "released_at": "2026-11-17T20:22:06+00:00",
-    "notes": "Downloads: per-part Skip/Unskip so a broken volume no longer blocks a package, skipped parts are excluded from extraction and reported as pausedDL to Radarr/Sonarr"
+    "version": "2.3.12",
+    "git_sha": "5fd0554",
+    "git_sha_full": "5fd0554af1defe8845088800c9d36752a6a19029",
+    "build": 42,
+    "released_at": "2026-11-18T07:57:16+00:00",
+    "notes": "Downloads: per-package speed limit — a shared bandwidth cap for every part of one multi-part package, picked on the package row"
   },
   "releases": [
+    {
+      "version": "2.3.12",
+      "git_sha": "5fd0554",
+      "git_sha_full": "5fd0554af1defe8845088800c9d36752a6a19029",
+      "build": 42,
+      "released_at": "2026-11-18T07:57:16+00:00",
+      "notes": "Downloads: per-package speed limit — a shared bandwidth cap for every part of one multi-part package, picked on the package row"
+    },
     {
       "version": "2.3.11",
       "git_sha": "1b8cf19",
