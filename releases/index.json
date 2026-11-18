@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-18T07:57:16+00:00",
+  "generated_at": "2026-11-18T10:17:53+00:00",
   "latest": {
-    "version": "2.3.12",
-    "git_sha": "5fd0554",
-    "git_sha_full": "5fd0554af1defe8845088800c9d36752a6a19029",
-    "build": 42,
-    "released_at": "2026-11-18T07:57:16+00:00",
-    "notes": "Downloads: per-package speed limit — a shared bandwidth cap for every part of one multi-part package, picked on the package row"
+    "version": "2.3.13",
+    "git_sha": "89784eb",
+    "git_sha_full": "89784ebed7b299ef64fbab27a3b0cc05acdbe517",
+    "build": 46,
+    "released_at": "2026-11-18T10:17:53+00:00",
+    "notes": "Packages: Update all — every pending update runs sequentially, each with its own rollback"
   },
   "releases": [
+    {
+      "version": "2.3.13",
+      "git_sha": "89784eb",
+      "git_sha_full": "89784ebed7b299ef64fbab27a3b0cc05acdbe517",
+      "build": 46,
+      "released_at": "2026-11-18T10:17:53+00:00",
+      "notes": "Packages: Update all — every pending update runs sequentially, each with its own rollback"
+    },
     {
       "version": "2.3.12",
       "git_sha": "5fd0554",
