@@ -28,8 +28,12 @@ const _pkg = {
     job: null,
     jobHideTimer: null,
     task: null,          // shared progress row (core/progress.js)
+    updateAll: null,     // { total, done, name } while "Update all" runs
     loading: false,
 };
+
+// jobId → { promise, resolve }: lets callers (`Update all`) await a job result.
+const _jobWaiters = new Map();
 
 const TABS = [
     { id: 'available', label: 'Available', title: 'Available Packages', subtitle: 'Signed catalog from every enabled source.' },
@@ -195,7 +199,11 @@ export async function renderPackagesPage(body) {
                    placeholder="Search packages…" aria-label="Search packages" value="${escapeAttr(_pkg.search)}">
             <span id="pkgTabCount" class="ui-tag" data-testid="pkg-tab-count" hidden></span>
         </div>
-        <button class="ui-btn small" id="pkgRefreshBtn" data-testid="pkg-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>`;
+        <div class="ui-row">
+            <button class="ui-btn small primary" id="pkgUpdateAllBtn" data-testid="pkg-update-all"
+                    title="Update every package with a newer version" hidden>⬆ Update all</button>
+            <button class="ui-btn small" id="pkgRefreshBtn" data-testid="pkg-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>
+        </div>`;
 
     const filterBar = document.createElement('div');
     filterBar.id = 'pkgFilterBar';
@@ -217,6 +225,7 @@ export async function renderPackagesPage(body) {
         _renderContent();
     });
     toolbar.querySelector('#pkgRefreshBtn')?.addEventListener('click', () => _loadAll(true));
+    toolbar.querySelector('#pkgUpdateAllBtn')?.addEventListener('click', () => _updateAll());
 
     shell.onSection((id) => {
         _pkg.tab = id;
@@ -274,6 +283,7 @@ async function _loadAll(force = false) {
             count.hidden = !_pkg.updates.length;
         }
         _renderFilterBar();
+        _syncUpdateAllButton();
         _renderContent();
     } catch (err) {
         logError('Packages: catalog load failed', err?.detail || err?.message);
@@ -304,6 +314,25 @@ function _renderFilterBar() {
         _renderFilterBar();
         _renderContent();
     }));
+}
+
+// The "Update all" entry point sits in the toolbar so it is reachable from
+// every tab; it disappears when nothing is pending (or for non-admins).
+function _syncUpdateAllButton() {
+    const btn = shell?.root.querySelector('#pkgUpdateAllBtn');
+    if (!btn) return;
+    const total = _pkg.updates.length;
+    const queue = _pkg.updateAll;
+    btn.hidden = !_pkg.isAdmin || (!total && !queue);
+    btn.disabled = !!_pkg.job || !!queue;
+    if (queue) {
+        const index = Math.min(queue.done + 1, queue.total);
+        btn.textContent = `Updating ${index}/${queue.total}…`;
+        btn.title = queue.name ? `Updating ${queue.name}` : 'Updating packages';
+    } else {
+        btn.textContent = `⬆ Update all${total ? ` (${total})` : ''}`;
+        btn.title = 'Update every package with a newer version';
+    }
 }
 
 function _matches(pkg) {
@@ -537,11 +566,55 @@ async function _install(pkgId) {
 
 async function _update(pkgId) {
     const pkg = _pkg.catalog.find((p) => p.id === pkgId) || _pkg.installed.find((p) => p.id === pkgId);
-    if (!pkg) return;
+    if (!pkg) return null;
     try {
-        await _startJob('update', pkg);
+        return await _startJob('update', pkg);
     } catch (err) {
         addNotification(err.detail || err.message, 'error');
+        return null;
+    }
+}
+
+/**
+ * Update every package with a newer version, one job at a time so a failing
+ * update cannot take the others down (the backend rolls each one back).
+ */
+async function _updateAll() {
+    if (!_pkg.isAdmin || _pkg.job || _pkg.updateAll) return;
+    const pending = _pkg.updates.map((p) => ({ id: p.id, name: p.name || p.id }));
+    if (!pending.length) return;
+    const names = pending.map((p) => p.name).join(', ');
+    const okay = await showConfirm(
+        'Update all packages',
+        `${pending.length === 1 ? 'One package' : `${pending.length} packages`} will be updated one at a time`
+        + ` (${names}). If an update fails, its previous version is restored and the remaining packages still update.`,
+        { confirmLabel: pending.length === 1 ? 'Update' : `Update ${pending.length}` },
+    );
+    if (!okay) return;
+
+    _pkg.updateAll = { total: pending.length, done: 0, name: '' };
+    _syncUpdateAllButton();
+    let failed = 0;
+    try {
+        for (let i = 0; i < pending.length; i += 1) {
+            const pkg = pending[i];
+            _pkg.updateAll.done = i;
+            _pkg.updateAll.name = pkg.name;
+            _syncUpdateAllButton();
+            const finished = await _update(pkg.id);
+            if (!finished || finished.status !== 'success') failed += 1;
+        }
+    } finally {
+        const total = pending.length;
+        _pkg.updateAll = null;
+        addNotification(
+            failed
+                ? `Updated ${total - failed} of ${total} packages — ${failed} failed`
+                : `All ${total} package${total === 1 ? '' : 's'} updated`,
+            failed ? 'error' : 'success',
+        );
+        await _loadAll();
+        _syncUpdateAllButton();
     }
 }
 
@@ -560,7 +633,7 @@ async function _startJob(kind, pkg) {
     const jobId = response.job_id;
     if (!jobId) throw new Error('Server did not return a job id');
     addNotification(`${kind === 'install' ? 'Installing' : 'Updating'} ${pkg.name}…`, 'info');
-    _watchJob({ id: jobId, kind, package_id: pkg.id, status: 'queued' }, pkg.name);
+    return _watchJob({ id: jobId, kind, package_id: pkg.id, status: 'queued' }, pkg.name);
 }
 
 function _renderJobPanel(job, name) {
@@ -605,6 +678,17 @@ function _renderJobPanel(job, name) {
     });
 }
 
+// One promise per job id, so a re-render or `_resumeJob` re-attaching to the
+// same job still lets a caller ("Update all") await its outcome.
+function _jobDonePromise(jobId) {
+    const existing = _jobWaiters.get(jobId);
+    if (existing) return existing.promise;
+    let resolve;
+    const promise = new Promise((res) => { resolve = res; });
+    _jobWaiters.set(jobId, { promise, resolve });
+    return promise;
+}
+
 function _watchJob(job, name) {
     if (_pkg.jobTimer) {
         clearTimeout(_pkg.jobTimer);
@@ -616,10 +700,12 @@ function _watchJob(job, name) {
     }
     const jobId = job.id;
     const label = name || job.package_id || jobId;
+    const done = _jobDonePromise(jobId);
     if (_pkg.task) { _pkg.task.dismiss(); _pkg.task = null; }
     _pkg.job = { id: jobId, kind: job.kind || 'install', packageId: job.package_id || '', name: label };
     _renderJobPanel(job, label);
     _renderContent();  // disable conflicting buttons while the job runs
+    _syncUpdateAllButton();
 
     const tick = async () => {
         let finished = null;
@@ -651,6 +737,12 @@ function _watchJob(job, name) {
                 finished.status === 'success' ? 'success' : finished.status === 'cancelled' ? 'info' : 'error');
             if (typeof window.refreshPackageIcons === 'function') window.refreshPackageIcons();
             await _loadAll();
+            _syncUpdateAllButton();
+            const waiter = _jobWaiters.get(jobId);
+            if (waiter) {
+                _jobWaiters.delete(jobId);
+                waiter.resolve(finished);
+            }
             _pkg.jobHideTimer = setTimeout(() => {
                 const banner = document.getElementById('pkgJobBanner');
                 if (banner) banner.hidden = true;
@@ -663,6 +755,7 @@ function _watchJob(job, name) {
         _pkg.jobTimer = setTimeout(tick, 600);
     };
     _pkg.jobTimer = setTimeout(tick, 300);
+    return done;
 }
 
 /** Re-attach to a running job after the window was reopened or re-rendered. */

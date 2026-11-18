@@ -411,6 +411,9 @@ can render a determinate bar. Each step owns a slice of the bar (`verify` 0–17
 run via `asyncio.to_thread`, so `POST /install` returns the job id immediately and progress polls stay
 responsive. The Packages UI shows a live bar with the step label and last log line, disables
 conflicting actions while a job runs, and re-attaches to a queued/running job when the window reopens.
+**Update all** (toolbar, admin-only, visible only while updates are pending) walks the pending list
+sequentially through `POST /api/packages/{id}/update`, so a failing update cannot block the rest —
+each package keeps its own rollback and the button reports `n/m` progress.
 
 ## Legacy compatibility
 
@@ -433,6 +436,7 @@ conflicting actions while a job runs, and re-attaches to a queued/running job wh
 - [x] Jobs (install/update/uninstall) with rollback
 - [x] Catalog/detail/sources/updates UI
 - [x] Install/uninstall progress bar with step, percentage and log line
+- [x] "Update all" — sequential updates with per-package rollback
 - [x] Native UI modules + authenticated loopback proxy
 - [x] Optional volume/image removal on uninstall
 - [x] Unit, CLI, signed-repo and API tests

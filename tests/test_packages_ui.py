@@ -85,6 +85,20 @@ def make_repo(port: int) -> Path:
     return repo
 
 
+def bump_repo(version: str) -> None:
+    """Publish a newer version so the catalog reports an update."""
+    repo = TMP / "repo"
+    manifest_path = repo / "demo-pkg" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["version"] = version
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    index_path = repo / "index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["packages"][0]["version"] = version
+    index["packages"][0]["manifest_sha256"] = sha(manifest_path)
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+
+
 def main() -> int:
     app_port, repo_port = free_port(), free_port()
     repo = make_repo(repo_port)
@@ -157,10 +171,36 @@ def main() -> int:
             )
             check("install progress reaches 100%", True)
 
+            # Update all: publish 1.1.0, refresh, then update through the toolbar.
+            bump_repo("1.1.0")
+            page.locator('[data-testid="pkg-refresh-btn"]').click()
+            update_all = page.locator('[data-testid="pkg-update-all"]')
+            update_all.wait_for(state="visible", timeout=20000)
+            check("update all offered with a count", "(1)" in update_all.inner_text(),
+                  update_all.inner_text())
+            update_all.click()
+            page.locator('[data-testid="ethos-modal-ok"]').click()
+            page.wait_for_function(
+                "document.querySelector('[data-testid=\"pkg-job-title\"]')?.textContent?.includes('Updating')",
+                timeout=20000,
+            )
+            check("update all starts an update job", True)
+            page.wait_for_function(
+                "document.querySelector('[data-testid=\"pkg-job-percent\"]')?.textContent === '100%'",
+                timeout=30000,
+            )
+            check("update all progress reaches 100%", True)
+            page.wait_for_function(
+                "document.querySelector('[data-testid=\"pkg-update-all\"]')?.hidden === true",
+                timeout=20000,
+            )
+            check("update all hides when nothing is pending", True)
+
             page.locator('[data-testid="pkg-tab-installed"]').click()
             row = page.locator('[data-testid="pkg-row-demo-pkg"]')
             row.wait_for(timeout=20000)
             check("installed row uses icon_url", row.locator("img").count() == 1)
+            check("update all installed the new version", "1.1.0" in row.inner_text(), row.inner_text())
 
             page.locator('#topbar-app-drawer-btn').click()
             drawer_item = page.locator('[data-testid="drawer-item-pkg-demo-pkg"]')
