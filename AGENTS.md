@@ -113,6 +113,7 @@ the index, never commit the key, never let the API pass the helper a URL/ref/com
 | New feature plan doc | `feature-doc` |
 | Repro / debug without touching prod | `isolated-dev-instance` |
 | Android APK release | `release-android-apk` |
+| Cut/publish a core release now (bump + signed index) | `release` |
 | Core version release / updater change | `release-core-update` |
 | Backend security audit | `security-invariant-review` |
 
