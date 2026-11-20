@@ -91,3 +91,6 @@ On a server: Settings → System → **Check for updates** → "Update available
 - `releases/index.json` + `.sig` are committed as `release: vX.Y.Z` and pushed,
 - `APP_VERSION` matches the published version,
 - the report lists the version, sha, build number and the exact notes line.
+
+A release is not finished before the tag and the changelog exist: finish with skill
+`release-tag-changelog` (annotated `vX.Y.Z` on the indexed sha + `CHANGELOG.md` section).

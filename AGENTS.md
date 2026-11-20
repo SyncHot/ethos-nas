@@ -114,6 +114,7 @@ the index, never commit the key, never let the API pass the helper a URL/ref/com
 | Repro / debug without touching prod | `isolated-dev-instance` |
 | Android APK release | `release-android-apk` |
 | Cut/publish a core release now (bump + signed index) | `release` |
+| Every push → version bump, CHANGELOG, tag `vX.Y.Z` | `release-tag-changelog` |
 | Core version release / updater change | `release-core-update` |
 | Backend security audit | `security-invariant-review` |
 
@@ -121,6 +122,9 @@ the index, never commit the key, never let the API pass the helper a URL/ref/com
 
 - **Server restarts:** never restart the service yourself — ask the user (UI or terminal).
 - **Git:** after each finished task, commit and push: `feat(<scope>): …` / `fix(<scope>): …`.
+  Every push of runtime changes then goes through `release-tag-changelog`: bump
+  `APP_VERSION`, add the `CHANGELOG.md` section, publish the signed index, tag `vX.Y.Z`.
+  Docs-only pushes keep the version.
 - **Backlog:** `TODO.md` is the only backlog. Read only the section you need; full text of completed
   items is in the private archive repo (`git log private-archive/master`), not in this checkout.
 - **Features:** create `docs/<feature>.md` with plan + file map + status checkboxes, update as work lands.
