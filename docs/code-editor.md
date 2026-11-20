@@ -462,8 +462,11 @@ the repo (realpath prefix check) and passed after `--`. Git failures return
 
 ### Security notes
 
-- Git runs with the server user's credentials — same trust model as the rest of the app
-  (OS-level access control, no allowlist by design). No shell anywhere.
+- Path access goes through the core `/api/files` and `/api/editor` endpoints, i.e. through
+  `path_scope.scope_request`/`sanitize()`. Admins keep unrestricted access (the file picker starts at
+  `/`); every other account is limited to its own home plus `/mnt` and `/media`, and the EthOS state
+  directory is never user-facing. The package has no backend of its own, so it cannot bypass this.
+- Git runs with the server user's credentials — same trust model as the rest of the app. No shell anywhere.
 - `repo` param must be an existing directory; every path argument is realpath-checked
   against the repo root and passed after `--` to block option injection (`-foo`).
 

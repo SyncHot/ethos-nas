@@ -122,20 +122,20 @@ def main() -> int:
             check("isolated instance ready", False)
             return 1
 
-        alice = _token("alice", "user")
+        alice = _token(getpass.getuser(), "user")
         bob = _token("bob", "user")
         admin = _token("trashadmin", "admin")
 
         # ── Move + list isolation ─────────────────────────────────────────
         st, body = _call(base, "POST", "/api/files/trash", alice, {"path": str(alice_file)})
         check("alice can trash her file", st == 200, f"{st} {body}")
-        check("trashed into alice's namespace", body.get("owner") == "alice", str(body))
+        check("trashed into alice's namespace", body.get("owner") == getpass.getuser(), str(body))
         check("source file moved away", not alice_file.exists())
 
         st, body = _call(base, "GET", "/api/files/trash", alice)
         check("alice lists her item", st == 200 and body.get("total") == 1, str(body))
         check("item reports its owner",
-              (body.get("items") or [{}])[0].get("owner") == "alice", str(body))
+              (body.get("items") or [{}])[0].get("owner") == getpass.getuser(), str(body))
 
         st, body = _call(base, "GET", "/api/files/trash", bob)
         check("bob does not see alice's trash", st == 200 and body.get("total") == 0, str(body))
@@ -145,20 +145,22 @@ def main() -> int:
 
         st, body = _call(base, "GET", "/api/files/trash?all=1", admin)
         check("admin all-users view sees the item",
-              st == 200 and body.get("total") == 1 and body["items"][0]["owner"] == "alice",
+              st == 200 and body.get("total") == 1
+              and body["items"][0]["owner"] == getpass.getuser(),
               str(body))
 
         # ── Restore isolation ─────────────────────────────────────────────
         st, _ = _call(base, "POST", "/api/files/trash/restore", bob, {"name": name})
         check("bob cannot restore alice's item", st == 404, f"got {st}")
 
-        st, _ = _call(base, "POST", f"/api/files/trash/restore?owner=alice", bob, {"name": name})
+        st, _ = _call(base, "POST", f"/api/files/trash/restore?owner={getpass.getuser()}", bob,
+                      {"name": name})
         check("bob cannot impersonate alice via owner= param", st == 403, f"got {st}")
 
         st, body = _call(base, "POST", "/api/files/trash/restore", alice, {"name": name})
         check("alice restores her item", st == 200, f"{st} {body}")
         check("file back at its original path", alice_file.exists())
-        check("restore reports the owner", body.get("owner") == "alice", str(body))
+        check("restore reports the owner", body.get("owner") == getpass.getuser(), str(body))
 
         # ── Destructive isolation ─────────────────────────────────────────
         st, _ = _call(base, "POST", "/api/files/trash", alice, {"path": str(alice_file)})
@@ -173,11 +175,11 @@ def main() -> int:
         st, body = _call(base, "GET", "/api/files/trash", alice)
         check("alice's item survived bob's empty", body.get("total") == 1, str(body))
 
-        st, body = _call(base, "DELETE", f"/api/files/trash/item/{name}?owner=alice", bob)
+        st, body = _call(base, "DELETE", f"/api/files/trash/item/{name}?owner={getpass.getuser()}", bob)
         check("bob cannot pass owner= to delete", st == 403, f"got {st}")
 
         # ── Restore must respect the caller's path scope ──────────────────
-        ns = data_dir / "trash" / "alice"
+        ns = data_dir / "trash" / getpass.getuser()
         marker = ns / ".namespace"
         check("alice namespace exists on disk", marker.is_file(), str(list(ns.glob("*"))))
         outside = ns / "outside.txt"
@@ -185,7 +187,7 @@ def main() -> int:
         (ns / "outside.txt.meta.json").write_text(json.dumps({
             "original_path": "/tmp/ethos-trash-outside.txt",
             "trashed_name": "outside.txt",
-            "owner": "alice",
+            "owner": getpass.getuser(),
         }), encoding="utf-8")
         st, body = _call(base, "POST", "/api/files/trash/restore", alice, {"name": "outside.txt"})
         check("restore outside the user's scope is refused", st == 403, f"{st} {body}")

@@ -24,54 +24,75 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from backend.services import path_scope
+
 logger = logging.getLogger("ethos-nas.services.qb_compat")
 
 router = APIRouter()
 
 # ── Session store ──────────────────────────────────────────────────────────────
-_qb_sessions: dict = {}  # sid -> expiry timestamp
+_qb_sessions: dict = {}  # sid -> {"exp": float, "username": str, "role": str}
 
 
-def _qb_check_auth(request: Request) -> bool:
-    """Validate the SID (cookie, ?sid= query param, or ?token=ethos_…) on a qBittorrent request."""
+def _session_identity(sid: str) -> tuple[str, str] | None:
+    """(username, role) for a live SID; drops expired entries."""
+    entry = _qb_sessions.get(sid)
+    if not entry:
+        return None
+    if float(entry.get("exp") or 0) <= time.time():
+        _qb_sessions.pop(sid, None)
+        return None
+    return str(entry.get("username") or ""), str(entry.get("role") or "user")
+
+
+def _qb_identity(request: Request) -> tuple[str, str] | None:
+    """Resolve the caller from the SID or a `?token=ethos_…` API key.
+
+    The identity is what ``_require_auth`` publishes for path_scope, so a
+    non-admin API key can no longer use the qBittorrent API as an admin.
+    """
     _prune_sessions()
-    # 1. SID cookie
-    sid = request.cookies.get("SID", "")
-    if sid and sid in _qb_sessions:
-        if _qb_sessions[sid] > time.time():
-            return True
-        del _qb_sessions[sid]
-    # 2. SID as query param (some qBittorrent clients send ?sid=…)
-    sid_q = request.query_params.get("sid", "")
-    if sid_q and sid_q in _qb_sessions:
-        if _qb_sessions[sid_q] > time.time():
-            return True
-        del _qb_sessions[sid_q]
-    # 3. Fallback: ethos API key via query param
+    sid = request.cookies.get("SID", "") or request.query_params.get("sid", "")
+    if sid:
+        identity = _session_identity(sid)
+        if identity:
+            return identity
     tok = request.query_params.get("token", "")
     if tok:
         try:
             from backend.routers.auth_pam import find_user_by_api_key
-            if find_user_by_api_key(tok):
-                return True
+            user = find_user_by_api_key(tok)
+            if user:
+                return str(user.get("username") or ""), str(user.get("role") or "user")
         except Exception:
             logger.warning("qBittorrent auth: api-key lookup failed", exc_info=True)
-    return False
+    return None
+
+
+def _qb_check_auth(request: Request) -> bool:
+    """Validate the SID (cookie, ?sid= query param, or ?token=ethos_…) on a qBittorrent request."""
+    return _qb_identity(request) is not None
 
 
 def _require_auth(request: Request) -> None:
-    if not _qb_check_auth(request):
+    identity = _qb_identity(request)
+    if identity is None:
         raise HTTPException(status_code=403, detail="Authentication required")
+    # Publish the caller for path_scope.sanitize() in the handler below.
+    path_scope.CURRENT_USER.set(identity[0])
+    path_scope.CURRENT_ROLE.set(identity[1])
 
 
 def _prune_sessions() -> None:
     """Drop expired SID sessions and cap the store so it cannot grow forever."""
     now = time.time()
-    for sid, exp in list(_qb_sessions.items()):
-        if exp <= now:
+    for sid, entry in list(_qb_sessions.items()):
+        if float((entry or {}).get("exp") or 0) <= now:
             _qb_sessions.pop(sid, None)
     if len(_qb_sessions) > 100:
-        for sid, _exp in sorted(_qb_sessions.items(), key=lambda kv: kv[1])[:len(_qb_sessions) - 100]:
+        oldest = sorted(_qb_sessions.items(),
+                        key=lambda kv: float((kv[1] or {}).get("exp") or 0))
+        for sid, _entry in oldest[:len(_qb_sessions) - 100]:
             _qb_sessions.pop(sid, None)
 
 
@@ -260,17 +281,32 @@ async def qb_auth_login(request: Request):
     password = (form.get("password", [""])[0]).strip()
 
     from backend.routers.downloads import _qb_get_api_key
+    from backend.routers.auth_pam import find_user_by_api_key
     expected_key = _qb_get_api_key()
 
-    if not password or not secrets.compare_digest(password, expected_key):
+    # The global qBittorrent key acts as the admin identity; a personal API key
+    # authenticates as that account and keeps its own path scope.
+    identity: tuple[str, str] | None = None
+    if password and expected_key and secrets.compare_digest(password, expected_key):
+        identity = ("qb-admin", "admin")
+    elif password:
+        user = find_user_by_api_key(password)
+        if user:
+            identity = (str(user.get("username") or ""), str(user.get("role") or "user"))
+
+    if identity is None:
         return JSONResponse(
             status_code=403,
             content={"error": "Fails to authenticate.", "message": "Invalid username or password"},
         )
 
     sid = secrets.token_hex(32)
-    _qb_sessions[sid] = time.time() + 86400 * 7  # 7-day session
-    logger.info("qBittorrent session issued (sid=%s…)", sid[:8])
+    _qb_sessions[sid] = {
+        "exp": time.time() + 86400 * 7,  # 7-day session
+        "username": identity[0],
+        "role": identity[1],
+    }
+    logger.info("qBittorrent session issued for %s (sid=%s…)", identity[0] or "?", sid[:8])
 
     # qBittorrent v2 returns an empty body and sets the SID via Set-Cookie.
     # NzbDrone uses a .NET CookieContainer which should handle this automatically.
@@ -723,24 +759,17 @@ async def qb_torrents_create_category(request: Request):
     _require_auth(request)
 
     from fastapi.responses import PlainTextResponse
-    from backend.routers.downloads import _load_config, _upsert_category
+    from backend.routers.downloads import _upsert_category
     form = await request.form()
     category = str(form.get("category", "")).strip()
     save_path = str(form.get("savePath", "") or "").strip()
     if not category:
         return PlainTextResponse(content="Category name cannot be empty")
     if save_path and (os.path.isabs(save_path) or save_path.startswith("~")):
-        # This endpoint is API-key authenticated, not user-authenticated: an
-        # absolute savePath must stay inside the configured download dir or it
-        # would let any qB client write anywhere the service user can.
-        dl_dir = os.path.abspath(str(_load_config().get("download_dir") or ""))
-        sp = os.path.abspath(os.path.expanduser(save_path))
-        if not dl_dir or not (sp == dl_dir or sp.startswith(dl_dir + os.sep)):
-            raise HTTPException(
-                status_code=403,
-                detail="savePath must be inside the configured download directory",
-            )
-        save_path = sp
+        # qBittorrent allows an absolute category path. Enforce the caller's
+        # scope (published by _require_auth): an admin key keeps full access,
+        # a personal API key stays inside its home plus /mnt and /media.
+        save_path = path_scope.sanitize(save_path)
     _created_categories.add(category)
     _upsert_category(category, save_path)
     return PlainTextResponse(content="")

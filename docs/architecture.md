@@ -20,7 +20,9 @@ browser / Android ──HTTP──▶ FastAPI (backend/main.py)
    `/api/downloads/qb`). Everything else needs a valid JWT; the payload is attached to
    `request.state.current_user`.
 2. Router dependencies run: `require_admin` on privileged routers, `path_scope.scope_request` on anything
-   that touches the filesystem (it must be `async def` — see ADR 0003 note).
+   that touches the filesystem (it must be `async def` — see ADR 0003 note). The scope is per-user:
+   admins keep full access, every other account is limited to its own home plus `/mnt` and `/media`,
+   and `<DATA_DIR>` is never user-facing. Background workers use `path_scope.system_scope()`.
 3. The handler calls a service in `asyncio.to_thread` for blocking work (docker-py, subprocess, big walks).
 4. Failures return `{"detail": ...}` with a real status code; successes return an endpoint-specific body.
 

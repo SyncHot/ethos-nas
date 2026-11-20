@@ -35,6 +35,7 @@ _TMP = Path(tempfile.mkdtemp(prefix="ethos-video-thumb-test-"))
 os.environ["ETHOS_DATA_DIR"] = str(_TMP)
 
 from backend.routers import files as fm  # noqa: E402
+from backend.services import path_scope  # noqa: E402
 
 _results: list[tuple[str, bool, str]] = []
 
@@ -50,6 +51,10 @@ def _age_source(path: Path, seconds: float) -> None:
 
 
 def main() -> int:
+    # Service-level test: no request scope is involved, so run as the system
+    # identity (the fail-closed default would reject the temp fixtures).
+    path_scope.CURRENT_ROLE.set("admin")
+    path_scope.CURRENT_USER.set("system")
     root = _TMP / "media"
     root.mkdir(parents=True, exist_ok=True)
     video = root / "clip.mp4"

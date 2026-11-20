@@ -12,9 +12,12 @@ without giving the recipient an EthOS account or SMB access.
   share links follow it exactly.
 - Auth middleware whitelists path prefixes in `public_paths` (`main.py:198`) — public link
   endpoints slot into that mechanism with no middleware changes beyond one prefix.
-- Security model matches `files.py`: **no allowlist by design** (OS-level access control).
-  A link only ever serves a path an authenticated EthOS user explicitly chose to share,
-  and the token is unguessable (`secrets.token_urlsafe(16)` ≈ 128 bits).
+- Security model follows `files.py`: every path is created through
+  `path_scope.sanitize()` for the **caller's** identity (admins full access; other accounts limited to
+  their own home plus `/mnt` and `/media`). The link stores its creator (`owner`, `owner_role`) and the
+  public route re-validates every stored path against that scope on each request. Legacy links without
+  an owner stay limited to the old shared roots (`/home`, `/mnt`, `/media`). The token is unguessable
+  (`secrets.token_urlsafe(16)` ≈ 128 bits).
 
 ## Design
 

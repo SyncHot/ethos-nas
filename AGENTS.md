@@ -36,8 +36,10 @@ serves the API (`/api/*`), WebSockets and the SPA.
 privileged routers use `require_admin` / `require_role` (`routers/auth.py`).
 
 **Paths.** Filesystem endpoints mount `path_scope.scope_request` and pass every path through
-`path_scope.sanitize()`; non-admins are limited to `/home`, `/mnt`, `/media`. `scope_request` must stay
-`async def`. File ops run as the `ethos-nas` service user (see `docs/service-user.md`) — surface the
+`path_scope.sanitize()`; admins keep full access, every other account is limited to its **own home**
+plus `/mnt` and `/media`, and `<DATA_DIR>` is never user-facing. `scope_request` must stay
+`async def`. Background workers use `path_scope.system_scope()` (or `sanitize_for`). File ops run as
+the `ethos-nas` service user (see `docs/service-user.md`) — surface the
 403 `detail`, not a bare status. Subprocess: argument lists only, never `shell=True`. docker-py is
 synchronous → always `asyncio.to_thread()`.
 

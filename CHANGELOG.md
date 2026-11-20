@@ -11,6 +11,36 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.6.4] - 2026-11-20
+
+### Security
+
+- **Per-user filesystem scope.** Admins keep full access; every other account is
+  limited to its own home plus `/mnt` and `/media` instead of every account in
+  `/home`. The EthOS state directory (`<DATA_DIR>`, which stores `users.json` and
+  every API key) is never user-facing, even when it lives under `/home`.
+- **Media, share links and music settings enforce that scope.** `/api/videos`
+  (stream, transcode, info, subtitles, thumbnails), `/api/gallery/meta`,
+  `POST /api/share-links` and `POST /api/music/config` accepted paths outside the
+  caller's roots. Share links store their creator and re-check the stored path on
+  every public request; legacy links keep the old shared roots.
+- **qBittorrent API identity.** The SID / API-key caller is resolved to a real
+  account, so a personal API key keeps its own path scope; an absolute category
+  `savePath` is sanitized instead of only being confined to the download dir.
+- **Fail-closed path scope.** A router that forgets `scope_request` now denies
+  instead of silently running with admin rights; background workers use
+  `path_scope.system_scope()`.
+
+### Fixed
+
+- **Code Editor / Files picker no longer opens at `/`** for non-admins; it starts
+  at the caller's first allowed root (admins still start at `/`).
+
+### Added
+
+- `docs/user-isolation.md`, `tests/test_path_scope.py` and an expanded
+  `tests/test_security_invariants.py` matrix (user 403 / admin 200).
+
 ## [2.6.3] - 2026-11-20
 
 ### Fixed
