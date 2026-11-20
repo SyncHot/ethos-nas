@@ -723,12 +723,24 @@ async def qb_torrents_create_category(request: Request):
     _require_auth(request)
 
     from fastapi.responses import PlainTextResponse
-    from backend.routers.downloads import _upsert_category
+    from backend.routers.downloads import _load_config, _upsert_category
     form = await request.form()
     category = str(form.get("category", "")).strip()
     save_path = str(form.get("savePath", "") or "").strip()
     if not category:
         return PlainTextResponse(content="Category name cannot be empty")
+    if save_path and (os.path.isabs(save_path) or save_path.startswith("~")):
+        # This endpoint is API-key authenticated, not user-authenticated: an
+        # absolute savePath must stay inside the configured download dir or it
+        # would let any qB client write anywhere the service user can.
+        dl_dir = os.path.abspath(str(_load_config().get("download_dir") or ""))
+        sp = os.path.abspath(os.path.expanduser(save_path))
+        if not dl_dir or not (sp == dl_dir or sp.startswith(dl_dir + os.sep)):
+            raise HTTPException(
+                status_code=403,
+                detail="savePath must be inside the configured download directory",
+            )
+        save_path = sp
     _created_categories.add(category)
     _upsert_category(category, save_path)
     return PlainTextResponse(content="")

@@ -46,19 +46,19 @@ import time
 from collections import deque
 from pathlib import Path
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 
-# Shared path sanitizer from the File Manager router (abspath/expanduser only —
-# OS-level access control is the security boundary, same as gallery.py).
+# Shared path sanitizer from the File Manager router (delegates to
+# services/path_scope.py, so the caller's identity is enforced here too).
 from backend.config import settings
 from backend.routers.files import _sanitize
-from backend.services import tmdb_service
+from backend.services import path_scope, tmdb_service
 from backend.services.video_metadata import parse_video_name
 
 logger = logging.getLogger("ethos-nas.routers.video_station")
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(path_scope.scope_request)])
 
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm", ".flv",
               ".wmv", ".mpg", ".mpeg", ".ts", ".mts", ".3gp"}
@@ -66,8 +66,6 @@ SUBTITLE_EXTS = {".srt", ".vtt"}
 # Directories that never contain user video — skip them entirely so dev trees
 # (node_modules, venvs) don't slow scans or pollute the library.
 NON_MEDIA_DIRS = {"node_modules", "venv", ".venv"}
-
-ALLOWED_ROOTS = ["/home", "/mnt", "/media"]
 
 # settings.DATA_DIR honors ETHOS_DATA_DIR so isolated test instances don't
 # clobber production state (was hardcoded to backend/data/).
@@ -238,7 +236,12 @@ def _save_config(config: dict) -> None:
 
 
 def _is_allowed(abs_path: str) -> bool:
-    return any(abs_path == r or abs_path.startswith(r + os.sep) for r in ALLOWED_ROOTS)
+    """True when the caller's path scope accepts `abs_path`."""
+    try:
+        path_scope.sanitize(abs_path)
+        return True
+    except HTTPException:
+        return False
 
 def _looks_like_transport_stream(path: str) -> bool:
     """True when a .ts/.mts file actually looks like an MPEG-2 transport
@@ -545,20 +548,30 @@ def _make_thumb_sync(
 @router.get("/config")
 async def get_config() -> dict:
     cfg = _load_config()
+    username, role = path_scope.current_identity()
     # Auto-seed with the current user's home on first run so the app is not empty.
     if not cfg["roots"]:
-        home = os.path.expanduser("~")
-        if _is_allowed(home):
+        home = path_scope.home_dir(username)
+        if home and _is_allowed(home):
             cfg["roots"] = [home]
-    return {**cfg, "allowed_roots": ALLOWED_ROOTS, "tmdb": _mask_tmdb(cfg.get("tmdb") or {})}
+    return {**cfg, "allowed_roots": list(path_scope.allowed_roots(username, role)),
+            "tmdb": _mask_tmdb(cfg.get("tmdb") or {})}
 
 
 @router.post("/config")
 async def set_config(payload: dict = Body(...)) -> dict:
     roots_in = payload.get("roots") or []
     options_in = payload.get("options") or {}
-    roots = [os.path.abspath(os.path.expanduser(r)) for r in roots_in if isinstance(r, str)]
-    roots = [r for r in roots if _is_allowed(r) and os.path.isdir(r)]
+    roots = []
+    for raw in roots_in:
+        if not isinstance(raw, str):
+            continue
+        try:
+            root = path_scope.sanitize(raw)
+        except HTTPException:
+            continue
+        if os.path.isdir(root):
+            roots.append(root)
     prev = _load_config()
     cfg = {"roots": roots, "options": _sanitize_options(options_in),
            "tmdb": _sanitize_tmdb(payload.get("tmdb"), prev.get("tmdb"))}
@@ -590,10 +603,13 @@ async def browse(path: str | None = Query(default=None)) -> dict:
     """Subdirectory picker (restricted to allowed roots)."""
     base = os.path.abspath(os.path.expanduser(path)) if path else None
     if base is None:
-        # Top level of every allowed root.
+        # Top level of every root the caller may use.
+        username, role = path_scope.current_identity()
+        roots = path_scope.allowed_roots(username, role)
+
         def _roots() -> list[dict]:
             out = []
-            for r in ALLOWED_ROOTS:
+            for r in roots:
                 if not os.path.isdir(r):
                     continue
                 try:
@@ -602,7 +618,7 @@ async def browse(path: str | None = Query(default=None)) -> dict:
                                      key=str.lower)
                 except OSError:
                     continue
-                out.append({"path": r, "name": os.path.basename(r), "folders": entries})
+                out.append({"path": r, "name": os.path.basename(r) or r, "folders": entries})
             return out
 
         return {"roots": await asyncio.to_thread(_roots)}

@@ -148,6 +148,8 @@ def create_link(
     name: str | None = None,
     expires_in_days: int | float | None = None,
     max_downloads: int | None = None,
+    owner: str = "",
+    owner_role: str = "user",
 ) -> dict:
     """Create a share link for an existing file or directory.
 
@@ -173,6 +175,10 @@ def create_link(
         "expires_at": expires_at,
         "max_downloads": limit,
         "downloads": 0,
+        # Creator identity: the public route re-validates every stored path
+        # against this scope, so a link can never outlive its creator's rights.
+        "owner": owner,
+        "owner_role": owner_role,
     }
 
     with _LOCK:
@@ -190,6 +196,8 @@ def create_multi_link(
     name: str | None = None,
     expires_in_days: int | float | None = None,
     max_downloads: int | None = None,
+    owner: str = "",
+    owner_role: str = "user",
 ) -> dict:
     """Create ONE share link covering several files (Photo Station multi-share).
 
@@ -230,6 +238,8 @@ def create_multi_link(
         "expires_at": expires_at,
         "max_downloads": limit,
         "downloads": 0,
+        "owner": owner,
+        "owner_role": owner_role,
     }
 
     with _LOCK:

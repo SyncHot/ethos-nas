@@ -73,9 +73,8 @@ except ImportError:  # pwd is Linux-only
     pwd = None  # type: ignore[assignment]
 
 logger = logging.getLogger("ethos-nas.routers.files")
-# Role scoping lives in services/path_scope.py so sync.py and file_ops.py share
-# the exact same rules (TODO.md P0-06).
-ALLOWED_ROOTS = path_scope.ALLOWED_ROOTS
+# Identity scoping lives in services/path_scope.py so sync.py and file_ops.py
+# share the exact same rules (TODO.md P0-06).
 _scope_request = path_scope.scope_request
 
 
@@ -105,10 +104,10 @@ def _make_thumb_key(abs_path: str, size: int) -> str:
 
 
 def _sanitize(path: str) -> str:
-    """Resolve to an absolute path and enforce the per-role scope.
+    """Resolve to an absolute path and enforce the per-identity scope.
 
     Delegates to services/path_scope.py so sync.py and file_ops.py apply the
-    identical rule: non-admins are limited to /home, /mnt and /media.
+    identical rule: non-admins are limited to their own home, /mnt and /media.
     """
     return path_scope.sanitize(path)
 
@@ -1812,6 +1811,12 @@ async def search_files(
     limit: int = Query(500, ge=1, le=2000),
 ):
     """Recursively search for items whose names contain q (case-insensitive)."""
+    if path == "/":
+        # The API default is the filesystem root, which only admins may use.
+        # Non-admins search their own home instead of getting a bare 403.
+        username, role = path_scope.current_identity()
+        if role != "admin":
+            path = path_scope.home_dir(username) or path
     root_path = _sanitize(path)
     if not os.path.isdir(root_path):
         raise HTTPException(status_code=400, detail="Search path is not a directory")
@@ -1868,12 +1873,15 @@ def _real_mountpoints() -> list[str]:
 
 
 def _default_search_roots() -> list[dict]:
-    """Default universal-search scopes: /home + real data mounts (/mnt/*, /media/*).
+    """Default universal-search scopes for the current identity.
 
-    Nested duplicates are dropped (shallowest wins) so results are not counted
-    twice. The root filesystem itself is never a default scope — searching it
-    means crawling the entire disk and must be an explicit choice.
+    Admins get /home plus the real data mounts; every other account gets its
+    own home plus the shared /mnt and /media mounts. Nested duplicates are
+    dropped (shallowest wins) so results are not counted twice. The root
+    filesystem itself is never a default scope — searching it means crawling
+    the entire disk and must be an explicit admin choice.
     """
+    username, role = path_scope.current_identity()
     kept: list[str] = []
     for mp in _real_mountpoints():  # sorted → parents precede children
         if mp == "/":
@@ -1881,7 +1889,11 @@ def _default_search_roots() -> list[dict]:
         if any(mp.startswith(k + os.sep) for k in kept):
             continue
         kept.append(mp)
-    roots = [{"path": "/home", "label": "Home"}]
+    if role == "admin":
+        roots = [{"path": "/home", "label": "Home"}]
+    else:
+        home = path_scope.home_dir(username)
+        roots = [{"path": home, "label": "Home"}] if home else []
     for mp in kept:
         if mp.startswith(("/mnt/", "/media/")):
             label = os.path.basename(mp.rstrip("/")) or mp
@@ -1891,9 +1903,10 @@ def _default_search_roots() -> list[dict]:
 
 @router.get("/search-roots")
 async def get_search_roots() -> dict:
-    """Sensible scopes for universal search (home + data mounts + entire fs)."""
+    """Sensible search scopes for the caller (admin also gets `/`)."""
     roots = _default_search_roots()
-    if "/" in _real_mountpoints():
+    _username, role = path_scope.current_identity()
+    if role == "admin" and "/" in _real_mountpoints():
         roots.append({"path": "/", "label": "Entire filesystem (/)"})
     return {"roots": roots}
 

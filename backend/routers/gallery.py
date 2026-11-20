@@ -68,7 +68,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from PIL import Image
@@ -82,18 +82,16 @@ from backend.config import settings
 from backend.routers.files import _sanitize, _extract_video_frame, _video_fallback_svg
 # JWT payload decoder (to bind Private sessions to the logged-in user)
 from backend.routers.auth import _verify_token
-from backend.services import json_store
+from backend.services import json_store, path_scope
 from backend.services import trash_service
 
 logger = logging.getLogger("ethos-nas.routers.gallery")
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(path_scope.scope_request)])
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv", ".flv"}
 MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS
-
-ALLOWED_ROOTS = ["/home", "/mnt", "/media"]
 
 CONFIG_FILE = settings.DATA_DIR / "gallery_config.json"
 INDEX_DB = settings.DATA_DIR / "gallery_index.db"
@@ -141,7 +139,12 @@ def _save_config(config: dict) -> None:
 
 
 def _is_allowed(abs_path: str) -> bool:
-    return any(abs_path == r or abs_path.startswith(r + os.sep) for r in ALLOWED_ROOTS)
+    """True when the caller's path scope accepts `abs_path`."""
+    try:
+        path_scope.sanitize(abs_path)
+        return True
+    except HTTPException:
+        return False
 
 
 # ── Private section: PIN + at-rest encryption ───────────────────────────────
@@ -712,8 +715,15 @@ def _do_scan(cfg: dict) -> None:
     """Incremental scan of all configured folders (runs in a worker thread).
 
     Incremental: upsert new/changed files, drop deleted ones, then
-    re-materialise the in-memory index from SQLite.
+    re-materialise the in-memory index from SQLite. Runs under the system
+    identity because the gallery config/index is shared and managed by an
+    admin; the request that scheduled it must not narrow the walk.
     """
+    with path_scope.system_scope():
+        _do_scan_scoped(cfg)
+
+
+def _do_scan_scoped(cfg: dict) -> None:
     progress = _index_state["progress"]
     conn = _db_connect()
     try:
@@ -885,8 +895,8 @@ async def gallery_save_config(payload: dict = Body(...)):
     """Save gallery folders and/or display options.
 
     Either key may be omitted to keep the current value. Folder paths are
-    validated against allowed roots; invalid entries are dropped. Saving a
-    changed folder set marks the index stale → next data call rescans.
+    validated against the caller's path scope; invalid entries are dropped.
+    Saving a changed folder set marks the index stale → next data call rescans.
     """
     cfg = _load_config()
 
@@ -898,10 +908,11 @@ async def gallery_save_config(payload: dict = Body(...)):
             if not raw:
                 continue
             try:
-                abs_path = os.path.abspath(os.path.expanduser(str(raw)))
-            except Exception:
+                abs_path = path_scope.sanitize(str(raw))
+            except HTTPException:
+                logger.warning("Gallery config dropped out-of-scope folder: %r", raw)
                 continue
-            if not _is_allowed(abs_path) or not os.path.isdir(abs_path):
+            if not os.path.isdir(abs_path):
                 logger.warning("Gallery config dropped invalid folder: %r", raw)
                 continue
             if abs_path in seen:
@@ -933,9 +944,16 @@ async def gallery_mounts():
     Returns [{path, name}] — system/pseudo filesystems are excluded.
     """
     skip = {"proc", "sys", "dev", "run", "boot", "efi", "snap", "lost+found"}
+    username, role = path_scope.current_identity()
 
     def _mounts() -> List[dict]:
         out: List[dict] = []
+        if role != "admin":
+            # Non-admins only see the roots they can actually browse.
+            for root in path_scope.allowed_roots(username, role):
+                if os.path.isdir(root):
+                    out.append({"path": root, "name": os.path.basename(root) or root})
+            return out
         try:
             entries = sorted(os.listdir("/"), key=str.lower)
         except PermissionError:
@@ -965,7 +983,10 @@ async def gallery_browse(
 ):
     """List immediate subdirectories of a given path (public — no file contents)."""
     abs_path = os.path.abspath(os.path.expanduser(path or "/"))
+    _username, role = path_scope.current_identity()
 
+    if abs_path == "/" and role != "admin":
+        return []  # non-admins start at their own roots, never the filesystem root
     if not _is_allowed(abs_path) and abs_path != "/":
         return []
     if not os.path.isdir(abs_path):
@@ -2046,7 +2067,7 @@ async def gallery_meta(
     Private items are decrypted to a 0600 temp file just long enough to read
     the EXIF header; no plaintext copy is persisted.
     """
-    ap = os.path.abspath(os.path.expanduser(path or ""))
+    ap = path_scope.sanitize(path or "")
     loop = asyncio.get_running_loop()
     tmp = None
     try:

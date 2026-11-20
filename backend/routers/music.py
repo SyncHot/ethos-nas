@@ -38,15 +38,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from backend.config import settings
-from backend.services import music_search, package_client
+from backend.services import music_search, package_client, path_scope
 
 logger = logging.getLogger("ethos-nas.routers.music")
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(path_scope.scope_request)])
 
 DATA_DIR = settings.DATA_DIR
 CONFIG_FILE = DATA_DIR / "music_config.json"
@@ -1021,10 +1021,10 @@ async def set_config(payload: dict):
     cfg = _load_config()
     new_dir = str(payload.get("download_dir") or "").strip()
     if new_dir:
-        p = Path(new_dir).expanduser()
-        if not p.is_absolute():
-            raise HTTPException(status_code=422, detail="Ścieżka musi być bezwzględna")
-        cfg["download_dir"] = str(p)
+        # Absolute-path requirement, symlink resolution and the caller's scope
+        # all live in path_scope.sanitize(); a non-admin cannot point the
+        # library outside their home or the shared mounts.
+        cfg["download_dir"] = path_scope.sanitize(new_dir)
     _save_config(cfg)
     return {"download_dir": str(Path(cfg["download_dir"]).expanduser())}
 

@@ -33,19 +33,20 @@ from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from backend.config import settings
 from backend.routers.files import render_video_thumb
+from backend.services import path_scope
 from backend.services import share_links_service as svc
 from backend.services.notifications_service import emit_event
 
 logger = logging.getLogger("ethos-nas.routers.share_links")
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(path_scope.scope_request)])
 
 # Temp dir for on-the-fly zip builds (0700, like gallery's private tmp).
 _ZIP_TMP_DIR = Path(settings.DATA_DIR) / ".sharetmp"
@@ -80,13 +81,17 @@ async def create_link(body: ShareLinkCreate, request: Request) -> dict:
     self-contained gallery page: recipients browse the photos and download
     them individually or all at once as .zip — no account needed.
     """
+    username, role = path_scope.current_identity()
     if body.paths:
         try:
+            clean_paths = [path_scope.sanitize(p) for p in body.paths]
             link = svc.create_multi_link(
-                body.paths,
+                clean_paths,
                 name=body.name,
                 expires_in_days=body.expires_in_days,
                 max_downloads=body.max_downloads,
+                owner=username,
+                owner_role=role,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
@@ -95,10 +100,12 @@ async def create_link(body: ShareLinkCreate, request: Request) -> dict:
             raise HTTPException(status_code=400, detail="Provide 'path' or 'paths'")
         try:
             link = svc.create_link(
-                body.path,
+                path_scope.sanitize(body.path),
                 name=body.name,
                 expires_in_days=body.expires_in_days,
                 max_downloads=body.max_downloads,
+                owner=username,
+                owner_role=role,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
@@ -126,14 +133,51 @@ def _resolve_link(token: str) -> dict:
         raise HTTPException(status_code=410, detail="This share link has expired")
     if status == "limit_reached":
         raise HTTPException(status_code=410, detail="Download limit reached for this share link")
+    if not _link_in_scope(link):
+        # Paths are re-validated against the creator's current scope on every
+        # public request: a link cannot serve a path its creator may not read.
+        logger.warning("Share link %s rejected: path outside the creator's scope", link.get("id"))
+        raise HTTPException(status_code=410, detail="This share link is no longer available")
     return link
+
+
+def _link_paths(link: dict) -> list[str]:
+    files = link.get("files")
+    if isinstance(files, list) and files:
+        return [str(p) for p in files]
+    path = str(link.get("path") or "")
+    return [path] if path else []
+
+
+def _link_in_scope(link: dict) -> bool:
+    """True when every stored path is still readable by the link's creator."""
+    paths = _link_paths(link)
+    if not paths:
+        return False
+    owner = str(link.get("owner") or "")
+    role = str(link.get("owner_role") or "user")
+    try:
+        for p in paths:
+            if owner:
+                path_scope.sanitize_for(p, owner, role)
+            else:
+                # Links created before ownership existed: keep the old shared
+                # roots only, never an arbitrary system path.
+                real = os.path.realpath(p)
+                if not any(real == r or real.startswith(r + os.sep)
+                           for r in ("/home", "/mnt", "/media")):
+                    return False
+        return True
+    except HTTPException:
+        return False
 
 def _safe_child(root: str, rel: str) -> str:
     """Join a relative path to the shared root without allowing traversal."""
     if not rel or rel.startswith(("/", "\\")) or ".." in Path(rel).parts:
         raise HTTPException(status_code=400, detail="Invalid file path")
-    target = os.path.normpath(os.path.join(root, rel))
-    if target != root and not target.startswith(root + os.sep):
+    root_real = os.path.realpath(root)
+    target = os.path.realpath(os.path.join(root_real, rel))
+    if target != root_real and not target.startswith(root_real + os.sep):
         raise HTTPException(status_code=400, detail="Path escapes the shared folder")
     return target
 

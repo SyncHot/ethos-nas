@@ -188,10 +188,41 @@ def main() -> int:
             got = _call(base, method, path, user, body)
             check(f"{method} {path} -> {expected}", got == expected, f"got {got}")
 
+        print("\n[user role] media + share-link scope")
+        for method, path, body, expected in [
+            ("GET", "/api/videos/stream?path=/etc/passwd", None, 403),
+            ("GET", "/api/videos/info?path=/etc/passwd", None, 403),
+            ("GET", "/api/videos/transcode?path=/etc/hostname", None, 403),
+            ("GET", "/api/gallery/meta?path=/etc/passwd", None, 403),
+            ("POST", "/api/share-links", {"path": "/etc/passwd"}, 403),
+            ("POST", "/api/music/config", {"download_dir": "/etc"}, 403),
+        ]:
+            got = _call(base, method, path, user, body)
+            check(f"{method} {path} -> {expected}", got == expected, f"got {got}")
+
+        # The token's own home is inside the scope even when it does not exist
+        # (404 = allowed but missing; 403 would mean the scope still leaks).
+        own_home_status = _call(base, "GET", "/api/files?path=/home/invariants", user)
+        check("user own home is not blocked", own_home_status != 403,
+              f"got {own_home_status}")
+
+        _, user_roots = _call_json(base, "GET", "/api/files/search-roots", user)
+        paths = [r.get("path") for r in (user_roots.get("roots") or [])]
+        check("user search roots never advertise /", "/" not in paths, str(paths)[:200])
+        check("user search roots include their home",
+              any(p and p.startswith("/home/invariants") for p in paths), str(paths)[:200])
+
+        _, user_mounts = _call_json(base, "GET", "/api/gallery/mounts", user)
+        mount_paths = [r.get("path") for r in (user_mounts if isinstance(user_mounts, list) else [])]
+        check("gallery mounts for a user never include /", "/" not in mount_paths,
+              str(mount_paths)[:200])
+
         print("\n[admin role] same endpoints allowed")
         for method, path, expected in [
             ("GET", "/api/systemd", 200),
             ("GET", "/api/files?path=/etc", 200),
+            ("GET", "/api/videos/stream?path=/etc/hostname", 200),
+            ("GET", "/api/gallery/meta?path=/etc/hostname", 200),
             ("GET", "/api/ethos-nas-service/status", 200),
             ("GET", "/api/backup/status", 200),
             ("GET", "/api/logs/files", 200),

@@ -81,13 +81,28 @@ def _git(*args: str) -> str:
 
 
 def current_release() -> dict:
-    """Version identity of the running checkout (git is best-effort)."""
+    """Version identity of the running checkout (git is best-effort).
+
+    `build` is the commit count, which is only meaningful in a full clone. An
+    EthOS OS image ships a `--depth 1` clone, where `rev-list --count HEAD`
+    reports 1 no matter how far along the release train the appliance is — the
+    update card then advertised an update forever, even right after updating.
+    A shallow checkout reports build 0, so `is_newer` falls back to comparing
+    the commit sha (which the signed index pins exactly).
+    """
+    shallow = _git("rev-parse", "--is-shallow-repository") == "true"
     build = 0
-    try:
-        build = int(_git("rev-list", "--count", "HEAD") or 0)
-    except ValueError:
-        build = 0
-    return {"version": APP_VERSION, "git_sha": _git("rev-parse", "--short", "HEAD"), "build": build}
+    if not shallow:
+        try:
+            build = int(_git("rev-list", "--count", "HEAD") or 0)
+        except ValueError:
+            build = 0
+    return {
+        "version": APP_VERSION,
+        "git_sha": _git("rev-parse", "--short", "HEAD"),
+        "build": build,
+        "shallow": shallow,
+    }
 
 
 # ── Index fetch + validation ────────────────────────────────────────────────

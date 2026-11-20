@@ -11,6 +11,17 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.6.3] - 2026-11-20
+
+### Fixed
+
+- **The update card advertised an update forever on appliances built from an OS
+  image**, even right after updating ("Update available: v2.6.2 · 2d45dff" while
+  running exactly that). The image ships a `--depth 1` clone, where
+  `git rev-list --count HEAD` returns 1, so the build comparison always saw the
+  signed index (build 67) as newer. A shallow checkout now reports no build
+  number and the check falls back to the commit sha the index pins.
+
 ## [2.6.2] - 2026-11-20
 
 ### Fixed

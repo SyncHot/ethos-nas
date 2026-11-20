@@ -8,7 +8,8 @@
 // Options (all optional):
 //   title        — overlay header text (default: 'Select file' / 'Select folder')
 //   startPath    — directory to open first; may also be a file path in pickFile
-//                  (its parent is opened and the file pre-selected). Default: last used, or '/'
+//                  (its parent is opened and the file pre-selected). Default: last
+//                  used, or the caller's first allowed root (never `/` for users)
 //   extensions   — pickFile only: ['.txt', '.md'] → other files are dimmed & not selectable
 //   roots        — restrict browsing to these absolute roots (e.g. ['/home','/mnt','/media']);
 //                  quick-jump chips are shown and navigation cannot escape the roots
@@ -20,6 +21,24 @@ import { apiFetch } from './api.js';
 
 let _active = null;    // currently open picker state (only one at a time)
 let _lastPath = '/';   // remember the last browsed directory across pickers
+let _defaultRootPromise = null;  // first root the caller may browse
+
+function _defaultRoot() {
+    // Admins get `/` as the first search root; everyone else gets their own
+    // home. The picker must never open at `/` for a non-admin — the API would
+    // answer 403 and the dialog would look broken.
+    if (_defaultRootPromise) return _defaultRootPromise;
+    _defaultRootPromise = apiFetch('/api/files/search-roots')
+        .then((resp) => resp.ok ? resp.json() : null)
+        .then((data) => {
+            const first = Array.isArray(data?.roots)
+                ? data.roots.find((r) => r && typeof r.path === 'string' && r.path.startsWith('/'))
+                : null;
+            return first ? first.path : '/';
+        })
+        .catch(() => '/');
+    return _defaultRootPromise;
+}
 
 const _join = (base, name) => base === '/' ? '/' + name : base.replace(/\/+$/, '') + '/' + name;
 const _parentOf = (p) => { if (!p || p === '/') return '/'; const i = p.lastIndexOf('/'); return i <= 0 ? '/' : p.substring(0, i); };
@@ -320,12 +339,18 @@ function _renderSel(st) {
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
-export function pickFile(opts = {}) {
-    return new Promise((resolve) => { if (_active && !_active.done) _finishActive(null); _render({ ...opts, mode: 'file' }, resolve); });
+export async function pickFile(opts = {}) {
+    const withStart = (opts.startPath || (Array.isArray(opts.roots) && opts.roots.length))
+        ? opts
+        : { ...opts, startPath: await _defaultRoot() };
+    return new Promise((resolve) => { if (_active && !_active.done) _finishActive(null); _render({ ...withStart, mode: 'file' }, resolve); });
 }
 
-export function pickFolder(opts = {}) {
-    return new Promise((resolve) => { if (_active && !_active.done) _finishActive(null); _render({ ...opts, mode: 'folder' }, resolve); });
+export async function pickFolder(opts = {}) {
+    const withStart = (opts.startPath || (Array.isArray(opts.roots) && opts.roots.length))
+        ? opts
+        : { ...opts, startPath: await _defaultRoot() };
+    return new Promise((resolve) => { if (_active && !_active.done) _finishActive(null); _render({ ...withStart, mode: 'folder' }, resolve); });
 }
 
 function _finishActive(sel) {

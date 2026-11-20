@@ -371,6 +371,11 @@ def _debrid_worker(task: dict, stop_event: threading.Event) -> None:
     selected file to the NAS download folder. Updates `task` in place; the
     caller owns final status on stop_event.
     """
+    with path_scope.system_scope():
+        _debrid_worker_scoped(task, stop_event)
+
+
+def _debrid_worker_scoped(task: dict, stop_event: threading.Event) -> None:
     cfg = _load_config()
     provider, key = task["provider"], task["_debrid_key"]
     tid = int(task.get("_debrid_id") or 0)
@@ -771,6 +776,11 @@ def _schedule_auto_extract(task: dict) -> None:
 
 
 async def _auto_extract_task(task: dict) -> None:
+    with path_scope.system_scope():
+        await _auto_extract_task_scoped(task)
+
+
+async def _auto_extract_task_scoped(task: dict) -> None:
     info = _package_info(task)
     group = _package_tasks(info["package_key"]) if info else [task]
     if not group or any(t.get("status") != "completed" for t in group):
@@ -802,6 +812,11 @@ def _start_extract(tasks: list[dict], archive: str) -> None:
 
 
 async def _run_extract(tasks: list[dict], archive: str) -> None:
+    with path_scope.system_scope():
+        await _run_extract_scoped(tasks, archive)
+
+
+async def _run_extract_scoped(tasks: list[dict], archive: str) -> None:
     from backend.services import files_service
     from backend.services.notifications_service import emit_event
     try:
@@ -1085,6 +1100,11 @@ def _schedule_window_pump(cfg: dict) -> None:
 
 def _download_worker(task: dict, stop_event: threading.Event) -> None:
     """Blocking download in a worker thread. Updates `task` in place."""
+    with path_scope.system_scope():
+        _download_worker_scoped(task, stop_event)
+
+
+def _download_worker_scoped(task: dict, stop_event: threading.Event) -> None:
     cfg = _load_config()
     url = _source_url(task)
     dest = task.get("path") or _unique_dest(cfg["download_dir"], task["name"])
@@ -1315,6 +1335,11 @@ def _on_worker_done(task_id: str, worker: "asyncio.Task", own_event=None) -> Non
 
 async def _pump() -> None:
     """Start waiting tasks (HTTP + debrid) up to the concurrency limit (priority, then FIFO)."""
+    with path_scope.system_scope():
+        await _pump_scoped()
+
+
+async def _pump_scoped() -> None:
     async with _pump_lock:
         cfg = _load_config()
         limit = cfg["max_concurrent"]
@@ -1475,10 +1500,11 @@ def _watch_loop(loop: asyncio.AbstractEventLoop) -> None:
     """Background thread: poll the watch folder every few seconds."""
     while not _watch_stop.is_set():
         try:
-            cfg = _load_config()
-            if cfg.get("watch_enabled"):
-                for entry in cfg.get("watch_folders") or []:
-                    _watch_scan_once(cfg, loop, entry)
+            with path_scope.system_scope():
+                cfg = _load_config()
+                if cfg.get("watch_enabled"):
+                    for entry in cfg.get("watch_folders") or []:
+                        _watch_scan_once(cfg, loop, entry)
         except Exception as exc:  # noqa: BLE001 — never kill the scanner thread
             logger.error("Watch folder scan error: %s", exc, exc_info=True)
         _watch_stop.wait(3.0)
@@ -1595,6 +1621,11 @@ def _fetch_bytes_bounded(url: str, cap: int) -> bytes:
 
 async def _rss_scan(feed_ids: Optional[set] = None, force: bool = False) -> dict:
     """Poll due feeds and queue matching items. Returns {feeds, queued}."""
+    with path_scope.system_scope():
+        return await _rss_scan_scoped(feed_ids, force)
+
+
+async def _rss_scan_scoped(feed_ids: Optional[set] = None, force: bool = False) -> dict:
     async with _rss_scan_lock:
         cfg = _load_config()
         now = _now()
