@@ -11,6 +11,14 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-11-20
+
+### Fixed
+
+- First-run setup: the wizard said "choose the password for *ethosadmin*" while
+  the username field right below was editable; it now asks for the admin
+  username and password.
+
 ## [2.6.0] - 2026-11-20
 
 ### Added

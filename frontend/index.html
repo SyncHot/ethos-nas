@@ -3057,11 +3057,10 @@
                 if (codeField) codeField.style.display = needsCode ? '' : 'none';
                 var intro = panel.querySelector('[data-setup-intro]');
                 if (intro && !needsCode) {
-                    intro.textContent = 'This appliance has not been set up yet. Choose the password for ';
-                    var account = document.createElement('strong');
-                    account.textContent = state.user || 'the admin account';
-                    intro.appendChild(account);
-                    intro.appendChild(document.createTextNode('.'));
+                    // The username field sits right below; naming one account
+                    // here would read as if it were fixed.
+                    intro.textContent = 'This appliance has not been set up yet. '
+                        + 'Choose the admin username and password.';
                 }
                 var subtitle = document.getElementById('loginSubtitle');
                 if (subtitle) subtitle.textContent = 'First-run setup';
