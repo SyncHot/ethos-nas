@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-20T15:29:36+00:00",
+  "generated_at": "2026-11-20T15:51:28+00:00",
   "latest": {
-    "version": "2.6.4",
-    "git_sha": "091c2dd",
-    "git_sha_full": "091c2dd756835ae468fde0992238e7151a2690dd",
-    "build": 71,
-    "released_at": "2026-11-20T15:29:36+00:00",
-    "notes": "Security: per-user filesystem scope — non-admins are limited to their own home, /mnt and /media"
+    "version": "2.6.5",
+    "git_sha": "e3df643",
+    "git_sha_full": "e3df6432c23f51e94802f514ecd103cd49789f7f",
+    "build": 73,
+    "released_at": "2026-11-20T15:51:28+00:00",
+    "notes": "Libraries: per-user gallery, music, video and editor state"
   },
   "releases": [
+    {
+      "version": "2.6.5",
+      "git_sha": "e3df643",
+      "git_sha_full": "e3df6432c23f51e94802f514ecd103cd49789f7f",
+      "build": 73,
+      "released_at": "2026-11-20T15:51:28+00:00",
+      "notes": "Libraries: per-user gallery, music, video and editor state"
+    },
     {
       "version": "2.6.4",
       "git_sha": "091c2dd",
