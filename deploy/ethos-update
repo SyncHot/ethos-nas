@@ -196,6 +196,24 @@ fi
 step "apply" "git fetch + reset"
 runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --prune origin >/dev/null 2>&1 \
     || rollback "git fetch failed"
+# The OS image ships a --depth 1 clone (small download, fast first boot), and a
+# released commit is almost always an *ancestor* of the new tip: a shallow
+# fetch moves the tip but cannot see that commit, which used to abort the
+# update with "signed commit … is not present after fetch". Fetch the exact
+# commit first (cheap), then deepen the clone if the server refuses.
+if ! runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" cat-file -e "${TARGET_SHA}^{commit}" 2>/dev/null; then
+    step "apply" "fetch the signed commit"
+    runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --depth=1 origin \
+        "${TARGET_SHA}" >/dev/null 2>&1 || true
+fi
+if ! runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" cat-file -e "${TARGET_SHA}^{commit}" 2>/dev/null; then
+    step "apply" "deepen the shallow clone"
+    runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --unshallow origin \
+        >/dev/null 2>&1 \
+        || runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --depth=200 origin \
+            >/dev/null 2>&1 \
+        || true
+fi
 runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" cat-file -e "${TARGET_SHA}^{commit}" 2>/dev/null \
     || rollback "signed commit ${TARGET_SHA} is not present after fetch"
 runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" reset --hard "${TARGET_SHA}" >/dev/null \

@@ -11,6 +11,17 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.6.2] - 2026-11-20
+
+### Fixed
+
+- **Updates failed on appliances built from an OS image** with "signed commit …
+  is not present after fetch". The image clones EthOS with `--depth 1`, and a
+  released commit is normally an ancestor of the new tip, so a shallow fetch
+  moved the tip but never fetched that commit. `deploy/ethos-update` now fetches
+  the exact commit, then deepens the clone (`--unshallow`, falling back to
+  `--depth=200`) before giving up.
+
 ## [2.6.1] - 2026-11-20
 
 ### Fixed

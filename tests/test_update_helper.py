@@ -45,6 +45,9 @@ def main() -> int:
     check("fails closed on a bad signature", "release index signature is invalid" in helper)
     check("request file can only ask for apply",
           'data.get("action") == "apply"' in helper)
+    check("shallow image clones can reach an older release commit",
+          'fetch --depth=1 origin \\' in helper and "--unshallow" in helper
+          and "deepen the shallow clone" in helper)
     check("no eval", not re.search(r"\beval\b", helper))
     check("git/pip run as the repo owner, not root",
           'runuser -u "${REPO_OWNER}"' in helper and "runuser -u \"${REPO_OWNER}\" -- \"${INSTALL_DIR}/.venv/bin/pip\"" in helper)
