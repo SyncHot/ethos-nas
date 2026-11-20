@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-20T11:42:03+00:00",
+  "generated_at": "2026-11-20T13:00:23+00:00",
   "latest": {
-    "version": "2.3.15",
-    "git_sha": "69288e8",
-    "git_sha_full": "69288e808902086b2e923ac9c30fea004ae46f1e",
-    "build": 54,
-    "released_at": "2026-11-20T11:42:03+00:00",
-    "notes": "Packages: installing a package again works even after a failed start left its directory behind."
+    "version": "2.4.0",
+    "git_sha": "55fe51e",
+    "git_sha_full": "55fe51ef3951edc3c05c314d754f6d2696aedcd0",
+    "build": 56,
+    "released_at": "2026-11-20T13:00:23+00:00",
+    "notes": "Setup: a freshly flashed appliance can be claimed in the browser with the code shown on its screen — no HDMI keyboard, no default password"
   },
   "releases": [
+    {
+      "version": "2.4.0",
+      "git_sha": "55fe51e",
+      "git_sha_full": "55fe51ef3951edc3c05c314d754f6d2696aedcd0",
+      "build": 56,
+      "released_at": "2026-11-20T13:00:23+00:00",
+      "notes": "Setup: a freshly flashed appliance can be claimed in the browser with the code shown on its screen — no HDMI keyboard, no default password"
+    },
     {
       "version": "2.3.15",
       "git_sha": "69288e8",
