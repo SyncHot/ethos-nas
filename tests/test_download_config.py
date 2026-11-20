@@ -19,6 +19,7 @@ _DATA = tempfile.mkdtemp(prefix="ethos-dlcfg-test-")
 os.environ["ETHOS_DATA_DIR"] = _DATA
 
 from backend.services import download_config as cfg  # noqa: E402
+from backend.services import path_scope  # noqa: E402
 
 _failures = 0
 
@@ -31,6 +32,10 @@ def check(name, ok, detail=""):
 
 
 def main() -> int:
+    # Engine-level config unit test: no request identity is involved, so use
+    # the same privileged identity as the background pump.
+    path_scope.CURRENT_ROLE.set("admin")
+    path_scope.CURRENT_USER.set("system")
     print("download_config")
     try:
         # ── Small parsers ────────────────────────────────────────────────────

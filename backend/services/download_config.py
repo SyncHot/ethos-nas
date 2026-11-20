@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from backend.config import settings
-from backend.services import json_store, path_scope
+from backend.services import json_store, path_scope, user_data
 
 logger = logging.getLogger("ethos-nas.services.download_config")
 
@@ -94,6 +94,25 @@ def _migrate_config(from_version: int, to_version: int, data: dict) -> dict:
     if from_version < 8:
         data.setdefault("package_limits", {})
     return data
+
+
+# Fields that belong to the NAS-wide engine and may only be changed by an
+# admin. Everything else is stored in the caller's per-user slice.
+ENGINE_FIELDS = (
+    "max_concurrent", "auto_download_debrid", "auto_retry", "retry_max",
+    "retry_delay", "schedule", "speed_limit", "package_limits", "debrid",
+    "qb_api_key",
+)
+USER_FIELDS = (
+    "download_dir", "categories", "watch_enabled", "watch_folders",
+    "rss_feeds", "duplicate_policy", "auto_extract", "auto_extract_delete",
+)
+
+
+def _default_download_dir() -> str:
+    """<user home>/Downloads — inside the account's own path scope."""
+    home = path_scope.home_dir(user_data.current_username()) or str(Path.home())
+    return str(Path(home) / "Downloads")
 
 
 _CONFIG_STORE = json_store.get(CONFIG_FILE, version=8, migrate=_migrate_config)
@@ -260,14 +279,26 @@ def load_config() -> dict:
     try:
         # json_store gives us quarantine-on-corruption, the migration and the
         # downgrade guard; it never raises for a missing/damaged file.
-        data = _CONFIG_STORE.load()
-        if not data:
+        global_data = _CONFIG_STORE.load()
+        if not isinstance(global_data, dict):
+            global_data = {}
+        username = user_data.current_username()
+        if username == "system":
+            # Background engine: use the legacy/global view (engine + its own
+            # former user fields) so the pump and workers keep running.
+            user_slice = global_data
+        else:
+            raw = user_data.user_store("downloads.json").load()
+            user_slice = raw if isinstance(raw, dict) else {}
+        merged = {**DEFAULT_CONFIG, **{
+            k: v for k, v in global_data.items() if k in ENGINE_FIELDS or username == "system"
+        }, **user_slice}
+        if not global_data and not user_slice:
             # First boot (no config yet) is normal, not a warning: this function
             # is called on every engine tick and by several endpoints.
             return json.loads(json.dumps(DEFAULT_CONFIG))
-        if not isinstance(data, dict):
-            raise ValueError("config root is not an object")
-        merged = {**DEFAULT_CONFIG, **data}
+        if username != "system" and "download_dir" not in user_slice:
+            merged["download_dir"] = _default_download_dir()
         merged["max_concurrent"] = max(1, min(16, int(merged.get("max_concurrent", 3))))
         merged["download_dir"] = os.path.abspath(os.path.expanduser(str(merged.get("download_dir", DEFAULT_CONFIG["download_dir"]))))
         if not isinstance(merged.get("auto_download_debrid"), bool):
@@ -305,7 +336,7 @@ def load_config() -> dict:
         merged["rss_feeds"] = norm_rss_feeds(merged.get("rss_feeds"))
         merged["package_limits"] = norm_package_limits(merged.get("package_limits"))
         db = default_debrid()
-        user_db = data.get("debrid") or {}
+        user_db = merged.get("debrid") or {}
         if isinstance(user_db, dict):
             for k in db:
                 v = user_db.get(k)
@@ -320,13 +351,14 @@ def load_config() -> dict:
 
 
 def qb_get_api_key() -> str:
-    """Return the qBittorrent API key, generating one on first use."""
-    cfg = load_config()
-    key = str(cfg.get("qb_api_key") or "").strip()
+    """Return the global qBittorrent API key, generating one on first use."""
+    global_data = _CONFIG_STORE.load()
+    global_data = global_data if isinstance(global_data, dict) else {}
+    key = str(global_data.get("qb_api_key") or "").strip()
     if not key:
         key = "ethos_" + secrets.token_hex(24)
-        cfg["qb_api_key"] = key
-        save_config(cfg)
+        global_data["qb_api_key"] = key
+        _CONFIG_STORE.save(global_data)
         logger.info("Generated new qBittorrent API key")
     return key
 
@@ -342,4 +374,24 @@ def active_debrid(cfg: dict) -> tuple:
 
 
 def save_config(cfg: dict) -> None:
-    _CONFIG_STORE.save(cfg)
+    """Persist engine fields globally and the caller's slice per user.
+
+    The `system` identity keeps the legacy behaviour: the whole config is the
+    global document (the background engine and the config unit tests use it).
+    """
+    username = user_data.current_username()
+    global_data = _CONFIG_STORE.load()
+    global_data = global_data if isinstance(global_data, dict) else {}
+    if username == "system":
+        global_data.update(cfg)
+        _CONFIG_STORE.save(global_data)
+        return
+    for field in ENGINE_FIELDS:
+        if field in cfg:
+            global_data[field] = cfg[field]
+    _CONFIG_STORE.save(global_data)
+    store = user_data.user_store("downloads.json")
+    existing = store.load()
+    existing = existing if isinstance(existing, dict) else {}
+    existing.update({k: cfg[k] for k in USER_FIELDS if k in cfg})
+    store.save(existing)

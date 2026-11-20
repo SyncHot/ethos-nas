@@ -25,6 +25,7 @@ from fastapi import HTTPException  # noqa: E402
 
 from backend.routers import downloads  # noqa: E402
 from backend.services import download_config  # noqa: E402
+from backend.services import path_scope  # noqa: E402
 
 FAILURES = []
 
@@ -55,6 +56,9 @@ def task(url: str, name: str, path: str, status: str = "waiting") -> dict:
 
 
 def main() -> int:
+    # Engine-level test: retries run in the background as the system identity.
+    path_scope.CURRENT_ROLE.set("admin")
+    path_scope.CURRENT_USER.set("system")
     print("[config defaults]")
     defaults = download_config.DEFAULT_CONFIG
     check("auto-retry is on by default", defaults.get("auto_retry") is True)

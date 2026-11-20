@@ -34,7 +34,7 @@ no port). The engine, stores and `/api/downloads/*` stay in EthOS core, so the A
 | Frontend app (Packages) | `ethos-packages/download-manager/frontend/app.js` |
 | Registration | Packages install → desktop icon `pkg-download-manager` (legacy `downloads` mapped) |
 | Path scoping | `backend/services/path_scope.py` (`scope_request` dependency) |
-| Stores | `backend/data/downloads_config.json`, `backend/data/downloads_tasks.json`, `backend/data/downloads_rss_seen.json` (via `services/json_store.py`) |
+| Stores | `backend/data/downloads_config.json` (global engine), `backend/data/downloads_tasks.json`, `backend/data/downloads_rss_seen.json`, plus per-user `backend/data/users/<user>/downloads.json` (via `services/json_store.py`) |
 | Tests | `tests/test_downloads.py`, `tests/test_qb_compat.py`, `tests/test_bencode.py`, `tests/test_debrid_service.py`, `tests/test_download_config.py`, `tests/test_download_tasks.py`, `tests/test_download_transfer.py`, `tests/test_rss_service.py`, `tests/test_notifications.py` (download E2E) |
 | Integration notes | `docs/sonarr-download-station.md` |
 
@@ -89,7 +89,13 @@ from the name and destination, older task records group without any store migrat
 
 All `/api/downloads/*` routes require a JWT (`Authorization: Bearer`). The router mounts
 `path_scope.scope_request`; `download_dir`, per-task `folder` and watch paths are `sanitize()`d, so
-non-admins are limited to `/home`, `/mnt`, `/media`.
+non-admins are limited to their own home, `/mnt` and `/media`.
+
+State is per account: the download directory, categories, watch folders, RSS feeds and extraction
+policy live in `users/<user>/downloads.json`, and every task carries an `owner`. All task endpoints
+(including the qBittorrent shim) filter by that owner unless the caller is an admin. Engine settings
+(concurrency, schedule, speed/package limits, debrid credentials) stay global and admin-only; the
+legacy config is adopted by the admin once at startup.
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|

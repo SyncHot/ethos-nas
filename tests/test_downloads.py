@@ -182,9 +182,15 @@ def main() -> int:
         check("user sees a masked qB key", user_key.startswith("****") and admin_key not in str(ucfg))
         check("user still learns the key exists", bool((ucfg or {}).get("qb_api_key_set")))
 
-        print("\nAdmin-only mutations")
-        check("user POST /config → 403",
-              _call(base, "POST", "/api/downloads/config", user, {"max_concurrent": 5})[0] == 403)
+        print("\nUser settings + admin-only engine fields")
+        status, _body, _h = _call(base, "POST", "/api/downloads/config", user,
+                                  {"max_concurrent": 5, "duplicate_policy": "skip"})
+        check("user POST /config → 200 (own slice)", status == 200, f"HTTP {status}")
+        status, ucfg2, _h = _call(base, "GET", "/api/downloads/config", user)
+        check("user cannot change engine settings",
+              (ucfg2 or {}).get("max_concurrent") == 3, str(ucfg2)[:120])
+        check("user can change their own policy",
+              (ucfg2 or {}).get("duplicate_policy") == "skip", str(ucfg2)[:120])
         check("user POST /verify → 403",
               _call(base, "POST", "/api/downloads/verify", user,
                     {"provider": "alldebrid", "key": "x"})[0] == 403)

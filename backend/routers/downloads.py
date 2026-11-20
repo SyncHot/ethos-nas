@@ -53,7 +53,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import settings
 from backend.routers.auth import require_admin
-from backend.services import path_scope
+from backend.services import path_scope, user_data
 from backend.services import rss_service
 from backend.services.bencode import parse_magnet as _parse_magnet
 from backend.services.bencode import parse_torrent as _parse_torrent
@@ -222,9 +222,27 @@ def _save_tasks() -> None:
 def _load_tasks() -> None:
     global _tasks
     _tasks = download_tasks.load(_TASKS_STORE)
+    # Tasks created before the per-user split belong to the admin.
+    legacy_owner = user_data.admin_username()
+    for t in _tasks:
+        if not t.get("owner"):
+            t["owner"] = legacy_owner
 
 
 _load_tasks()
+
+
+def _owner() -> str:
+    """Owner for a newly created task."""
+    return user_data.current_username()
+
+
+def _owned(task: dict) -> bool:
+    """True when the caller may see or mutate this task."""
+    username, role = path_scope.current_identity()
+    if role == "admin":
+        return True
+    return str(task.get("owner") or "") == username
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -698,7 +716,10 @@ def _package_info(task: dict) -> Optional[dict]:
         path = str(task.get("path") or "")
         # HTTP tasks store the destination file; debrid tasks the folder.
         folder = path if task.get("kind") in ("debrid", "debrid_link") else os.path.dirname(path)
-        digest = hashlib.sha1(f"{folder}\0{base.lower()}".encode("utf-8")).hexdigest()
+        # The owner is part of the key: two accounts with the same relative
+        # names in a shared mount must not be grouped into one package.
+        owner = str(task.get("owner") or "")
+        digest = hashlib.sha1(f"{owner}\0{folder}\0{base.lower()}".encode("utf-8")).hexdigest()
         return {
             "package": base,
             "package_key": digest[:12],
@@ -708,11 +729,12 @@ def _package_info(task: dict) -> Optional[dict]:
 
 
 def _package_tasks(package_key: str) -> list[dict]:
-    """Tasks that belong to one derived package key."""
+    """Tasks that belong to one derived package key (visible to the caller)."""
     key = str(package_key or "").strip().lower()
     if not key:
         return []
-    return [t for t in _tasks if (_package_info(t) or {}).get("package_key") == key]
+    return [t for t in _tasks
+            if _owned(t) and (_package_info(t) or {}).get("package_key") == key]
 
 
 def _package_limit(task: dict, cfg: dict) -> tuple[str, int]:
@@ -766,7 +788,14 @@ def _first_volume(paths: list[str]) -> Optional[str]:
 
 def _schedule_auto_extract(task: dict) -> None:
     """Queue extraction once every part of the package is complete."""
-    if not _load_config().get("auto_extract"):
+    owner = str(task.get("owner") or "")
+    if owner and owner != user_data.current_username():
+        # The pump runs as `system`; auto-extract is a per-user preference.
+        with path_scope.identity_scope(owner, user_data.user_role(owner)):
+            enabled = _load_config().get("auto_extract")
+    else:
+        enabled = _load_config().get("auto_extract")
+    if not enabled:
         return
     try:
         loop = asyncio.get_running_loop()
@@ -867,6 +896,7 @@ def _public(task: dict) -> dict:
         "url": task["url"],
         "name": task["name"],
         "path": task.get("path", ""),
+        "owner": task.get("owner", ""),
         "status": task["status"],
         "size": int(task.get("size") or 0),
         "downloaded": int(task.get("downloaded") or 0),
@@ -923,7 +953,7 @@ def _progress(task: dict) -> float:
 def _find(task_id: str) -> Optional[dict]:
     for t in _tasks:
         if t["id"] == task_id:
-            return t
+            return t if _owned(t) else None
     return None
 
 
@@ -934,6 +964,8 @@ def _find_duplicate(url: str, target_dir: str) -> Optional[dict]:
         return None
     folder = os.path.abspath(str(target_dir or ""))
     for t in _tasks:
+        if not _owned(t):
+            continue
         if str(t.get("url") or "") != url:
             continue
         if t.get("status") not in ("waiting", "downloading", "debrid_downloading", "paused"):
@@ -1497,14 +1529,15 @@ def _watch_scan_once(cfg: dict, loop: asyncio.AbstractEventLoop, entry: dict) ->
 
 
 def _watch_loop(loop: asyncio.AbstractEventLoop) -> None:
-    """Background thread: poll the watch folder every few seconds."""
+    """Background thread: poll every account's watch folders every few seconds."""
     while not _watch_stop.is_set():
         try:
-            with path_scope.system_scope():
-                cfg = _load_config()
-                if cfg.get("watch_enabled"):
-                    for entry in cfg.get("watch_folders") or []:
-                        _watch_scan_once(cfg, loop, entry)
+            for username, _slice in list(user_data.iter_user_slices("downloads.json")):
+                with path_scope.identity_scope(username, user_data.user_role(username)):
+                    cfg = _load_config()
+                    if cfg.get("watch_enabled"):
+                        for entry in cfg.get("watch_folders") or []:
+                            _watch_scan_once(cfg, loop, entry)
         except Exception as exc:  # noqa: BLE001 — never kill the scanner thread
             logger.error("Watch folder scan error: %s", exc, exc_info=True)
         _watch_stop.wait(3.0)
@@ -1627,56 +1660,61 @@ async def _rss_scan(feed_ids: Optional[set] = None, force: bool = False) -> dict
 
 async def _rss_scan_scoped(feed_ids: Optional[set] = None, force: bool = False) -> dict:
     async with _rss_scan_lock:
-        cfg = _load_config()
-        now = _now()
         checked = 0
         queued = 0
-        for feed in cfg.get("rss_feeds") or []:
-            if feed_ids is not None and feed.get("id") not in feed_ids:
-                continue
-            if not feed.get("enabled") or not feed.get("pattern"):
-                continue
-            last = _rss_last_run.get(feed["id"], 0)
-            if not force and now - last < int(feed.get("interval_minutes") or 15) * 60:
-                continue
-            _rss_last_run[feed["id"]] = now
-            checked += 1
-            try:
-                raw = await asyncio.to_thread(_fetch_bytes_bounded, feed["url"], 2 * 1024 * 1024)
-                items = await asyncio.to_thread(rss_service.parse_feed, raw.decode("utf-8", "replace"))
-            except Exception as exc:
-                logger.warning("RSS feed %s failed: %s", feed["url"], exc)
-                continue
-            new_keys = []
-            for item in items:
-                key = str(item.get("id") or "")[:512]
-                if not key or key in _RSS_SEEN_CACHE:
-                    continue
-                new_keys.append(key)
-                if not rss_service.matches(item, feed.get("pattern") or "", feed.get("exclude") or ""):
-                    continue
-                url = item.get("magnet") or item.get("link") or ""
-                if not url:
-                    continue
-                name = (item.get("title") or "rss-download")[:255]
-                try:
-                    if url.lower().startswith("magnet:"):
-                        pass
-                    elif url.lower().split("?")[0].endswith(".torrent"):
-                        data = await asyncio.to_thread(_fetch_bytes_bounded, url, 10 * 1024 * 1024)
-                        info = _parse_torrent(data)
-                        url, name = info["magnet"], (item.get("title") or info["name"])[:255]
-                    await add_task(AddTaskRequest(
-                        url=url,
-                        name=name,
-                        folder=feed.get("destination") or None,
-                        category=feed.get("category") or None,
-                    ))
-                    queued += 1
-                    logger.info("RSS: queued %r from %s", name, feed["id"])
-                except Exception as exc:
-                    logger.warning("RSS item %r could not be queued: %s", key[:80], exc)
-            _rss_mark_seen(new_keys)
+        for username, _slice in list(user_data.iter_user_slices("downloads.json")):
+            role = user_data.user_role(username)
+            with path_scope.identity_scope(username, role):
+                cfg = _load_config()
+                now = _now()
+                for feed in cfg.get("rss_feeds") or []:
+                    if feed_ids is not None and feed.get("id") not in feed_ids:
+                        continue
+                    if not feed.get("enabled") or not feed.get("pattern"):
+                        continue
+                    run_key = (username, feed["id"])
+                    last = _rss_last_run.get(run_key, 0)
+                    if not force and now - last < int(feed.get("interval_minutes") or 15) * 60:
+                        continue
+                    _rss_last_run[run_key] = now
+                    checked += 1
+                    try:
+                        raw = await asyncio.to_thread(_fetch_bytes_bounded, feed["url"], 2 * 1024 * 1024)
+                        items = await asyncio.to_thread(rss_service.parse_feed, raw.decode("utf-8", "replace"))
+                    except Exception as exc:
+                        logger.warning("RSS feed %s failed: %s", feed["url"], exc)
+                        continue
+                    new_keys = []
+                    for item in items:
+                        key = str(item.get("id") or "")[:512]
+                        seen_key = f"{username}:{key}"
+                        if not key or seen_key in _RSS_SEEN_CACHE:
+                            continue
+                        new_keys.append(seen_key)
+                        if not rss_service.matches(item, feed.get("pattern") or "", feed.get("exclude") or ""):
+                            continue
+                        url = item.get("magnet") or item.get("link") or ""
+                        if not url:
+                            continue
+                        name = (item.get("title") or "rss-download")[:255]
+                        try:
+                            if url.lower().startswith("magnet:"):
+                                pass
+                            elif url.lower().split("?")[0].endswith(".torrent"):
+                                data = await asyncio.to_thread(_fetch_bytes_bounded, url, 10 * 1024 * 1024)
+                                info = _parse_torrent(data)
+                                url, name = info["magnet"], (item.get("title") or info["name"])[:255]
+                            await add_task(AddTaskRequest(
+                                url=url,
+                                name=name,
+                                folder=feed.get("destination") or None,
+                                category=feed.get("category") or None,
+                            ))
+                            queued += 1
+                            logger.info("RSS: queued %r from %s for %s", name, feed["id"], username)
+                        except Exception as exc:
+                            logger.warning("RSS item %r could not be queued: %s", key[:80], exc)
+                    _rss_mark_seen(new_keys)
         return {"feeds": checked, "queued": queued}
 
 
@@ -1701,13 +1739,15 @@ async def list_tasks(
     offset: int = Query(0, ge=0),
 ):
     """Tasks, most recent first (paginated — `total` is the unpaginated count)."""
-    ordered = sorted(_tasks, key=lambda x: x.get("created_at", 0), reverse=True)
+    visible = [t for t in _tasks if _owned(t)]
+    ordered = sorted(visible, key=lambda x: x.get("created_at", 0), reverse=True)
     if status:
         ordered = [t for t in ordered if t["status"] == status]
     page = ordered[offset:offset + limit] if limit else ordered[offset:]
     # Queue position reflects the real pump order (priority, then FIFO), which is
     # not the list's created_at sort.
-    queue_pos = {t["id"]: i + 1 for i, t in enumerate(_queue_order())}
+    queue_pos = {t["id"]: i + 1 for i, t in enumerate(_queue_order())
+                 if _owned(t)}
     tasks = []
     for t in page:
         item = _public(t)
@@ -1737,6 +1777,7 @@ def _make_debrid_task(target_dir: str, url: str, name: str, size: int = 0) -> di
         "name": name,
         "path": os.path.abspath(os.path.join(target_dir, name)),
         "kind": "debrid",
+        "owner": _owner(),
         "provider": provider,
         "_debrid_key": key,
         "_debrid_id": 0,
@@ -1868,6 +1909,7 @@ async def add_task(payload: AddTaskRequest):
         "name": name,
         "path": dest,
         "kind": "http",
+        "owner": _owner(),
         "status": "waiting",
         "size": 0,
         "downloaded": 0,
@@ -2259,7 +2301,7 @@ async def extract_package(package_key: str):
     return _manual_extract(_package_tasks(package_key))
 
 
-@router.post("/packages/{package_key}/limit")
+@router.post("/packages/{package_key}/limit", dependencies=[Depends(require_admin)])
 async def set_package_limit(package_key: str, payload: PackageLimitRequest):
     """Cap the bandwidth of one multi-part package (0 removes the cap).
 
@@ -2288,6 +2330,8 @@ async def set_package_limit(package_key: str, payload: PackageLimitRequest):
 async def pause_all():
     n = 0
     for t in _tasks:
+        if not _owned(t):
+            continue
         # Waiting (queued) tasks are paused too — otherwise they would start
         # as soon as an active slot frees up, defeating "pause all".
         if t["status"] in ("downloading", "debrid_downloading", "waiting"):
@@ -2306,6 +2350,8 @@ async def resume_all():
     """Resume every paused task (bulk toolbar action)."""
     n = 0
     for t in _tasks:
+        if not _owned(t):
+            continue
         if t["status"] == "paused":
             t["status"] = "waiting"
             t["error"] = ""
@@ -2356,7 +2402,7 @@ async def clear_failed():
     keep = []
     removed = 0
     for t in _tasks:
-        if t["status"] != "error":
+        if not _owned(t) or t["status"] != "error":
             keep.append(t)
             continue
         _remove_failed_partial(t)
@@ -2375,6 +2421,8 @@ async def retry_failed():
     """Re-queue every failed task (manual "Retry all failed")."""
     retried = 0
     for t in _tasks:
+        if not _owned(t):
+            continue
         if t["status"] != "error":
             continue
         t["status"] = "waiting"
@@ -2400,7 +2448,7 @@ async def clear_completed():
     keep = []
     removed = 0
     for t in _tasks:
-        if t["status"] == "completed":
+        if _owned(t) and t["status"] == "completed":
             _active.pop(t["id"], None)
             _events.pop(t["id"], None)
             removed += 1
@@ -2415,7 +2463,7 @@ async def clear_completed():
 @router.post("/tasks/reorder")
 async def reorder_tasks(payload: ReorderRequest):
     """Reorder waiting tasks. The first id gets the highest priority."""
-    known = {t["id"] for t in _tasks}
+    known = {t["id"] for t in _tasks if _owned(t)}
     missing = [tid for tid in payload.order if tid not in known]
     if missing:
         raise HTTPException(status_code=404, detail=f"Unknown task id: {missing[0]}")
@@ -2519,33 +2567,41 @@ async def get_config(request: Request):
     return _public_config(admin=_is_admin(request))
 
 
-@router.post("/config", dependencies=[Depends(require_admin)])
+@router.post("/config")
 async def save_config(request: Request, payload: dict = Body(...)):
+    """Save the caller's downloads settings.
+
+    Per-user fields (download dir, categories, watch folders, RSS, extraction
+    policy) are always applied to the caller's slice. Engine fields (concurrency,
+    schedule, speed limits, debrid credentials) are admin-only and ignored for
+    other accounts.
+    """
+    is_admin = _is_admin(request)
     cfg = _load_config()
-    if "max_concurrent" in payload:
+    if is_admin and "max_concurrent" in payload:
         try:
             cfg["max_concurrent"] = max(1, min(16, int(payload["max_concurrent"])))
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="max_concurrent must be a number between 1 and 16")
     if "download_dir" in payload and payload["download_dir"]:
-        # sanitize() applies the non-admin scope (/home, /mnt, /media) and rejects
-        # relative-path tricks; admins keep full access.
+        # sanitize() applies the caller's scope (own home, /mnt, /media) and
+        # rejects relative-path tricks; admins keep full access.
         p = path_scope.sanitize(str(payload["download_dir"]))
         if not os.path.isdir(p):
             raise HTTPException(status_code=400, detail=f"Download directory does not exist: {p}")
         if not os.access(p, os.W_OK):
             raise HTTPException(status_code=400, detail=f"Download directory is not writable: {p}")
         cfg["download_dir"] = p
-    if isinstance(payload.get("auto_download_debrid"), bool):
+    if is_admin and isinstance(payload.get("auto_download_debrid"), bool):
         cfg["auto_download_debrid"] = payload["auto_download_debrid"]
-    if isinstance(payload.get("auto_retry"), bool):
+    if is_admin and isinstance(payload.get("auto_retry"), bool):
         cfg["auto_retry"] = payload["auto_retry"]
-    if "retry_max" in payload:
+    if is_admin and "retry_max" in payload:
         try:
             cfg["retry_max"] = max(0, min(10, int(payload["retry_max"])))
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="retry_max must be a number between 0 and 10")
-    if "retry_delay" in payload:
+    if is_admin and "retry_delay" in payload:
         try:
             cfg["retry_delay"] = max(10, min(3600, int(payload["retry_delay"])))
         except (TypeError, ValueError):
@@ -2576,14 +2632,14 @@ async def save_config(request: Request, payload: dict = Body(...)):
             cfg["watch_folder"] = ""
     if isinstance(payload.get("watch_enabled"), bool):
         cfg["watch_enabled"] = payload["watch_enabled"]
-    if isinstance(payload.get("schedule"), dict):
+    if is_admin and isinstance(payload.get("schedule"), dict):
         sched = {**cfg.get("schedule", {}), **payload["schedule"]}
         if _parse_hhmm(sched.get("start")) is None or _parse_hhmm(sched.get("end")) is None:
             raise HTTPException(status_code=400, detail="Schedule start/end must be HH:MM")
         sched["enabled"] = bool(sched.get("enabled"))
         cfg["schedule"] = sched
         _cancel_window_timer()  # a new window may open sooner than the old timer
-    if isinstance(payload.get("speed_limit"), dict):
+    if is_admin and isinstance(payload.get("speed_limit"), dict):
         limits = {**cfg.get("speed_limit", {}), **payload["speed_limit"]}
         for key in ("global_bps", "per_task_bps"):
             try:
@@ -2614,7 +2670,7 @@ async def save_config(request: Request, payload: dict = Body(...)):
                 feed["destination"] = path_scope.sanitize(os.path.join(cfg["download_dir"], dest))
         cfg["rss_feeds"] = feeds
     db_in = payload.get("debrid")
-    if isinstance(db_in, dict):
+    if is_admin and isinstance(db_in, dict):
         # Merge over the CURRENT config so fields not sent by the UI (e.g. an
         # unchanged API key) are preserved; masked values ("****…") keep the old one.
         db = {**_default_debrid(), **(cfg.get("debrid") or {})}
@@ -2630,7 +2686,7 @@ async def save_config(request: Request, payload: dict = Body(...)):
     _save_config(cfg)
     logger.info("Download config updated by %s",
                 (getattr(request.state, "current_user", None) or {}).get("username", "?"))
-    return _public_config(admin=True)
+    return _public_config(admin=is_admin)
 
 
 @router.post("/config/qb-key/rotate", dependencies=[Depends(require_admin)])
@@ -2703,15 +2759,16 @@ async def run_rss_feed(feed_id: str):
 @router.get("/summary")
 async def summary():
     """Lightweight rollup for the taskbar badge / dashboard widget."""
+    visible = [t for t in _tasks if _owned(t)]
     counts = {"waiting": 0, "downloading": 0, "paused": 0, "completed": 0, "error": 0, "canceled": 0}
-    for t in _tasks:
+    for t in visible:
         s = "downloading" if t["status"] == "debrid_downloading" else t["status"]
         counts[s] = counts.get(s, 0) + 1
-    active_speed = sum(int(t.get("speed") or 0) for t in _tasks
+    active_speed = sum(int(t.get("speed") or 0) for t in visible
                        if t["status"] in ("downloading", "debrid_downloading"))
     return {
-        "total": len(_tasks),
-        "active": len(_active),
+        "total": len(visible),
+        "active": sum(1 for t in visible if t["id"] in _active),
         "counts": counts,
         "active_speed": active_speed,
         "max_concurrent": _load_config()["max_concurrent"],

@@ -120,10 +120,10 @@ def _info_hash(t: dict) -> str:
 
 def _resolve_task(h: str):
     """Resolve a qBittorrent 'hash' (info hash or task id) to a Downloads task."""
-    from backend.routers.downloads import _tasks
+    from backend.routers.downloads import _owned, _tasks
     h = h.strip().lower()
     for t in _tasks:
-        if t["id"] == h or _info_hash(t).lower() == h:
+        if (t["id"] == h or _info_hash(t).lower() == h) and _owned(t):
             return t
     return None
 
@@ -493,8 +493,8 @@ async def qb_torrents_info(request: Request, hash: str = "", hashes: str = "", c
     """
     _require_auth(request)
 
-    from backend.routers.downloads import _tasks
-    tasks = list(_tasks)
+    from backend.routers.downloads import _owned, _tasks
+    tasks = [t for t in _tasks if _owned(t)]
     wanted = {h.strip().lower() for h in (hash + "," + hashes).split(",") if h.strip()}
     if wanted:
         tasks = [t for t in tasks if t["id"].lower() in wanted or _info_hash(t) in wanted]
@@ -700,10 +700,10 @@ async def qb_sync_maindata(request: Request, rid: str = ""):
     """qBittorrent: sync data (Radarr/Sonarr poll this for torrent state updates)."""
     _require_auth(request)
 
-    from backend.routers.downloads import _tasks
-    torrents = [_qb_torrent_obj(t) for t in _tasks]
+    from backend.routers.downloads import _owned, _tasks
+    torrents = [_qb_torrent_obj(t) for t in _tasks if _owned(t)]
     active_speed = sum(int(t.get("speed") or 0) for t in _tasks
-                       if t["status"] in ("downloading", "debrid_downloading"))
+                       if _owned(t) and t["status"] in ("downloading", "debrid_downloading"))
     return {
         "rid": str(int(rid or "0") + 1),
         "torrents": torrents,
@@ -722,9 +722,9 @@ async def qb_transfer_info(request: Request):
     """qBittorrent: global transfer info."""
     _require_auth(request)
 
-    from backend.routers.downloads import _tasks
+    from backend.routers.downloads import _owned, _tasks
     active_speed = sum(int(t.get("speed") or 0) for t in _tasks
-                       if t["status"] in ("downloading", "debrid_downloading"))
+                       if _owned(t) and t["status"] in ("downloading", "debrid_downloading"))
     return {
         "download_payload_rate": active_speed,
         "upload_payload_rate": 0,
@@ -735,7 +735,12 @@ async def qb_transfer_info(request: Request):
 
 # Categories created via createCategory. In-memory only — NzbDrone re-creates
 # them on startup if missing (it checks GetCategories before adding torrents).
-_created_categories: set = set()
+_created_categories: dict[str, set] = {}
+
+
+def _category_set() -> set:
+    username, _role = path_scope.current_identity()
+    return _created_categories.setdefault(username or "default", set())
 
 
 @router.get("/torrents/categories")
@@ -743,11 +748,12 @@ async def qb_torrents_categories(request: Request):
     """qBittorrent: list categories with their save paths."""
     _require_auth(request)
 
-    from backend.routers.downloads import _load_config, _tasks
+    from backend.routers.downloads import _load_config, _owned, _tasks
     configured = {str(c.get("name")): str(c.get("save_path") or "")
                   for c in (_load_config().get("categories") or [])}
-    implicit = {t.get("_qb_category", "") for t in _tasks if t.get("_qb_category")}
-    names = sorted(set(configured) | implicit | _created_categories)
+    implicit = {t.get("_qb_category", "") for t in _tasks
+                if _owned(t) and t.get("_qb_category")}
+    names = sorted(set(configured) | implicit | _category_set())
     # Return as a dict (qBittorrent v2 format) — NzbDrone deserializes into
     # a Dictionary<string, QBittorrentLabel>, not a JSON array.
     return {name: {"name": name, "savePath": configured.get(name, "")} for name in names}
@@ -770,7 +776,7 @@ async def qb_torrents_create_category(request: Request):
         # scope (published by _require_auth): an admin key keeps full access,
         # a personal API key stays inside its home plus /mnt and /media.
         save_path = path_scope.sanitize(save_path)
-    _created_categories.add(category)
+    _category_set().add(category)
     _upsert_category(category, save_path)
     return PlainTextResponse(content="")
 
@@ -786,7 +792,7 @@ async def qb_torrents_delete_category(request: Request):
     category = str(form.get("category", "")).strip()
     if not category:
         return PlainTextResponse(content="Category name cannot be empty")
-    _created_categories.discard(category)
+    _category_set().discard(category)
     _remove_category(category)
     return PlainTextResponse(content="")
 

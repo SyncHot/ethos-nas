@@ -11,6 +11,25 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.6.6] - 2026-11-20
+
+### Added
+
+- **Per-user Downloads.** Each account has its own download directory, categories,
+  watch folders, RSS feeds and extraction policy. Task lists, bulk actions and the
+  qBittorrent API only show or change the caller's tasks.
+
+### Changed
+
+- Engine settings (concurrency, schedule, speed/package limits, debrid
+  credentials) stay global and admin-only; the existing downloads config is
+  adopted by the admin on upgrade, other accounts start with `<home>/Downloads`.
+
+### Security
+
+- A personal API key can no longer see, pause, delete or re-categorise another
+  account's downloads through the qBittorrent-compatible API.
+
 ## [2.6.5] - 2026-11-20
 
 ### Added

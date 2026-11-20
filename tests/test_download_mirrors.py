@@ -25,6 +25,7 @@ from fastapi import HTTPException  # noqa: E402
 
 from backend.routers import downloads  # noqa: E402
 from backend.services import notifications_service  # noqa: E402
+from backend.services import path_scope  # noqa: E402
 
 FAILURES = []
 
@@ -51,6 +52,9 @@ def add_task_payload(**kw):
 
 
 def main() -> int:
+    # Engine-level test: tasks are built directly, so use the system identity.
+    path_scope.CURRENT_ROLE.set("admin")
+    path_scope.CURRENT_USER.set("system")
     cfg = {"download_dir": WORK, "auto_retry": True, "retry_max": 3, "retry_delay": 10,
            "duplicate_policy": "rename", "max_concurrent": 2}
     original = {

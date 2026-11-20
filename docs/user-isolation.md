@@ -1,8 +1,7 @@
 # Feature: Per-user filesystem scope & app isolation
 
-Status: **Phase 1 + Phase 2 implemented** (v2.6.4/v2.6.5). Phases 3–4 are the
-remaining work for "an installed app can never reach more than the signed-in
-user".
+Status: **Phases 1–3 implemented** (v2.6.4–v2.6.6). Phase 4 is the remaining
+work for "an installed app can never reach more than the signed-in user".
 
 ## Problem
 
@@ -39,7 +38,13 @@ user".
   stores; adopts the pre-multi-user files into the admin's directory at startup.
 - Per-user files: `gallery_config.json`, `gallery_index.db`, `albums.json`,
   `music_config.json`, `music_library.json`, `video_station_config.json`,
-  `video_station_resume.json`, `editor.json` (all under the user directory).
+  `video_station_resume.json`, `editor.json`, `downloads.json` (all under the
+  user directory).
+- Downloads keep `downloads_config.json` at the DATA_DIR root as the **global
+  engine** config (concurrency, schedule, speed limits, package limits, debrid
+  credentials, legacy qB key). Each account's download dir, categories, watch
+  folders, RSS feeds and extraction policy live in `users/<user>/downloads.json`.
+  Tasks carry `owner`; every task endpoint and the qBittorrent API filter by it.
 - Share links carry `owner` + `owner_role`; the public route re-validates every
   stored path on each request.
 - qBittorrent SID sessions store the caller identity; `_require_auth` publishes
@@ -73,7 +78,8 @@ user".
 - [x] Phase 2 — per-user gallery/music/video/editor stores
       (`DATA_DIR/users/<user>/`), legacy stores adopted by the admin
 - [x] Backup/export includes per-user stores and gallery indexes
-- [ ] Phase 3 — per-user download config, task owners, per-user qB tasks/categories
+- [x] Phase 3 — per-user download config, task owners, per-user qB tasks/categories
+      and per-user watch/RSS scans
 - [ ] Phase 4 — compose package bind hardening (`PACKAGES_ROOT` self-only)
 - [ ] Phase 5 — follow-up: per-package OS confinement for `venv` packages
 
@@ -90,6 +96,9 @@ user".
   editor state, and legacy root stores are adopted by the admin.
 - `tests/test_config_export.py`: per-user stores and indexes travel with the
   config archive.
+- `tests/test_downloads_owner.py`: task visibility by owner, engine settings vs.
+  per-user slice, legacy config adoption.
+- `tests/test_qb_compat.py`: categories/tasks are scoped to the qB caller.
 
 ## Further considerations
 

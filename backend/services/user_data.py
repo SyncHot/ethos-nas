@@ -91,6 +91,30 @@ def admin_username() -> str:
     return "admin"
 
 
+def user_role(username: str) -> str:
+    """Role for an account, defaulting to `user` when the store is unreadable."""
+    wanted = safe_username(username)
+    try:
+        for user in users_store.load():
+            if safe_username(str(user.get("username") or "")) == wanted:
+                return str(user.get("role") or "user")
+    except Exception:  # noqa: BLE001 — a broken account store must not block scans
+        logger.error("Could not read users.json for %s", wanted, exc_info=True)
+    return "user"
+
+
+def iter_user_slices(filename: str):
+    """Yield (username, data) for every account that has `filename` stored."""
+    root = users_root()
+    if not root.is_dir():
+        return
+    for path in sorted(root.glob(f"*/{filename}")):
+        name = path.parent.name
+        data = json_store.get(path, dict).load()
+        if isinstance(data, dict):
+            yield name, data
+
+
 def adopt_legacy(filename: str) -> bool:
     """Move a pre-multi-user store into the admin's directory once."""
     source = settings.DATA_DIR / filename
@@ -115,6 +139,37 @@ def adopt_all() -> None:
     for filename in LEGACY_STORES:
         adopt_legacy(filename)
     _split_legacy_music_library()
+    _adopt_download_config()
+
+
+def _adopt_download_config() -> None:
+    """Copy the user-facing half of the legacy downloads config to the admin.
+
+    ``downloads_config.json`` stays in place as the global engine config; its
+    former user fields (download dir, categories, watch folders, RSS) become
+    the admin's per-user slice once.
+    """
+    source = settings.DATA_DIR / "downloads_config.json"
+    target = user_path("downloads.json", admin_username())
+    if not source.is_file() or target.exists():
+        return
+    try:
+        data = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        logger.error("Legacy downloads config unreadable — leaving it untouched", exc_info=True)
+        return
+    if not isinstance(data, dict):
+        return
+    fields = ("download_dir", "categories", "watch_enabled", "watch_folders",
+              "rss_feeds", "duplicate_policy", "auto_extract", "auto_extract_delete")
+    user_slice = {k: data[k] for k in fields if k in data}
+    if not user_slice:
+        return
+    try:
+        json_store.get(target, dict).save(user_slice)
+        logger.info("Adopted the legacy downloads config for %s", admin_username())
+    except Exception:  # noqa: BLE001 — startup must continue with defaults
+        logger.error("Could not adopt the legacy downloads config", exc_info=True)
 
 
 def _split_legacy_music_library() -> None:
