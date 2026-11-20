@@ -226,6 +226,10 @@ class Settings:
     # LRU caps for the two thumbnail caches.
     THUMB_CACHE_MAX_FILES: int = int(os.getenv("ETHOS_THUMB_CACHE_MAX_FILES", "20000"))
     VIDEO_THUMB_CACHE_MAX_FILES: int = int(os.getenv("ETHOS_VIDEO_THUMB_CACHE_MAX_FILES", "5000"))
+    # Concurrent video thumbnail workers. Each ffmpeg run is capped to two
+    # decode threads and runs niced/idle-IO, so 2 keeps large HEVC files from
+    # eating the box while still draining a folder in the background.
+    VIDEO_THUMB_CONCURRENCY: int = int(os.getenv("ETHOS_VIDEO_THUMB_CONCURRENCY", "2"))
 
     # ── Unified log store (services/log_service.py, docs/logs.md) ────────────
     # In-memory ring size (entries), per-file size cap and generation count.

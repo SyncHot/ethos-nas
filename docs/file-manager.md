@@ -283,3 +283,45 @@ ETHOS_TEST_BASE=http://127.0.0.1:9002 .venv/bin/python tests/test_file_manager_f
 
 Frontend changes require only a browser reload; backend changes require a server
 restart (Settings → Restart).
+
+## 7. Video thumbnails — master frame + 202 queue (2026-11-20)
+
+**Problem.** Most video tiles never got a thumbnail. The backend answered
+`202 Accepted` whenever both ffmpeg slots were busy, but the grid loaded frames
+through a plain `<img>` tag: an `<img>` cannot read a status code — it only
+fires `error` — so every queued tile was marked "missing" permanently. On top
+of that, each grid size re-ran ffmpeg (compact 320 vs cinematic 640), the four
+candidate seeks multiplied decode work, and the 8K VR files in Downloads timed
+out over and over on every scroll, saturating CPU.
+
+**Fix.**
+
+- **One master frame per video** (`<hash>_vid_v3.webp`, 640 px): every size is a
+  PIL downscale of that master. Compact ↔ cinematic toggling no longer decodes
+  the folder again; `warm-thumbnails` uses the same artifact.
+- **Background worker + 202**: the endpoint only checks the cache and enqueues
+  a deduplicated job (`_VIDEO_THUMB_INFLIGHT`, cap 48); extraction runs in
+  `settings.VIDEO_THUMB_CONCURRENCY` (default 2) niced workers. A request never
+  holds a browser connection while ffmpeg runs.
+- **Client polling**: video tiles load through `fetch()` and retry on 202 with
+  `Retry-After` (~10 tries), keeping a 300-entry blob-URL cache so re-renders
+  and size toggles are instant. `tests/test_video_thumb_pipeline.py` guards the
+  server contract.
+- **Failure backoff** (`.fail.json` sidecar): attempts 1–4 wait 60 s → 5 min →
+  15 min → 1 h, then the file is marked permanent (1 retry/day). A changed
+  source (mtime/size) resets the marker and regenerates. Permanent failures
+  serve a static SVG with a 1 h cache instead of queueing ffmpeg forever.
+- **Cheaper ffmpeg**: `-threads 2` decode cap, `nice -n 19` + `ionice -c 3`,
+  `-an -sn -dn`, and a 75 s wall-clock budget per file. Seek order: input-side
+  `-ss` (fast path) → keyframe-only scan (`-skip_frame nokey` + output `-ss`,
+  rescues long-GOP sources) → full decode 1 s in (last resort).
+- Face detection (media-enhance package) is only attempted when the package is
+  running; without it the first valid frame wins instead of decoding three
+  candidates to find nothing.
+
+**Measured on the test fixtures**: 1080p input-seek extraction 0.4 s (plain)
+/ 0.8–1.9 s niced; a 6 s single-keyframe clip dropped from 9.7 s + 0-byte
+keyframe attempts to one decode in ~1.2 s. The v2 per-size video caches are
+dropped at startup (`_cleanup_stale_thumb_artifacts`) so they stop counting
+against the 20 k thumbnail cap.
+

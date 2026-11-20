@@ -45,6 +45,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
@@ -241,11 +242,18 @@ def _cache_is_fresh(cache_file: Path, abs_path: str) -> bool:
         return False
 
 
-def _write_thumb_meta(cache_file: Path, abs_path: str):
+def _write_thumb_meta(cache_file: Path, abs_path: str, extra: dict | None = None):
+    """Record the source mtime+size a cached artifact was built from.
+
+    ``extra`` merges derived artifacts' own lineage (e.g. the mtime of the
+    master frame a per-size slot was rendered from).
+    """
     try:
         st = os.stat(abs_path)
-        _thumb_meta_file(cache_file).write_text(json.dumps(
-            {"src_mtime": st.st_mtime, "src_size": st.st_size}))
+        data = {"src_mtime": st.st_mtime, "src_size": st.st_size}
+        if extra:
+            data.update(extra)
+        _thumb_meta_file(cache_file).write_text(json.dumps(data))
     except OSError:
         pass  # probe failure means 'not present'
 
@@ -254,7 +262,15 @@ def _cleanup_stale_thumb_artifacts():
     """Remove orphaned thumbnail artifacts (no sidecar meta) — one-time sweep."""
     try:
         for f in THUMB_DIR.iterdir():
-            if not f.is_file() or f.suffix != ".webp":
+            if not f.is_file():
+                continue
+            if "_vid_v2" in f.name:
+                # Previous video pipeline (one ffmpeg run per size) — superseded
+                # by the master-frame cache; drop it so it stops eating the cap.
+                with contextlib.suppress(OSError):
+                    f.unlink()
+                continue
+            if f.suffix != ".webp":
                 continue
             if _thumb_meta_file(f).exists():
                 continue
@@ -266,9 +282,205 @@ def _cleanup_stale_thumb_artifacts():
 
 
 # ── Video thumbnail generation (shared by GET + warm endpoints) ─────────────
+#
+# One ffmpeg run per file: a master frame at VIDEO_THUMB_WIDTH is extracted
+# once and every requested size is a cheap PIL downscale of that master — so
+# compact (320) and cinematic (640) grids share the same decode and toggling
+# the preview mode never re-runs ffmpeg for the whole folder.
+#
+# Extraction always happens in a bounded background worker: a cache miss
+# enqueues a job and the request answers 202 + Retry-After immediately. Files
+# that keep failing back off exponentially instead of being retried on every
+# grid refresh (an 8K VR clip used to queue four 30 s ffmpeg attempts per
+# scroll).
 
 _VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".m4v", ".wmv", ".ts", ".mts"}
-_video_thumb_semaphore = asyncio.Semaphore(2)  # max 2 concurrent ffmpeg processes
+VIDEO_THUMB_WIDTH = 640              # master frame width; larger requests clamp to it
+_VIDEO_THUMB_VERSION = "vid_v3"      # bump to invalidate every cached video frame
+_VIDEO_THUMB_FAIL_MAX_ATTEMPTS = 4
+_VIDEO_THUMB_BACKOFF = (60, 300, 900, 3600)  # seconds, indexed by attempt-1
+_VIDEO_THUMB_PERMANENT_BACKOFF = 86400      # a hopeless file costs 1 try per day
+_VIDEO_THUMB_QUEUE_MAX = 48          # pending jobs; beyond that clients poll again
+_VIDEO_THUMB_TOTAL_BUDGET = 75       # wall-clock cap for one file, seconds
+_VIDEO_THUMB_MAX_BYTES = 50 * 1024 ** 3
+
+# Max concurrent ffmpeg processes (CPU/RAM guard). Jobs beyond this wait in
+# the asyncio queue; each ffmpeg itself is capped to 2 decode threads.
+_video_thumb_semaphore = asyncio.Semaphore(max(1, settings.VIDEO_THUMB_CONCURRENCY))
+_VIDEO_THUMB_INFLIGHT: dict[str, asyncio.Task] = {}
+
+
+@lru_cache(maxsize=1)
+def _ffmpeg_thumb_prefix() -> tuple[str, ...]:
+    """Lowest-priority ffmpeg wrapper for background frame grabs.
+
+    ``nice -n 19`` keeps the CPU for the UI/API; ``ionice -c 3`` keeps a
+    thumbnail burst from starving the disks (media streams stay smooth).
+    """
+    prefix: list[str] = ["nice", "-n", "19"]
+    if shutil.which("ionice"):
+        prefix += ["ionice", "-c", "3"]
+    return tuple(prefix + ["ffmpeg"])
+
+
+def _video_cache_base(abs_path: str) -> str:
+    return hashlib.sha256(abs_path.encode()).hexdigest()[:16]
+
+
+def _video_master_file(abs_path: str) -> Path:
+    """Full-width frame extracted from the video (the only ffmpeg artifact)."""
+    return THUMB_DIR / f"{_video_cache_base(abs_path)}_{_VIDEO_THUMB_VERSION}.webp"
+
+
+def _video_slot_file(abs_path: str, size: int) -> Path:
+    """Per-size WebP rendered from the master frame."""
+    return THUMB_DIR / f"{_video_cache_base(abs_path)}_{_VIDEO_THUMB_VERSION}_{size}.webp"
+
+
+def _video_fail_file(abs_path: str) -> Path:
+    return THUMB_DIR / f"{_video_cache_base(abs_path)}_{_VIDEO_THUMB_VERSION}.fail.json"
+
+
+def _video_master_is_fresh(abs_path: str) -> bool:
+    master = _video_master_file(abs_path)
+    return master.exists() and _cache_is_fresh(master, abs_path)
+
+
+def _video_slot_is_fresh(slot: Path, master: Path, abs_path: str) -> bool:
+    """Slot matches the source file AND the master frame it was rendered from."""
+    if not (slot.exists() and _cache_is_fresh(slot, abs_path)):
+        return False
+    try:
+        data = json.loads(_thumb_meta_file(slot).read_text())
+        return float(data.get("master_mtime", -1.0)) >= master.stat().st_mtime - 1.0
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _read_video_thumb_failure(abs_path: str) -> dict:
+    """Failure marker for the current source; {} when absent or stale.
+
+    The marker stores the source mtime+size, so replacing/re-encoding a file
+    that used to fail starts a fresh set of attempts.
+    """
+    try:
+        data = json.loads(_video_fail_file(abs_path).read_text())
+        if not isinstance(data, dict):
+            return {}
+        st = os.stat(abs_path)
+        if (abs(st.st_mtime - float(data.get("src_mtime", 0))) >= 1.0
+                or int(data.get("src_size", -1)) != st.st_size):
+            return {}
+        return data
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _record_video_thumb_failure(abs_path: str, reason: str, permanent: bool = False) -> dict:
+    """Bump the attempt counter and schedule the next try (exponential)."""
+    try:
+        st = os.stat(abs_path)
+    except OSError:
+        return {}
+    attempts = int(_read_video_thumb_failure(abs_path).get("attempts", 0)) + 1
+    permanent = permanent or attempts >= _VIDEO_THUMB_FAIL_MAX_ATTEMPTS
+    delay = (_VIDEO_THUMB_PERMANENT_BACKOFF if permanent
+             else _VIDEO_THUMB_BACKOFF[min(attempts, len(_VIDEO_THUMB_BACKOFF)) - 1])
+    data = {
+        "attempts": attempts,
+        "next_try": time.time() + delay,
+        "permanent": permanent,
+        "reason": reason[:200],
+        "src_mtime": st.st_mtime,
+        "src_size": st.st_size,
+    }
+    try:
+        _video_fail_file(abs_path).write_text(json.dumps(data))
+    except OSError:
+        pass  # bookkeeping only — a lost marker costs one extra attempt
+    return data
+
+
+def _clear_video_thumb_failure(abs_path: str):
+    with contextlib.suppress(OSError):
+        _video_fail_file(abs_path).unlink()
+
+
+def _video_thumb_backoff(abs_path: str) -> dict | None:
+    """Active backoff marker, or None when a new attempt is allowed now."""
+    data = _read_video_thumb_failure(abs_path)
+    if not data:
+        return None
+    try:
+        next_try = float(data.get("next_try", 0))
+    except (TypeError, ValueError):
+        return None
+    return data if time.time() < next_try else None
+
+
+def _render_video_slot(master: Path, abs_path: str, size: int, slot: Path) -> bool:
+    """Downscale the master frame into a per-size WebP cache slot (PIL)."""
+    tmp_file = slot.with_suffix(".tmp.webp")
+    try:
+        from PIL import Image as PILImage
+        with PILImage.open(master) as img:
+            w, h = img.size
+            if w > size:
+                img = img.resize((size, max(2, int(h * size / w))), PILImage.Resampling.LANCZOS)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            img.save(str(tmp_file), "WEBP", quality=82)
+        tmp_file.replace(slot)
+        _write_thumb_meta(slot, abs_path, {"master_mtime": master.stat().st_mtime})
+        return True
+    except Exception as exc:
+        logger.warning("Video thumb slot render failed for %s: %s", abs_path, exc)
+        with contextlib.suppress(OSError):
+            tmp_file.unlink()
+        return False
+
+
+async def _generate_video_master(abs_path: str) -> bool:
+    """Background worker: one niced ffmpeg frame grab into the master slot."""
+    if _cover_is_fresh(abs_path):
+        # A user cover supersedes the automatic frame — not a failure.
+        return False
+    try:
+        if os.path.getsize(abs_path) > _VIDEO_THUMB_MAX_BYTES:
+            logger.warning("Video too large for thumbnail: %s", abs_path)
+            _record_video_thumb_failure(abs_path, "too_large", permanent=True)
+            return False
+    except OSError:
+        return False
+    master = _video_master_file(abs_path)
+    ok = False
+    async with _video_thumb_semaphore:
+        try:
+            ok = await asyncio.to_thread(
+                _extract_video_frame, abs_path, VIDEO_THUMB_WIDTH, master)
+        except Exception as exc:
+            logger.warning("Video thumbnail generation failed for %s: %s",
+                           abs_path, exc, exc_info=True)
+    if ok and master.exists():
+        _clear_video_thumb_failure(abs_path)
+        return True
+    _record_video_thumb_failure(abs_path, "no_frame")
+    return False
+
+
+def _queue_video_thumb(abs_path: str) -> bool:
+    """Deduplicated enqueue of a master-frame job. True when a job is pending."""
+    task = _VIDEO_THUMB_INFLIGHT.get(abs_path)
+    if task is not None and not task.done():
+        return True
+    if len(_VIDEO_THUMB_INFLIGHT) >= _VIDEO_THUMB_QUEUE_MAX:
+        return False
+    task = task_registry.spawn(_generate_video_master(abs_path), name="video-thumb")
+    if task is None:
+        return False
+    _VIDEO_THUMB_INFLIGHT[abs_path] = task
+    task.add_done_callback(lambda _t, k=abs_path: _VIDEO_THUMB_INFLIGHT.pop(k, None))
+    return True
 
 # ── Custom video covers (user-captured frame shown as the file's thumbnail) ──
 
@@ -317,14 +529,7 @@ def _render_cover_to_cache(abs_path: str, size: int, cache_file: Path) -> bool:
                 img = img.convert("RGB")
             img.save(str(tmp_file), "WEBP", quality=85)
         tmp_file.replace(cache_file)
-        _write_thumb_meta(cache_file, abs_path)
-        try:
-            meta_f = _thumb_meta_file(cache_file)
-            data = json.loads(meta_f.read_text())
-            data["master_mtime"] = master.stat().st_mtime
-            meta_f.write_text(json.dumps(data))
-        except (OSError, ValueError) as exc:
-            logger.warning("Cover slot meta update failed for %s: %s", abs_path, exc)
+        _write_thumb_meta(cache_file, abs_path, {"master_mtime": master.stat().st_mtime})
         return True
     except Exception as exc:
         logger.warning("Cover render failed for %s: %s", abs_path, exc)
@@ -338,8 +543,9 @@ def _grab_cover_frame_sync(abs_path: str, t: float, out_file: Path, left_half: b
     (VR goggles) videos this yields a single-eye image instead of the doubled
     stereo pair.
     """
-    cmd = ["nice", "-n", "19", "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-           "-ss", f"{t:.3f}", "-i", abs_path]
+    cmd = list(_ffmpeg_thumb_prefix()) + [
+        "-nostdin", "-hide_banner", "-loglevel", settings.FFMPEG_LOGLEVEL,
+        "-threads", "2", "-ss", f"{t:.3f}", "-i", abs_path]
     if left_half:
         cmd += ["-vf", "crop=iw/2:ih:0:0"]
     cmd += ["-vframes", "1", "-q:v", "2", "-f", "image2", "-y", str(out_file)]
@@ -350,9 +556,11 @@ def _probe_duration(abs_path: str) -> float:
     """Probe video duration with ffprobe. Returns 0 on failure."""
     try:
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            ["nice", "-n", "19", "ffprobe", "-v", "error",
+             "-probesize", "1000000", "-analyzeduration", "1000000",
+             "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", abs_path],
-            capture_output=True, text=True, timeout=8,
+            capture_output=True, text=True, timeout=6,
         )
         return float(probe.stdout.strip()) if probe.stdout.strip() else 0.0
     except Exception:
@@ -386,7 +594,7 @@ def _detect_face_in_frame(frame_path: str):
         return None
     try:
         payload = package_client.post_bytes(
-            MEDIA_ENHANCE, "/face", data, "application/octet-stream", timeout=20,
+            MEDIA_ENHANCE, "/face", data, "application/octet-stream", timeout=10,
         )
     except package_client.PackageUnavailable:
         logger.debug("Face detection skipped: package %s is not installed", MEDIA_ENHANCE)
@@ -459,11 +667,14 @@ def _extract_video_frame(abs_path: str, size: int, cache_file: Path, face_crop: 
     # Files with a fresh custom cover are served from the dedicated cover slot
     # by the endpoints — skip auto-generation so it can never clobber the
     # user-picked frame.
-    # Files with a fresh custom cover are served from the dedicated cover slot
-    # by the endpoints — skip auto-generation so it can never clobber the
-    # user-picked frame.
     if _cover_is_fresh(abs_path):
         return False
+
+    # Face detection needs the media-enhance package; without it every extra
+    # candidate would just re-decode the same video to find nothing, so the
+    # first valid frame wins and the scan stops immediately.
+    if face_crop and not package_client.is_available(MEDIA_ENHANCE):
+        face_crop = False
 
     duration = _probe_duration(abs_path)
     # Candidate seek points: ~10% of duration first (clamped 5–60 s), then a
@@ -486,23 +697,40 @@ def _extract_video_frame(abs_path: str, size: int, cache_file: Path, face_crop: 
         candidates = [10]
 
     tmp_file = cache_file.with_suffix(".tmp.webp")
-    # (ss_position, timeout): input-side first (fast), output-side as fallback.
-    attempts = []
+    # Three strategies, cheapest first:
+    #  1. input-side ``-ss`` — the demuxer jumps to the previous keyframe and
+    #     decodes only up to the target; the normal case lands in well under a
+    #     second (the old code had four 30 s attempts for this alone);
+    #  2. keyframe-only scan from the start (``-skip_frame nokey`` + output
+    #     ``-ss``) — skips every P/B frame, which rescues long-GOP sources where
+    #     (1) would decode minutes of 8K video;
+    #  3. a full decode ~1 s in — last resort for containers where the
+    #     keyframe-only scan yields nothing at all.
+    base_input = ["-nostdin", "-hide_banner", "-loglevel", settings.FFMPEG_LOGLEVEL,
+                  "-threads", "2"]
+    rescue_t = 0.0 if duration <= 0 else min(1.0, duration / 2)
+    attempts: list[tuple[list[str], int]] = []
     for t in candidates:
-        attempts.append((["-nostdin", "-hide_banner", "-loglevel", "error", "-ss", str(t), "-i", abs_path], 30))
-    if duration <= 0:
-        # Unknown duration — keep the legacy output-side seek as last resort.
-        attempts.append((["-nostdin", "-hide_banner", "-loglevel", "error", "-i", abs_path, "-ss", str(candidates[0])], 90))
+        attempts.append((base_input + ["-ss", str(t), "-i", abs_path], 20))
+    attempts.append((base_input + ["-skip_frame", "nokey", "-i", abs_path,
+                                   "-ss", str(candidates[0])], 20))
+    attempts.append((base_input + ["-i", abs_path, "-ss", str(rescue_t)], 30))
 
     best_frame = None      # (frame_path, face_box) — a frame with a detected face
     fallback_file = None   # first valid frame without a face (kept as backup)
     fallback_path = cache_file.with_suffix(".fb.webp")
+    deadline = time.monotonic() + _VIDEO_THUMB_TOTAL_BUDGET
     for prefix_args, timeout in attempts:
+        remaining = deadline - time.monotonic()
+        if remaining < 5:
+            logger.warning("ffmpeg thumbnail budget exhausted for %s", abs_path)
+            break
         try:
             if tmp_file.exists():
                 tmp_file.unlink()
             proc = subprocess.run(
-                ["nice", "-n", "19", "ffmpeg"] + prefix_args + [
+                list(_ffmpeg_thumb_prefix()) + prefix_args + [
+                    "-map", "0:v:0", "-an", "-sn", "-dn",
                     "-vframes", "1",
                     "-vf", f"scale={size}:-2",
                     # explicit static encoder: ffmpeg 8's webp muxer defaults to
@@ -511,7 +739,7 @@ def _extract_video_frame(abs_path: str, size: int, cache_file: Path, face_crop: 
                     "-f", "webp",
                     "-y", str(tmp_file),
                 ],
-                capture_output=True, timeout=timeout,
+                capture_output=True, timeout=max(5, int(min(timeout, remaining))),
             )
         except subprocess.TimeoutExpired:
             logger.warning("ffmpeg thumbnail timeout for %s (attempt)", abs_path)
@@ -521,8 +749,14 @@ def _extract_video_frame(abs_path: str, size: int, cache_file: Path, face_crop: 
             break
         if not (proc.returncode == 0 and tmp_file.exists() and tmp_file.stat().st_size > 0):
             continue
+        if not face_crop:
+            # First valid frame is the answer — no detector to please, and the
+            # remaining candidates would only decode the source again.
+            tmp_file.replace(cache_file)
+            _write_thumb_meta(cache_file, abs_path)
+            return True
         # Got a valid frame — try face detection before accepting it.
-        box = _detect_face_in_frame(str(tmp_file)) if face_crop else None
+        box = _detect_face_in_frame(str(tmp_file))
         if box is not None:
             best_frame = (tmp_file, box)
             break
@@ -556,10 +790,6 @@ def _extract_video_frame(abs_path: str, size: int, cache_file: Path, face_crop: 
     return False
 
 
-async def _generate_video_thumb(abs_path: str, size: int, cache_file: Path) -> bool:
-    """Threaded wrapper around the ffmpeg frame extraction."""
-    return await asyncio.to_thread(_extract_video_frame, abs_path, size, cache_file)
-
 def render_video_thumb(abs_path: str, size: int, out_file: Path) -> bool:
     """Render the effective video thumbnail into ``out_file`` (WebP).
 
@@ -575,7 +805,7 @@ def render_video_thumb(abs_path: str, size: int, out_file: Path) -> bool:
         return False
 
 
-def _video_fallback_svg(size: int) -> Response:
+def _video_fallback_svg(size: int, cache: str | None = None) -> Response:
     svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{int(size*0.75)}" viewBox="0 0 120 90">
         <defs>
             <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
@@ -587,7 +817,8 @@ def _video_fallback_svg(size: int) -> Response:
         <circle cx="60" cy="45" r="17" fill="rgba(255,255,255,0.14)"/>
         <polygon points="55,37 55,53 69,45" fill="rgba(255,255,255,0.85)"/>
     </svg>'''
-    return Response(content=svg, media_type="image/svg+xml")
+    headers = {"Cache-Control": cache} if cache else None
+    return Response(content=svg, media_type="image/svg+xml", headers=headers)
 
 
 # ── Transcode (H.264 remux for browser playback) ─────────────────────────────
@@ -1306,13 +1537,13 @@ async def video_thumbnail(
     path: str = Query(...),
     size: int = Query(320, ge=64, le=640),
 ):
-    """Generate a thumbnail for a video file using ffmpeg.
+    """Serve a cached video frame; enqueue extraction on a miss.
 
-    Extracts one frame at ~10% of duration (clamped 5–60 s) and caches it as
-    WebP with a sidecar meta file.  Concurrency is limited to 2 ffmpeg
-    processes; when the queue is busy the endpoint returns **202 Accepted**
-    with ``Retry-After`` so the frontend can show a placeholder and poll,
-    instead of holding the request open for minutes on huge files.
+    One master frame per file is extracted by a bounded, niced background
+    worker and every size is a cheap PIL downscale of it — the compact (320)
+    and cinematic (640) grids share a single ffmpeg run. A miss answers
+    **202 Accepted** with ``Retry-After`` so the client re-requests instead of
+    holding the connection; repeated failures back off exponentially per file.
 
     Args:
         path: Absolute filesystem path to the video file.
@@ -1326,11 +1557,8 @@ async def video_thumbnail(
     if ext not in _VIDEO_EXTS:
         raise HTTPException(status_code=400, detail="Not a supported video format")
 
-    # v2: face-detection crop — busts old cache so existing thumbs regenerate.
-    cache_key = _make_thumb_key(abs_path, size) + "_vid_v2"
-    cache_file = THUMB_DIR / f"{cache_key}.webp"
-
     _ensure_thumb_dir()
+    width = min(int(size), VIDEO_THUMB_WIDTH)
 
     # no-cache so a freshly captured cover shows up on the next grid load;
     # unchanged entries still answer as cheap 304s via If-Modified-Since.
@@ -1338,43 +1566,47 @@ async def video_thumbnail(
         return FileResponse(str(p), media_type="image/webp",
                             headers={"Cache-Control": "no-cache"})
 
-    try:
-        # Custom covers are authoritative and live in their own cache slot — the
-        # automatic pipeline never writes there, so an in-flight or queued frame
-        # extraction can't overwrite a user-picked cover.
-        if _cover_is_fresh(abs_path):
-            cover_file = THUMB_DIR / f"{cache_key}_cover.webp"
-            ok = _cover_slot_is_fresh(cover_file, abs_path)
-            if not ok:
-                ok = await asyncio.to_thread(_render_cover_to_cache, abs_path, size, cover_file)
-            if ok and cover_file.exists():
-                return _serve(cover_file)
+    # Custom covers are authoritative and live in their own cache slot — the
+    # automatic pipeline never writes there, so an in-flight or queued frame
+    # extraction can't overwrite a user-picked cover.
+    if _cover_is_fresh(abs_path):
+        cover_file = (THUMB_DIR / f"{_video_cache_base(abs_path)}_"
+                      f"{_VIDEO_THUMB_VERSION}_cover_{width}.webp")
+        if not _cover_slot_is_fresh(cover_file, abs_path):
+            await asyncio.to_thread(_render_cover_to_cache, abs_path, width, cover_file)
+        if cover_file.exists():
+            return _serve(cover_file)
+        return _video_fallback_svg(width)
 
-        # Return cached thumbnail if source hasn't changed.
-        if cache_file.exists() and _cache_is_fresh(cache_file, abs_path):
-            return _serve(cache_file)
+    master = _video_master_file(abs_path)
+    if not (master.exists() and _cache_is_fresh(master, abs_path)):
+        backoff = _video_thumb_backoff(abs_path)
+        if backoff is not None:
+            if backoff.get("permanent"):
+                # Hopeless source — show the generic tile instead of re-queueing
+                # an ffmpeg attempt on every grid refresh.
+                return _video_fallback_svg(width, cache="private, max-age=3600")
+            try:
+                delay = int(float(backoff.get("next_try", 0)) - time.time())
+            except (TypeError, ValueError):
+                delay = 2
+            return Response(status_code=202,
+                            headers={"Retry-After": str(max(2, min(10, delay)))})
+        if not _queue_video_thumb(abs_path):
+            # Worker pool saturated — ask the client to poll again shortly.
+            return Response(status_code=202, headers={"Retry-After": "5"})
+        return Response(status_code=202, headers={"Retry-After": "2"})
 
-        # Queue busy → tell the client to retry shortly (frontend polls).
-        if _video_thumb_semaphore.locked():
-            return Response(status_code=202, headers={"Retry-After": "3"})
+    if width >= VIDEO_THUMB_WIDTH:
+        return _serve(master)
 
-        try:
-            async with _video_thumb_semaphore:
-                success = await asyncio.wait_for(
-                    _generate_video_thumb(abs_path, size, cache_file), timeout=90
-                )
-        except TimeoutError:
-            logger.warning("Video thumbnail generation timed out for %s", abs_path)
-            success = False
-
-        if success and cache_file.exists():
-            return _serve(cache_file)
-    except Exception as exc:
-        logger.error("Video thumbnail failed for %s: %s", abs_path, exc, exc_info=True)
-
-    # Fallback: generic video icon (client keeps polling via 202 path only
-    # while queued; a hard failure returns the SVG so the grid stays usable).
-    return _video_fallback_svg(size)
+    slot = _video_slot_file(abs_path, width)
+    if not _video_slot_is_fresh(slot, master, abs_path):
+        ok = await asyncio.to_thread(_render_video_slot, master, abs_path, width, slot)
+        if not ok:
+            # The master is a usable thumbnail at any size.
+            return _serve(master)
+    return _serve(slot)
 
 @router.post("/video-cover")
 async def set_video_cover(body: VideoCoverRequest) -> dict:
@@ -1428,33 +1660,28 @@ async def set_video_cover(body: VideoCoverRequest) -> dict:
 
 @router.post("/warm-thumbnails")
 async def warm_thumbnails(paths: str = Query(...)):
-    """Pre-generate video thumbnails for a comma-separated list of paths.
+    """Pre-generate video thumbnails in the bounded background worker.
 
-    Runs in the background — the response returns immediately with the count
-    accepted.  The grid's normal GET requests will pick up results as they
-    land (202 → 200 on subsequent polls).
+    Returns immediately with the number of jobs queued. Paths go through the
+    same ``path_scope.sanitize()`` as every other file endpoint; already-cached
+    and backing-off files are skipped so a warm call never burns CPU twice.
     """
-    items = [p.strip() for p in paths.split(",") if p.strip()]
     accepted = 0
-
-    async def _warm_one(p: str, size: int):
+    for p in [p.strip() for p in paths.split(",") if p.strip()][:60]:
         try:
-            abs_path = os.path.abspath(os.path.expanduser(p))
-            ext = Path(abs_path).suffix.lower()
-            if not os.path.isfile(abs_path) or ext not in _VIDEO_EXTS:
-                return
-            cache_file = THUMB_DIR / f"{_make_thumb_key(abs_path, size)}_vid_v2.webp"
-            _ensure_thumb_dir()
-            if cache_file.exists() and _cache_is_fresh(cache_file, abs_path):
-                return
-            async with _video_thumb_semaphore:
-                await _generate_video_thumb(abs_path, size, cache_file)
+            abs_path = _sanitize(p)
+            if not os.path.isfile(abs_path) or Path(abs_path).suffix.lower() not in _VIDEO_EXTS:
+                continue
+            if _video_master_is_fresh(abs_path):
+                continue
+            if _video_thumb_backoff(abs_path) is not None:
+                continue
+            if _queue_video_thumb(abs_path):
+                accepted += 1
+        except HTTPException:
+            continue  # out of scope for this account — skip silently
         except Exception as exc:
             logger.warning("warm-thumbnails failed for %s: %s", p, exc)
-
-    for p in items[:60]:  # cap per request
-        task_registry.spawn(_warm_one(p, 200), name="file-warm-thumb")
-        accepted += 1
     return {"ok": True, "accepted": accepted}
 
 

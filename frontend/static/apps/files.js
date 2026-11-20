@@ -1322,7 +1322,7 @@ function fmRenderGridView(container, files, path, state) {
         if (isImg) {
             iconHtml = `<div class="fm-file-thumb-wrap"><img class="fm-grid-thumb" draggable="false" data-src="/api/files/thumbnail?path=${encodeURIComponent(f.path||'')}&size=${thumbSize}&token=${tk}" alt=""></div>`;
         } else if (isVid) {
-            iconHtml = `<div class="fm-file-thumb-wrap fm-video-thumb"><img class="fm-grid-thumb" draggable="false" data-src="/api/files/video-thumbnail?path=${encodeURIComponent(f.path||'')}&size=${vidSize}&token=${tk}" alt=""><div class="fm-video-play-badge">▶</div></div>`;
+            iconHtml = `<div class="fm-file-thumb-wrap fm-video-thumb"><img class="fm-grid-thumb" draggable="false" data-vid-src="/api/files/video-thumbnail?path=${encodeURIComponent(f.path||'')}&size=${vidSize}&token=${tk}" alt=""><div class="fm-video-play-badge">▶</div></div>`;
         } else {
             iconHtml = `<div class="fm-file-icon">${getFileIcon(f.name, f.is_dir ? 'dir' : 'file')}</div>`;
         }
@@ -1338,24 +1338,45 @@ function fmRenderGridView(container, files, path, state) {
 // A folder with thousands of images used to fire one thumbnail request per tile,
 // saturating the browser's 6-connections-per-host pool so ordinary API calls
 // (save, rename, this very listing) queued behind them and the UI froze. Tiles
-// now carry `data-src`; an IntersectionObserver enqueues only what is near the
-// viewport and at most _FM_THUMB_MAX requests are in flight at a time.
+// now carry `data-src` / `data-vid-src`; an IntersectionObserver enqueues only
+// what is near the viewport and at most _FM_THUMB_MAX requests are in flight.
+//
+// Images load straight into <img>. Video frames are produced by a bounded
+// background worker that answers 202 + Retry-After until the frame is ready —
+// an <img> tag cannot see that status (it only fires `error`), which is why
+// most video tiles stayed blank. Videos therefore load through fetch(), poll
+// while the backend queues/renders, and keep a small blob-URL cache so folder
+// switches and cinematic/compact toggles are instant.
 const _FM_THUMB_MAX = 4;
+const _FM_VID_RETRY_MAX = 10;
+const _FM_VID_CACHE_MAX = 300;
 const _thumbQueue = [];
+const _fmVideoThumbCache = new Map();   // request URL → blob: URL
 let _thumbActive = 0;
 let _thumbObserver = null;
 
 function _fmPumpThumbs() {
     while (_thumbActive < _FM_THUMB_MAX && _thumbQueue.length) {
         const img = _thumbQueue.shift();
-        if (!img || !img.isConnected || !img.dataset || !img.dataset.src) continue;
+        if (!img || !img.isConnected || !img.dataset) continue;
+        if (img.dataset.vidSrc) {
+            const url = img.dataset.vidSrc;
+            delete img.dataset.vidSrc;
+            _thumbActive++;
+            _fmLoadVideoThumb(img, url).finally(() => {
+                _thumbActive = Math.max(0, _thumbActive - 1);
+                _fmPumpThumbs();
+            });
+            continue;
+        }
+        if (!img.dataset.src) continue;
         const src = img.dataset.src;
         delete img.dataset.src;
         _thumbActive++;
         const done = () => { _thumbActive = Math.max(0, _thumbActive - 1); _fmPumpThumbs(); };
         img.addEventListener('load', done, { once: true });
         img.addEventListener('error', () => {
-            // 202 (thumbnail still being generated) or a broken file — keep the tile tidy
+            // Broken source (or the server denied it) — keep the tile tidy.
             const wrap = img.closest('.fm-file-thumb-wrap');
             if (wrap) wrap.classList.add('fm-thumb-missing');
             done();
@@ -1364,8 +1385,47 @@ function _fmPumpThumbs() {
     }
 }
 
+function _fmRememberVideoThumb(url, blobUrl) {
+    if (_fmVideoThumbCache.size >= _FM_VID_CACHE_MAX) {
+        const oldest = _fmVideoThumbCache.keys().next().value;
+        const old = _fmVideoThumbCache.get(oldest);
+        _fmVideoThumbCache.delete(oldest);
+        try { URL.revokeObjectURL(old); } catch { /* already revoked */ }
+    }
+    _fmVideoThumbCache.set(url, blobUrl);
+}
+
+async function _fmLoadVideoThumb(img, url) {
+    const cached = _fmVideoThumbCache.get(url);
+    if (cached) { if (img.isConnected) img.src = cached; return; }
+    for (let attempt = 0; attempt <= _FM_VID_RETRY_MAX && img.isConnected; attempt++) {
+        let resp = null;
+        try { resp = await apiFetch(url); } catch { resp = null; }
+        if (resp && resp.ok) {
+            const blob = await resp.blob().catch(() => null);
+            if (!blob || !blob.size) break;
+            const blobUrl = URL.createObjectURL(blob);
+            // Keep the generic fallback out of the cache so a fixed file can
+            // render again on the next visit without a page reload.
+            if (blob.type !== 'image/svg+xml') _fmRememberVideoThumb(url, blobUrl);
+            if (img.isConnected) img.src = blobUrl;
+            return;
+        }
+        if (resp && resp.status !== 202 && resp.status !== 429) break;  // real failure
+        if (resp) { try { await resp.body?.cancel(); } catch { /* body already consumed */ } }
+        // The server renders in the background; short polls keep the UI responsive.
+        const secs = resp ? parseInt(resp.headers.get('Retry-After') || '2', 10) : 2;
+        const waitMs = Math.min(5000, (Number.isFinite(secs) && secs > 0 ? secs : 2) * 1000);
+        await new Promise(r => setTimeout(r, waitMs));
+    }
+    if (img.isConnected) {
+        const wrap = img.closest('.fm-file-thumb-wrap');
+        if (wrap) wrap.classList.add('fm-thumb-missing');
+    }
+}
+
 function _fmObserveThumbs(container) {
-    const imgs = container.querySelectorAll('img[data-src]');
+    const imgs = container.querySelectorAll('img[data-src], img[data-vid-src]');
     if (!imgs.length) return;
     if (!('IntersectionObserver' in window)) {
         imgs.forEach(i => _thumbQueue.push(i));
