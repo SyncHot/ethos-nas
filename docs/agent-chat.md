@@ -73,11 +73,11 @@ finds the right config — but it must be **readable** by `ethos-nas`, and write
 Two supported setups:
 
 1. **Share the login user's config with the service account** (simplest when the
-   NAS has a single admin):
+   NAS has a single admin, e.g. `marcin`):
 
    ```bash
-   sudo setfacl -R -m u:ethos-nas:rwX ~/.pi
-   sudo setfacl -R -d -m u:ethos-nas:rwX ~/.pi
+   sudo setfacl -R -m u:ethos-nas:rwX /home/marcin/.pi
+   sudo setfacl -R -d -m u:ethos-nas:rwX /home/marcin/.pi
    ```
 
    Dot-directories are intentionally *not* covered by
@@ -91,7 +91,7 @@ Two supported setups:
    ```
 
    Then point the shell env (`ETHOS_AGENT_HOME` is not implemented yet) or keep
-   the default: with the login user's `HOME` unreachable, `pi` falls back to its own
+   the default: with `HOME=/home/marcin` unreachable, `pi` falls back to its own
    error message in the chat pane.
 
 Symptoms of a credentials problem show up **inside** the chat pane (the agent
@@ -119,8 +119,8 @@ Two separate causes — both addressed:
    session dirs owned by the login user). Fix without root — you own the files:
 
    ```bash
-   setfacl -R -m u:ethos-nas:rwX ~/.pi
-   setfacl -R -d -m u:ethos-nas:rwX ~/.pi
+   setfacl -R -m u:ethos-nas:rwX /home/marcin/.pi
+   setfacl -R -d -m u:ethos-nas:rwX /home/marcin/.pi
    ```
 
    As a safety net the backend also checks writability before launching `pi`: if

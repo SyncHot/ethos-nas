@@ -1,7 +1,7 @@
 # Code Editor — Projects & Git (VS Code-style)
 
 Extend the existing single-file CodeMirror editor into a project-aware editor with
-git integration and a recent-projects list, desktop-app style.
+git integration and a recent-projects list, Synology-app style.
 
 ## Status
 - [x] Phase 1 — Audit of current `apps/editor.js` + files API
@@ -71,6 +71,107 @@ git integration and a recent-projects list, desktop-app style.
 - [x] Phase 15 — **Outline, Command Palette, Compare with HEAD, terminal fixes**
   (symbol navigation, 30+ command palette, git diff from a tab, PTY job control,
   default `host` terminal target without a password prompt, cwd fix). Details below.
+- [x] Phase 16 — **Bottom panel collapsed by default + real Problems tab**
+  (no terminal/panel on the welcome screen, PTY spawned only when the panel is
+  opened, OUTPUT tab removed — it merely duplicated Logs → App Events, PROBLEMS
+  now runs a real syntax check of the active file). Details below.
+- [x] Phase 17 — **Go to Definition** (`Ctrl/Cmd+Click`, `F12`, Edit menu): the
+  symbol under the cursor is resolved by a project-wide declaration search in the
+  new `POST /api/editor/definition` — no language server or linter involved.
+  Details below.
+- [x] Phase 18 — **Maximize Panel (full window)**: ⤢ button in the panel tab
+  bar, double-click on the tab strip, and View → Maximize Panel / Restore Panel
+  Size. The panel takes the whole workbench and the editor area is hidden.
+- [x] Phase 19 — **CHAT tab — AI agent (`pi`) in the panel**: `agent:<name>` PTY
+  target (allowlisted CLIs, admin-only, `HOME` = login user) plus a lazy CHAT view
+  that docks the agent's TUI next to the terminal. See `docs/agent-chat.md`.
+
+## Phase 19 — agent chat in the bottom panel (2026-11-12)
+
+The bottom panel gained a **CHAT** tab that runs the user's coding agent
+(`pi` 1.5.2 here) inside the open project — the agent's own TUI in xterm, not a
+re-implemented message list. Full design, credentials/HOME model and security
+notes live in **`docs/agent-chat.md`**; the short version:
+
+- `agent:<name>` PTY target (`pi` / `opencode` / `claude` from an allowlist),
+  admin-only like `host`, started in the project cwd with the login user's HOME.
+- `GET /api/terminal/options` → `agents[]`; the editor picks the first installed
+  CLI, and explains what to install when there is none.
+- Sessions carry their own `target`, so the chat pane and the TERMINAL splits keep
+  separate sockets/cwds; ⟳ restarts shell panes only.
+- Hardening: an out-of-range resize control frame is now **dropped** instead of
+  being typed into the PTY as JSON text (it used to appear in the shell prompt
+  when xterm briefly mis-measured a hidden pane).
+
+## Phase 18 — full-window panel (2026-11-12)
+
+A 240 px terminal is not enough for build logs or wide commands, so the panel
+gained a maximize toggle:
+
+- `⤢` button in the panel tab bar (becomes `⤡` when maximized), double-click on
+  empty tab-strip space, and View → **Maximize Panel** / **Restore Panel Size**.
+- `_termMaximize()` parks the panel directly under `.ed-shell`,
+  adds `.ed-panel-max` (`flex:1`, no inline height, resize grip hidden) and sets
+  `hidden` on `.ed-content`; `_termExitMax()` reverses all three and re-parents
+  the panel into the project's `ed-maincol`.
+- Leaving the view (welcome/project switch, `_parkPanel`) and closing the panel
+  (`✕`) both restore the normal layout, so a maximized panel can never hide a
+  freshly rendered screen.
+- The previous height is remembered (`st.maxHeight`), so restoring returns to the
+  dragged size; terminals are re-fitted after both transitions.
+
+## Phase 17 — Go to Definition (2026-11-12)
+
+`using WawaLocal.Infrastructure.Persistence;` → Ctrl+Click on `Persistence` opens
+`persistence/Persistence.cs` at the `namespace` declaration. Works the same for
+`class` / `interface` / `struct` / `enum` / `record`, `def` / `function` / `func` /
+`fn` / `fun` / `sub`, and `const` / `let` / `var` / `val` / `readonly` / `final`.
+
+- **Backend** — `POST /api/editor/definition` `{repo, symbol, from_path?}` returns
+  `{found, path, line, column, kind, candidates[], files_scanned}`. One combined
+  regex (built from the dotted symbol + its last segment) runs through the
+  existing `_content_search` walker; hits are ranked:
+  qualified `namespace`/`package` match → `type` → `function` → `variable`, then
+  a file named after the symbol, then files other than the one the jump started
+  from. Returns the top hit plus up to 10 candidates.
+- **Frontend** — `_symbolAt()` expands the identifier under the cursor (dots
+  included, so `A.B.C` resolves as a whole), `_goToDefinition()` calls the
+  endpoint and jumps: project mode uses `_openTab(proj, path, {line, column})`;
+  a single-file window reloads in place when clean, otherwise the definition
+  opens in a **new editor window** (unsaved text is never discarded).
+  Triggers: `Ctrl/Cmd+Click` on the identifier, `F12`, and Edit → Go to
+  Definition (also in the Command Palette).
+- **Limits** — this is a *declaration text search*, not semantic resolution:
+  definitions from packages/NuGet/node_modules are not indexed (those live
+  outside the project root), and overloads/disambiguated members fall back to
+  the first ranked candidate. A real LSP would replace this; a linter is not
+  involved (lint output would be the PROBLEMS panel, Phase 16).
+
+## Phase 16 — bottom panel: collapsed by default + real Problems (2026-11-12)
+
+Problem: opening the Code Editor always showed a 240 px bottom panel running a
+live PTY shell, even on the welcome screen (process per window open). The
+PROBLEMS and OUTPUT tabs both rendered `GET /api/logs/app` — server App Events,
+unrelated to the file being edited (and already available in the Logs app).
+
+- **Panel starts closed.** `.ed-panel` carries `hidden` until the user opens it
+  (Ctrl+`, Terminal → Hide/Show Panel, View → Toggle Bottom Panel, the ✕/tab
+  clicks, or the status-bar problems counter). `_termOpen`/`_termClose` replace
+  the old body-only collapse; the resize grip is inert while closed.
+- **Lazy terminal.** `_initTermPanel` no longer calls `_termAddSession`; the PTY
+  WebSocket is only opened by `_termAddSession`, i.e. when the panel is first
+  shown (or New Split / Restart is used).
+- **OUTPUT removed.** Its content was a duplicate of the Logs app → App Events.
+- **PROBLEMS is real.** New `POST /api/editor/check` (`{path, content}`) returns
+  `{checked, language, problems:[{severity,line,col,message,source}]}` by running
+  a syntax-only check: `ast.parse` (`.py`), `json.loads` (`.json`, `.jsonc`/`.json5`
+  after stripping comments + trailing commas), `bash -n` (`.sh`/`.bash`) and
+  `node --check` (`.js`/`.mjs`/`.cjs`, ESM vs CJS picked by top-level
+  import/export). Other extensions answer `checked:false` → "not checked".
+  Nothing is executed; external tools run on a temp copy with a 5 s timeout.
+- **Wiring.** Checks run on file open, 700 ms after the last edit, and on save;
+  results drive the status-bar `⊘/⚠` counters, red/yellow line highlights in
+  CodeMirror, and a clickable Problems list (click → jump to line).
 
 ## Phase 15 — navigation + terminal UX (2026-11-09)
 
@@ -255,7 +356,7 @@ checkout of a remote-tracking ref (`origin/x`) creates/uses the local `x`.
   (host / sudo / `user:<name>` / `container:<name>`, picker from `/api/terminal/options`
   + running containers), status dot, cwd display, exponential-backoff reconnect
   (4001 auth / 4002 target / 4003 bad-cwd are terminal states). Output/Problems/Debug
-  Console read the unified log store (`/api/logs?limit=&level=&search=`).
+  Console read the App Events store (`/api/logs/app?limit=&level=&search=`).
 - **Status bar**: branch chip + ahead/behind + change count (left), Ln/Col (live from
   CodeMirror cursor), spaces/UTF-8/language (right).
 - **Tabs**: dirty dot, middle-click / × close with unsaved-changes guard (Save / Don't Save /
@@ -295,7 +396,7 @@ tabbed CodeMirror editors with breadcrumbs + unsaved-changes close guard, bottom
 (split xterm terminals with target picker, Output/Problems), status bar. Phase 13/14
 added per-type file badges, a custom Find/Replace bar, tab context menus, a
 status-bar language picker, Markdown preview, content search, Quick Open and editor
-settings. Single-file mode (Files → Edit) keeps the slim shell via
+settings. Single-file mode (File Station → Edit) keeps the slim shell via
 `openEditorForPath` (menu bar + bottom panel still apply). File I/O via
 `/api/files/*` (`GET /api/files?path=` listing, `raw`, `stat`, `touch`, `mkdir`, `rename`,
 `DELETE /delete` + `GET /ops/{op_id}` poll, `search`); project/git state via `/api/editor/*`
@@ -356,8 +457,8 @@ the repo (realpath prefix check) and passed after `--`. Git failures return
 - **Git panel** (right side when `is_repo`): branch + ahead/behind, changed-files list
   with per-row stage/unstage, commit message box + Commit button, Pull/Push buttons,
   recent commits log. Refreshes after every git op and file save; manual refresh button.
-- Single-file mode (Files → Edit) keeps working unchanged via `openEditorForPath`.
-- Files context menu: *Open as Project…* on folders (`window.__fmProjectCtx`).
+- Single-file mode (File Station → Edit) keeps working unchanged via `openEditorForPath`.
+- File Station context menu: *Open as Project…* on folders (`window.__fmProjectCtx`).
 
 ### Security notes
 
@@ -383,6 +484,44 @@ Part A also covers `POST /projects/new`: dir created + recents upsert, `git_init
 produces a real repo (`is_repo:true`), existing path → 409.
 
 ## Verification Log
+- 2026-11-12 — Phase 19 follow-up (`EACCES` when `pi` cannot write its session
+  dir): agent sessions now fall back to `<DATA_DIR>/agent-sessions/<user>`
+  (`--session-dir`, 0700) when `~/.pi/agent` is not writable for the service
+  account; `deploy/ethos-nas.service` gained `StateDirectory=ethos-nas` +
+  `HOME=/var/lib/ethos-nas` (the system user had no home directory at all).
+  See `docs/agent-chat.md` → Troubleshooting.
+- 2026-11-12 — Phase 19 (CHAT tab / agent PTY) on isolated instance (:9002):
+  `pi` 1.5.2 detected; `GET /api/terminal/options` → `agents[{name,label,path}]`;
+  raw WS: `agent:pi` streams the TUI, `agent:unknown` → close 4002, and
+  `{"type":"resize","cols":100,"rows":999999}` is dropped (no JSON in the shell,
+  next marker command still executes). Editor: CHAT tab opens one pane labelled
+  `pi agent`, TUI renders (cwd + model line), TERMINAL keeps its own shell pane,
+  and maximizing the panel gives the chat the whole workbench. No page JS errors.
+- 2026-11-12 — Phase 18 (maximize panel) on isolated instance (:9002): opening a
+  project leaves the panel closed; View → Toggle Bottom Panel shows it;
+  `[data-testid="ed-panel-maximize"]` grows it from 240 px to the full workbench
+  height with `.ed-content` hidden, and the second click restores both the height
+  and the editor area. `tests/test_editor.py` Part B gained the same four checks.
+- 2026-11-12 — Phase 17 (Go to Definition) on isolated instance (:9002, own
+  DATA_DIR) with a C# fixture (`Program.cs` + `persistence/Persistence.cs`):
+  `POST /api/editor/definition` for `WawaLocal.Infrastructure.Persistence` →
+  `{found:true, path:"persistence/Persistence.cs", line:1, kind:"namespace"}`;
+  `Db` → `kind:"type"`; unknown symbol → `found:false`. Browser: Ctrl+Click on
+  `Persistence` **and** `F12` from the same token both open the declaration tab
+  with the cursor at `Ln 1, Col 1`; single-file windows navigate in place. No
+  page JS errors.
+- 2026-11-12 — Phase 16 (panel collapsed by default + real Problems) on isolated
+  instance (:9002, own DATA_DIR). `POST /api/editor/check` verified per branch:
+  Python syntax error → `line 2, "expected ':'"`; JSON trailing comma → error;
+  JSONC with `//` comment + trailing comma → clean; `.txt` → `checked:false`;
+  `bash -n` on an unclosed `if` → error; `node --check` error + valid ESM → ok.
+  Browser (Playwright, isolated :9002): welcome screen renders with
+  `[data-testid="ed-panel"]` hidden (height 0), no OUTPUT tab, zero `.ed-term-pane`
+  elements (no PTY spawned); opening a file shows `⊘ 1 ⚠ 0` + a highlighted line;
+  the status-bar counter opens the panel on PROBLEMS with a clickable row that
+  jumps to `Ln 2, Col 8`; clicking the TERMINAL tab spawns exactly one pane;
+  ✕ hides the whole panel (height 0) while the session stays alive; project mode
+  shows per-tab counters (`good.py` 0 / `bad.py` 1) with no page JS errors.
 - 2026-11-04 — Phase 12 (menu bar + sidebar resize) on isolated instance (:9006, own
   DATA_DIR): `tests/test_editor.py` → **101/101** (Part A 27, Part C 47, Part B 27 —
   new UI checks: menubar renders 5 menus, File menu contents, Edit menu contents,
