@@ -325,3 +325,34 @@ keyframe attempts to one decode in ~1.2 s. The v2 per-size video caches are
 dropped at startup (`_cleanup_stale_thumb_artifacts`) so they stop counting
 against the 20 k thumbnail cap.
 
+## 8. Video player — one stream at a time (2026-11-20)
+
+**Problem.** After a few films the next one started noticeably slower. The
+player overlay is a fixed layer on `document.body` (a `.app-window` has
+`will-change: transform`, so `position: fixed` inside it would be window-
+relative), but the "remove existing overlay" step looked it up **inside the
+window** — it never matched. Closing the owning window left an invisible
+`<video>` that kept downloading and decoding a multi-GB 8K film in the
+background. A few of those and every new film competed with the old streams
+(NAS disk + browser decoders). On top of that, thumbnail work kept running
+while a film played, and the tag used `preload="auto"`.
+
+**Fix** (`frontend/static/apps/files.js`, guarded by
+`tests/test_video_player_teardown.py`):
+
+- **Singleton overlay**: opening a player tears down *every*
+  `.fm-video-overlay` in the document (pause + drop `src` + `load()`), not just
+  one inside the current window.
+- **Owner-window watcher**: a `MutationObserver` on `#modalOverlay` closes the
+  player when its Files window disappears (multi-window case), and
+  `onAppClose('files', …)` is the last-resort teardown when the last Files
+  window closes.
+- **Hard switch**: Prev/Next/Delete release the previous stream (`pause()` +
+  `removeAttribute('src')` + `load()`) *before* assigning the next source; on
+  close the element is cleared the same way.
+- **Thumbnails yield**: the pump pauses while the player is open (pending
+  tiles keep their `data-*` attributes, in-flight polls re-queue themselves),
+  and closing the player re-observes every Files window and resumes.
+- **`preload="metadata"`**: no aggressive multi-GB read-ahead per film.
+
+

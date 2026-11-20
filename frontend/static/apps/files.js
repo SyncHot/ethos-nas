@@ -1,6 +1,6 @@
 // EthOS NAS — File Manager App (multi-window Nautilus-style with unified components)
 import { escapeAttr, escapeHtml, formatBytes, getFileIcon, hexToRgb, jsAttr, safeJsStr } from '../core/utils.js';
-import { openWindows } from '../core/window-manager.js';
+import { onAppClose, openWindows } from '../core/window-manager.js';
 import { apiFetch, apiJsonFetch, readErrorDetail } from '../core/api.js';
 import { connectWs } from '../core/ws.js';
 import { getUploadStatus, showUploadPanel, startUpload } from '../core/upload-engine.js';
@@ -1356,6 +1356,10 @@ let _thumbActive = 0;
 let _thumbObserver = null;
 
 function _fmPumpThumbs() {
+    // While a film is playing, thumbnail work must not compete for CPU/disk
+    // (8K decodes on a loaded NAS are exactly what makes the next film stall).
+    // Pending tiles keep their data-* attributes and resume on player close.
+    if (_videoPlayer.open) return;
     while (_thumbActive < _FM_THUMB_MAX && _thumbQueue.length) {
         const img = _thumbQueue.shift();
         if (!img || !img.isConnected || !img.dataset) continue;
@@ -1396,9 +1400,16 @@ function _fmRememberVideoThumb(url, blobUrl) {
 }
 
 async function _fmLoadVideoThumb(img, url) {
+    // Playback started before this tile was pumped — keep it queued.
+    if (_videoPlayer.open) { if (img.isConnected) img.dataset.vidSrc = url; return; }
     const cached = _fmVideoThumbCache.get(url);
     if (cached) { if (img.isConnected) img.src = cached; return; }
     for (let attempt = 0; attempt <= _FM_VID_RETRY_MAX && img.isConnected; attempt++) {
+        if (_videoPlayer.open) {
+            // Stop polling during playback; the tile retries when the player closes.
+            if (img.isConnected) img.dataset.vidSrc = url;
+            return;
+        }
         let resp = null;
         try { resp = await apiFetch(url); } catch { resp = null; }
         if (resp && resp.ok) {
@@ -2655,10 +2666,30 @@ export function fmShowShortcuts() {
 // ── Video Player ─────────────────────────────────────────────────
 const _videoPlayer = { open: false, files: [], index: 0, path: '' };
 
+// The overlay is a fixed layer on <body> (`.app-window` has will-change:
+// transform, so `position: fixed` inside a window would be window-relative).
+// Closing the owning window therefore does NOT remove it — the hidden <video>
+// would keep streaming and decoding in the background and slow down every film
+// opened afterwards. Watch the window layer and tear the player down when its
+// owning window disappears.
+let _videoRootObserver = null;
+
+function _watchVideoOwnerWindow(root) {
+    if (_videoRootObserver) { _videoRootObserver.disconnect(); _videoRootObserver = null; }
+    if (!root) return;
+    const layer = document.getElementById('modalOverlay') || document.body;
+    _videoRootObserver = new MutationObserver(() => {
+        if (!_videoPlayer.open || root.isConnected) return;
+        _videoPlayer._needsRefresh = false;   // the window is gone — nothing to refresh
+        fmCloseVideoPlayer();
+    });
+    _videoRootObserver.observe(layer, { childList: true });
+}
+
 export function fmOpenVideoPlayer(path) {
     const root = _getActiveFmRoot(); if (!root) return;
     const state = _getFmStateForRoot(root); if (!state) return;
-    const winEl = root.closest('.app-window'); if (!winEl) return;
+    if (!root.closest('.app-window')) return;
 
     // Collect video files from current directory
     const _videoExts = ['.mp4','.mkv','.mov','.avi','.webm','.flv','.m4v','.wmv','.ts','.mts'];
@@ -2680,9 +2711,18 @@ export function fmOpenVideoPlayer(path) {
     _videoPlayer.path = state.path;
     _videoPlayer.root = root;   // refresh this window on close, not the focused one
 
-    // Remove existing player overlay
-    const existing = winEl.querySelector('.fm-video-overlay');
-    if (existing) existing.remove();
+    // Only one player may exist. Tear down any stray overlay left behind by a
+    // closed window: an orphan keeps downloading/decoding its film invisibly.
+    document.querySelectorAll('.fm-video-overlay').forEach(el => {
+        const v = el.querySelector('video');
+        if (v) {
+            try { v.pause(); } catch { /* already stopped */ }
+            v.removeAttribute('src');
+            try { v.load(); } catch { /* detached element */ }
+        }
+        el.remove();
+    });
+    _watchVideoOwnerWindow(root);
 
     const overlay = document.createElement('div');
     overlay.className = 'fm-video-overlay';
@@ -2704,7 +2744,7 @@ export function fmOpenVideoPlayer(path) {
             <div style="display:flex;align-items:center;gap:12px;width:100%;max-width:960px;">
                 <button class="btn-ghost" data-testid="video-player-prev" onclick="fmVideoPrev()" style="font-size:24px;padding:8px 12px;color: var(--text-2);" title="Previous (Left arrow)">◀</button>
                 <div style="flex:1;aspect-ratio:16/9;background:#000;border-radius:8px;overflow:hidden;">
-                    <video id="fm-video-element" controls autoplay style="width:100%;height:100%;" preload="auto"></video>
+                    <video id="fm-video-element" controls autoplay playsinline preload="metadata" style="width:100%;height:100%;"></video>
                 </div>
                 <button class="btn-ghost" data-testid="video-player-next" onclick="fmVideoNext()" style="font-size:24px;padding:8px 12px;color: var(--text-2);" title="Next (Right arrow)">▶</button>
             </div>
@@ -2739,6 +2779,15 @@ function _videoLoadCurrent() {
         cleanPath = (_videoPlayer.path + '/' + lastName).replace(/\/+/g, '/');
     }
     parts.push(lastName); // put back for name extraction below
+
+    // Release the previous stream *before* opening the next one: a lingering
+    // 8K range request keeps the NAS disk busy and makes the next film start
+    // slowly (the classic "after three films the next one is slow" symptom).
+    _videoPlayer._closing = true;
+    try { vidEl.pause(); } catch { /* already stopped */ }
+    vidEl.removeAttribute('src');
+    vidEl.load();
+    _videoPlayer._closing = false;
 
     const token = encodeURIComponent(localStorage.getItem('token') || '');
     vidEl.src = `/api/files/raw?path=${encodeURIComponent(cleanPath)}&token=${token}`;
@@ -2806,7 +2855,11 @@ export async function fmVideoDelete() {
     // Release the video file handle FIRST so server can delete the file cleanly
     const vidEl = document.getElementById('fm-video-element');
     _videoPlayer._closing = true;
-    if (vidEl) { vidEl.pause(); vidEl.src = ''; vidEl.load(); }
+    if (vidEl) {
+        try { vidEl.pause(); } catch { /* already stopped */ }
+        vidEl.removeAttribute('src');
+        vidEl.load();
+    }
     _videoPlayer._closing = false;
 
     (async () => {
@@ -2867,12 +2920,16 @@ export async function fmVideoCapture() {
 }
 
 export function fmCloseVideoPlayer() {
+    if (_videoRootObserver) { _videoRootObserver.disconnect(); _videoRootObserver = null; }
     // IMPORTANT: Pause and clear video FIRST before removing from DOM
     const vidEl = document.getElementById('fm-video-element');
     _videoPlayer._closing = true;  // silence the teardown `error` event
-    if (vidEl) { vidEl.pause(); vidEl.src = ''; vidEl.load(); }
-    const overlay = document.querySelector('.fm-video-overlay');
-    if (overlay) overlay.remove();
+    if (vidEl) {
+        try { vidEl.pause(); } catch { /* already stopped */ }
+        vidEl.removeAttribute('src');
+        vidEl.load();
+    }
+    document.querySelectorAll('.fm-video-overlay').forEach(el => el.remove());
     const needsRefresh = _videoPlayer._needsRefresh;
     const ownerRoot = _videoPlayer.root;
     _videoPlayer.open = false;
@@ -2883,6 +2940,10 @@ export function fmCloseVideoPlayer() {
     _videoPlayer._errorCount = 0;
     _videoPlayer._closing = false;
     document.removeEventListener('keydown', _videoKeyHandler);
+    // Resume thumbnails paused for playback (and pick up tiles rendered while
+    // the player was open).
+    document.querySelectorAll('.fm-container').forEach(c => _fmObserveThumbs(c));
+    _fmPumpThumbs();
     // Refresh the file listing only after fully closing (no spinner interference).
     // Use the window the player was opened from — with two File Managers open the
     // "focused" window may be a different one.
@@ -2896,6 +2957,16 @@ window.fmVideoPrev = fmVideoPrev;
 window.fmVideoNext = fmVideoNext;
 window.fmVideoDelete = fmVideoDelete;
 window.fmVideoCapture = fmVideoCapture;
+
+// Last line of defence: closing the Files app must never leave a hidden player
+// streaming. (`_notifyClosed` fires only for the last window of the app; the
+// root observer covers closing the owner while another Files window stays open.)
+onAppClose('files', () => {
+    if (!_videoPlayer.open) return;
+    if (_videoPlayer.root && _videoPlayer.root.isConnected) return;
+    _videoPlayer._needsRefresh = false;
+    fmCloseVideoPlayer();
+});
 
 // ── Navigation helpers ──
 export function fmNavigateTo(path) {
