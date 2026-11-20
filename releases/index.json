@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-18T10:17:53+00:00",
+  "generated_at": "2026-11-20T10:44:19+00:00",
   "latest": {
-    "version": "2.3.13",
-    "git_sha": "89784eb",
-    "git_sha_full": "89784ebed7b299ef64fbab27a3b0cc05acdbe517",
-    "build": 46,
-    "released_at": "2026-11-18T10:17:53+00:00",
-    "notes": "Packages: Update all — every pending update runs sequentially, each with its own rollback"
+    "version": "2.3.14",
+    "git_sha": "f9815b3",
+    "git_sha_full": "f9815b38f01509bd065d3d5cb5f087d2055f8c49",
+    "build": 52,
+    "released_at": "2026-11-20T10:44:19+00:00",
+    "notes": "Files: reliable video thumbnails — one video stream at a time, thumbnail work yields to active playback"
   },
   "releases": [
+    {
+      "version": "2.3.14",
+      "git_sha": "f9815b3",
+      "git_sha_full": "f9815b38f01509bd065d3d5cb5f087d2055f8c49",
+      "build": 52,
+      "released_at": "2026-11-20T10:44:19+00:00",
+      "notes": "Files: reliable video thumbnails — one video stream at a time, thumbnail work yields to active playback"
+    },
     {
       "version": "2.3.13",
       "git_sha": "89784eb",
