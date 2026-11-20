@@ -160,6 +160,40 @@ check("shared entry names its owner",
       shared[0]["in_use_by"][0]["project"] == "pkg-b", str(shared[0]))
 check("no images means nothing to remove", split_images({}, USAGE) == ([], []))
 
+print("Installer stale directory")
+import tempfile  # noqa: E402
+from backend.services import package_installer, packages_store  # noqa: E402
+
+with tempfile.TemporaryDirectory() as _tmp:
+    _root = Path(_tmp)
+    _apps = _root / "apps"
+    _backup = _root / ".backup"
+    _apps.mkdir()
+    _target = _apps / "demo-pkg"
+    (_target / "server").mkdir(parents=True)
+    (_target / "server" / "bootstrap.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    _old_backup = packages_store.BACKUP_DIR
+    packages_store.BACKUP_DIR = _backup
+    try:
+        check("stale package dir deleted when possible",
+              package_installer._discard_dir(_target, "stale") and not _target.exists())
+        _target.mkdir()
+        (_target / "server").mkdir()
+        # Simulate root-owned leftovers: rmtree cannot delete, the rename can.
+        _real_rmtree = package_installer.shutil.rmtree
+        package_installer.shutil.rmtree = lambda *a, **k: None
+        try:
+            moved = package_installer._discard_dir(_target, "stale")
+        finally:
+            package_installer.shutil.rmtree = _real_rmtree
+        _backed_up = list(_backup.glob("demo-pkg-stale-*"))
+        check("undeletable dir moved into .backup", moved and not _target.exists())
+        check("moved dir keeps its files",
+              bool(_backed_up) and (_backed_up[0] / "server").is_dir(), str(_backed_up))
+        check("missing dir is a no-op", package_installer._discard_dir(_root / "nope", "stale"))
+    finally:
+        packages_store.BACKUP_DIR = _old_backup
+
 failed = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
 sys.exit(1 if failed else 0)

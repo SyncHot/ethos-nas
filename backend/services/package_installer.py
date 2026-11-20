@@ -35,6 +35,31 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _discard_dir(path: Path, reason: str) -> bool:
+    """Remove a package directory, falling back to moving it aside.
+
+    A failed compose start can leave files the service user cannot delete (a
+    container that ran as root may have created entries next to the read-only
+    mount). Deleting then silently fails and the next install refuses with
+    "Package directory already exists". Renaming only needs write access to the
+    parent — which the service owns — so a retry can always proceed.
+    """
+    if not path.exists():
+        return True
+    shutil.rmtree(path, ignore_errors=True)
+    if not path.exists():
+        return True
+    stale = packages_store.BACKUP_DIR / f"{path.name}-{reason}-{int(time.time())}"
+    try:
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(stale))
+    except OSError as exc:
+        logger.error("Could not remove or move package directory %s: %s", path, exc)
+        return False
+    logger.warning("Leftover package directory %s moved to %s", path, stale)
+    return True
+
+
 def _runtime(record: dict) -> str:
     return str(record.get("runtime") or "compose")
 
@@ -284,8 +309,16 @@ async def install(entry: dict, job_id: str) -> None:
     target = packages_store.package_dir(pkg_id)
     package_jobs.set_step(job_id, "deploy")
     if target.exists():
-        shutil.rmtree(staging, ignore_errors=True)
-        raise PackageError(f"Package directory already exists for {pkg_id}", 409)
+        # A previous install may have rolled back without removing its files
+        # (root-owned entries survive `rmtree` as the service user). Reclaim the
+        # directory instead of refusing to install forever.
+        if not _discard_dir(target, "stale"):
+            shutil.rmtree(staging, ignore_errors=True)
+            raise PackageError(
+                f"Stale package directory for {pkg_id} cannot be moved aside; "
+                f"remove {target} on the NAS and retry", 409,
+            )
+        package_jobs.log(job_id, "warning: reclaimed a stale package directory")
     packages_store.APPS_DIR.mkdir(parents=True, exist_ok=True)
     shutil.move(str(staging), str(target))
 
@@ -300,7 +333,7 @@ async def install(entry: dict, job_id: str) -> None:
             await _compose(pkg_id, compose_file(pkg_id), "up", "-d")
         except PackageError as exc:
             packages_store.remove_package(pkg_id)
-            shutil.rmtree(target, ignore_errors=True)
+            _discard_dir(target, "failed")
             raise PackageError(f"Service failed to start: {exc.detail}", exc.status) from exc
         package_jobs.log(job_id, "service started")
     elif _runtime(record) == "venv":
@@ -372,7 +405,7 @@ async def update(pkg_id: str, job_id: str) -> None:
     except PackageError as exc:
         logger.error("Update %s failed to start; rolling back: %s", pkg_id, exc.detail)
         await package_runtime.stop(pkg_id)
-        shutil.rmtree(target, ignore_errors=True)
+        _discard_dir(target, "failed")
         if backup.exists():
             shutil.move(str(backup), str(target))
         packages_store.replace_package(old)
@@ -435,11 +468,11 @@ async def uninstall(pkg_id: str, job_id: str, remove_volumes: bool = False,
     # runs while the record still exists — release() excludes this id itself.
     package_jobs.set_step(job_id, "sysdeps")
     await asyncio.to_thread(system_deps.release, pkg_id, job_id)
-    package_jobs.set_step(job_id, "cleanup")
+    packages_store.set_step(job_id, "cleanup")
     packages_store.remove_package(pkg_id)
     target = packages_store.package_dir(pkg_id)
     if target.exists():
-        shutil.rmtree(target, ignore_errors=True)
+        _discard_dir(target, "uninstall")
     package_jobs.set_step(job_id, "done", "done")
     summary = "volume data deleted" if remove_volumes else "volumes kept"
     emit_event("info", f"Package {record.get('name', pkg_id)} uninstalled",

@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.3.15] - 2026-11-20
+
+### Fixed
+
+- Packages: installing again after a failed start no longer stops with “Package
+  directory already exists”. A leftover directory the service user cannot delete is
+  moved into `.backup/` and the install continues; uninstall and update rollbacks use
+  the same recovery.
+
 ## [2.3.14] - 2026-11-20
 
 ### Fixed
