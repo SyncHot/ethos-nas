@@ -80,7 +80,8 @@ work for "an installed app can never reach more than the signed-in user".
 - [x] Backup/export includes per-user stores and gallery indexes
 - [x] Phase 3 — per-user download config, task owners, per-user qB tasks/categories
       and per-user watch/RSS scans
-- [ ] Phase 4 — compose package bind hardening (`PACKAGES_ROOT` self-only)
+- [x] Phase 4 — compose package bind hardening: a package may bind only its own
+      package/data roots; another package or the package store is rejected
 - [ ] Phase 5 — follow-up: per-package OS confinement for `venv` packages
 
 ## Verification
@@ -105,7 +106,8 @@ work for "an installed app can never reach more than the signed-in user".
 1. **`venv` packages run as `ethos-nas`** with the `docker`/`shadow` groups —
    root-equivalent and *not* covered by L1. Fix with a per-package systemd unit
    (`DynamicUser`, `ProtectSystem=strict`, `ReadWritePaths`, no docker group).
-2. **Compose packages** keep rw binds to `/home`, `/mnt`, `/media`; a manifest
-   `permissions.mounts` model (L3) should make rw explicit and default to `:ro`.
+2. **Compose packages** keep rw binds to `/home`, `/mnt`, `/media`; the package
+   store itself is self-only now. A manifest `permissions.mounts` model (L3)
+   should still make rw explicit and default to `:ro`.
 3. **Android apps** authenticate with per-user API keys and will inherit the
    per-user libraries from Phase 2/3; verify `/api/app/version` parity.

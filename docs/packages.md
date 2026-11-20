@@ -380,9 +380,11 @@ skipped shared images are written to the job log.
 ## Compose policy
 
 Rejected before deploy: `privileged`, `network_mode/pid/ipc: host`, `cap_add`, `security_opt`,
-`devices`, `volumes_from`, `build`, `extends`, `include`, host binds outside `/home`, `/mnt`, `/media`
-or the package/data roots, `docker.sock`, and `env_file` paths outside the package directory.
-Unpinned images (`:latest` or no tag/digest) produce a warning.
+`devices`, `volumes_from`, `build`, `extends`, `include`, `docker.sock`, and `env_file` paths
+outside the package directory. Host binds are limited to `/home`, `/mnt`, `/media` and the
+package's **own** package/data root; every other path inside the package store (another
+package, `installed.json`, `sources.json`) is rejected even when `DATA_DIR` itself lives under
+`/home`. Unpinned images (`:latest` or no tag/digest) produce a warning.
 
 ## API
 

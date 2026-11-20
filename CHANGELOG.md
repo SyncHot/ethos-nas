@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.6.7] - 2026-11-20
+
+### Security
+
+- **Installed packages can no longer bind-mount another package's files** or the
+  package store (`installed.json`, `sources.json`). A Compose package may bind
+  only `/home`, `/mnt`, `/media` and its own package/data directories — even
+  when `DATA_DIR` itself lives under `/home`.
+
 ## [2.6.6] - 2026-11-20
 
 ### Added

@@ -11,33 +11,56 @@ without it. Every other device stays rejected.
 
 import logging
 import os
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
 
 from backend.services.package_schema import PackageError
-from backend.services.packages_store import APPS_DIR, PACKAGES_ROOT, STAGING_DIR
+from backend.services.packages_store import APPS_DIR, PACKAGES_ROOT
 
 logger = logging.getLogger("ethos-nas.services.compose_policy")
 
 _ALLOWED_BIND_ROOTS = tuple(
-    os.path.realpath(p) for p in (
-        "/home", "/mnt", "/media",
-        str(APPS_DIR), str(STAGING_DIR), str(PACKAGES_ROOT),
-    )
+    os.path.realpath(p) for p in ("/home", "/mnt", "/media")
 )
 _FORBIDDEN_DEVICES = ("/dev/", "/var/run/docker.sock", "/run/docker.sock")
 # Devices a package may request, each gated by a manifest capability.
 _DEVICE_CAPABILITIES = {"/dev/kvm": "kvm"}
 
 
-def _path_allowed(path: str) -> bool:
+def _allowed_bind_roots(package_id: str | None = None,
+                       package_dir: str | Path | None = None) -> tuple[str, ...]:
+    """Bind roots for one package.
+
+    Shared data mounts are always allowed. The package store itself is not:
+    a package may bind its own directory and its own data dir only, never
+    another package, `installed.json` or `sources.json`.
+    """
+    roots = list(_ALLOWED_BIND_ROOTS)
+    if package_dir:
+        roots.append(os.path.realpath(str(package_dir)))
+    if package_id:
+        roots.append(os.path.realpath(str(APPS_DIR / package_id)))
+        roots.append(os.path.realpath(str(PACKAGES_ROOT / "data" / package_id)))
+    return tuple(dict.fromkeys(roots))
+
+
+def _path_allowed(path: str, roots: tuple[str, ...]) -> bool:
     real = os.path.realpath(os.path.expanduser(path))
-    return any(real == root or real.startswith(root + os.sep) for root in _ALLOWED_BIND_ROOTS)
+    packages_root = os.path.realpath(str(PACKAGES_ROOT))
+    if real == packages_root or real.startswith(packages_root + os.sep):
+        # Inside the package store only the package's own roots are allowed —
+        # even when DATA_DIR itself sits under /home (the repo default), the
+        # broad /home root must not expose installed.json or another package.
+        return any(real == root or real.startswith(root + os.sep)
+                   for root in roots
+                   if root == packages_root or root.startswith(packages_root + os.sep))
+    return any(real == root or real.startswith(root + os.sep) for root in roots)
 
 
-def _check_bind(source: str, service: str, errors: list[str]) -> None:
+def _check_bind(source: str, service: str, errors: list[str],
+                roots: tuple[str, ...]) -> None:
     source = str(source or "").strip()
     if not source or source.startswith("$"):
         return
@@ -45,7 +68,7 @@ def _check_bind(source: str, service: str, errors: list[str]) -> None:
         errors.append(f"{service}: bind mount of a host device/socket is not allowed: {source}")
         return
     if source.startswith("/") or source.startswith("~"):
-        if not _path_allowed(source):
+        if not _path_allowed(source, roots):
             errors.append(f"{service}: bind mount outside allowed roots: {source}")
         return
     pure = PurePosixPath(source)
@@ -79,11 +102,15 @@ def _check_devices(devices: Any, service: str, capabilities: set[str],
 
 
 def lint_compose(text_or_dict: Any,
-                 capabilities: Any = None) -> tuple[list[str], list[str]]:
+                 capabilities: Any = None,
+                 package_id: str | None = None,
+                 package_dir: str | Path | None = None) -> tuple[list[str], list[str]]:
     """Return (errors, warnings) for a docker-compose document.
 
     `capabilities` are the manifest capabilities; they unlock per-device
-    exceptions such as `/dev/kvm` for `kvm`.
+    exceptions such as `/dev/kvm` for `kvm`. `package_id`/`package_dir` add
+    the package's own directory and data dir to the bind allowlist; without
+    them only the shared data mounts are allowed.
     """
     try:
         data = text_or_dict if isinstance(text_or_dict, dict) else yaml.safe_load(text_or_dict)
@@ -94,6 +121,7 @@ def lint_compose(text_or_dict: Any,
     errors: list[str] = []
     warnings: list[str] = []
     caps = {str(item) for item in (capabilities or ())}
+    bind_roots = _allowed_bind_roots(package_id, package_dir)
 
     if "include" in data:
         errors.append("compose include is not allowed")
@@ -138,10 +166,10 @@ def lint_compose(text_or_dict: Any,
             for volume in volumes:
                 if isinstance(volume, str):
                     source = volume.split(":", 1)[0]
-                    _check_bind(source, name, errors)
+                    _check_bind(source, name, errors, bind_roots)
                 elif isinstance(volume, dict):
                     if str(volume.get("type") or "bind") == "bind":
-                        _check_bind(volume.get("source") or "", name, errors)
+                        _check_bind(volume.get("source") or "", name, errors, bind_roots)
                 else:
                     errors.append(f"{name}: invalid volume entry")
 
@@ -156,9 +184,11 @@ def lint_compose(text_or_dict: Any,
     return errors, warnings
 
 
-def enforce_compose(text_or_dict: Any, capabilities: Any = None) -> list[str]:
+def enforce_compose(text_or_dict: Any, capabilities: Any = None,
+                    package_id: str | None = None,
+                    package_dir: str | Path | None = None) -> list[str]:
     """Raise PackageError on policy violations; return warnings."""
-    errors, warnings = lint_compose(text_or_dict, capabilities)
+    errors, warnings = lint_compose(text_or_dict, capabilities, package_id, package_dir)
     if errors:
         raise PackageError("Compose policy violation: " + "; ".join(errors[:4]), 400)
     return warnings

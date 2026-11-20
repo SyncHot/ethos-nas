@@ -121,6 +121,26 @@ for name, service in {
     check(f"compose rejects {name}", bool(errors), str(errors))
 check("latest image warns", bool(lint_compose({"services": {"a": {"image": "nginx:latest"}}})[1]))
 
+print("Compose policy — package store binds")
+from backend.services.packages_store import APPS_DIR, PACKAGES_ROOT  # noqa: E402
+
+
+def _bind(source, **kwargs):
+    return lint_compose({"services": {"app": {"image": "x:1", "volumes": [f"{source}:/data"]}}},
+                        **kwargs)[0]
+
+
+_own = str(APPS_DIR / "demo")
+check("package may bind its own directory",
+      not _bind(_own, package_id="demo", package_dir=_own))
+check("package may bind its own data dir",
+      not _bind(str(PACKAGES_ROOT / "data" / "demo"), package_id="demo", package_dir=_own))
+check("package may not bind another package",
+      bool(_bind(str(APPS_DIR / "other"), package_id="demo", package_dir=_own)))
+check("package may not bind the package store",
+      bool(_bind(str(PACKAGES_ROOT / "installed.json"), package_id="demo", package_dir=_own)))
+check("shared data mounts still allowed", not _bind("/mnt/SharedDrive/movies"))
+
 print("Compose policy — kvm capability")
 
 def _devices(devices, capabilities=None):

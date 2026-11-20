@@ -270,7 +270,8 @@ async def _stage_package(entry: dict, job_id: str, manifest: Optional[dict] = No
     compose_path = staging / "docker-compose.yml"
     if compose_path.exists():
         warnings = enforce_compose(compose_path.read_text(encoding="utf-8"),
-                                  manifest.get("capabilities"))
+                                  manifest.get("capabilities"),
+                                  package_id=pkg_id, package_dir=staging)
         for warning in warnings:
             package_jobs.log(job_id, f"warning: {warning}")
         package_jobs.log(job_id, "compose policy passed")
