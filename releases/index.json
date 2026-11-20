@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-20T14:27:36+00:00",
+  "generated_at": "2026-11-20T14:36:09+00:00",
   "latest": {
-    "version": "2.6.0",
-    "git_sha": "3e971e8",
-    "git_sha_full": "3e971e835aa9cdba919cd6e767a8cc7f531344a3",
-    "build": 63,
-    "released_at": "2026-11-20T14:27:36+00:00",
-    "notes": "Setup: pick your own username, not just the password, when claiming a new appliance"
+    "version": "2.6.1",
+    "git_sha": "d5f2302",
+    "git_sha_full": "d5f23020087eb00c4ee65c37e66371119ba091f9",
+    "build": 65,
+    "released_at": "2026-11-20T14:36:09+00:00",
+    "notes": "Setup: the first-run card asks for the admin username and password"
   },
   "releases": [
+    {
+      "version": "2.6.1",
+      "git_sha": "d5f2302",
+      "git_sha_full": "d5f23020087eb00c4ee65c37e66371119ba091f9",
+      "build": 65,
+      "released_at": "2026-11-20T14:36:09+00:00",
+      "notes": "Setup: the first-run card asks for the admin username and password"
+    },
     {
       "version": "2.6.0",
       "git_sha": "3e971e8",
