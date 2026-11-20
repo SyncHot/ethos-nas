@@ -205,7 +205,7 @@ async def setup_claim(req: ClaimRequest, request: Request) -> dict:
     _clear_failures(client)
     logger.info("First-run setup completed for account %s", username)
     try:
-        from backend.services.notifications import emit_event
+        from backend.services.notifications_service import emit_event
 
         emit_event(
             kind="success",

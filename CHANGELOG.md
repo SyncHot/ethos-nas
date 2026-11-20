@@ -11,6 +11,14 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-11-20
+
+### Fixed
+
+- First-run setup: the "EthOS is set up" notification was silently dropped —
+  the claim handler imported the notification helper from a module name that
+  does not exist, and the surrounding `try` swallowed the ImportError.
+
 ## [2.4.0] - 2026-11-20
 
 ### Added
