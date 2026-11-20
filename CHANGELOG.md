@@ -11,6 +11,26 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-20
+
+### Added
+
+- **First-run setup.** A freshly flashed EthOS OS appliance can be claimed in
+  the browser: open `http://ethos-nas.local:9000`, type the setup code shown on
+  the appliance's screen and choose the admin password. Until now the only way in
+  was an HDMI keyboard and a randomly generated console password. The wizard
+  signs you in immediately and the code stops working afterwards. Image side: a
+  new `deploy/ethos-set-password` root helper does the `chpasswd` — the API stays
+  unprivileged. See `docs/first-run-setup.md`.
+
+### Security
+
+- `/api/setup/status` and `/api/setup/claim` are public by necessity (a fresh
+  appliance has no account). They answer only while
+  `/etc/ethos-nas/setup.json` exists without `claimed_at`, are rate-limited to
+  five failures per address per ten minutes, and never return or log the setup
+  code. The helper refuses every account except the one recorded in that file.
+
 ## [2.3.15] - 2026-11-20
 
 ### Fixed

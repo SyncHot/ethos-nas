@@ -14,7 +14,8 @@
 #   3. ONE sudoers file /etc/sudoers.d/ethos-nas with the full narrow rule
 #      inventory (shares + firewall + USB + power), visudo-validated before install
 #   4. Privileged helpers /usr/local/bin/ethos-usb-partition (USB only),
-#      /usr/local/bin/ethos-docker-install (Docker Engine provisioning), and
+#      /usr/local/bin/ethos-docker-install (Docker Engine provisioning),
+#      /usr/local/bin/ethos-set-password (first-run setup claim), and
 #      /usr/local/bin/ethos-samba-accounts (fixed Samba passdb operations), plus
 #      shadow-group membership (pam_unix needs /etc/shadow to verify PAM logins)
 #   5. Docker group membership when /var/run/docker.sock exists (no sudo for docker).
@@ -81,6 +82,10 @@ WRAPPER_BIN="/usr/local/bin/ethos-usb-partition"
 DOCKER_HELPER_BIN="/usr/local/bin/ethos-docker-install"
 SYSTEM_DEPS_HELPER_BIN="/usr/local/bin/ethos-system-deps"
 SAMBA_ACCOUNTS_HELPER_BIN="/usr/local/bin/ethos-samba-accounts"
+# First-run setup (deploy/ethos-set-password): sets the admin password the
+# operator chose in the browser wizard. Usable only while
+# /etc/ethos-nas/setup.json exists and is unclaimed.
+SET_PASSWORD_HELPER_BIN="/usr/local/bin/ethos-set-password"
 # Core update helper (deploy/ethos-update). The sudoers rule is argument-free;
 # the helper validates the signed release index and its own conf file.
 UPDATE_HELPER_BIN="/usr/local/bin/ethos-update"
@@ -110,8 +115,9 @@ if [ "${UNINSTALL}" = 1 ]; then
     rm -f "${DOCKER_HELPER_BIN}"
     rm -f "${SYSTEM_DEPS_HELPER_BIN}"
     rm -f "${SAMBA_ACCOUNTS_HELPER_BIN}"
+    rm -f "${SET_PASSWORD_HELPER_BIN}"
     rm -f "${UPDATE_HELPER_BIN}" "${UPDATE_CONF}" "${UPDATE_PUBKEY_PEM}"
-    echo "✓ removed: ${UNIT_DST}, ${SUDOERS_FILE}, ${WRAPPER_BIN}, ${DOCKER_HELPER_BIN}, ${SYSTEM_DEPS_HELPER_BIN}, ${SAMBA_ACCOUNTS_HELPER_BIN}, ${UPDATE_HELPER_BIN}"
+    echo "✓ removed: ${UNIT_DST}, ${SUDOERS_FILE}, ${WRAPPER_BIN}, ${DOCKER_HELPER_BIN}, ${SYSTEM_DEPS_HELPER_BIN}, ${SAMBA_ACCOUNTS_HELPER_BIN}, ${SET_PASSWORD_HELPER_BIN}, ${UPDATE_HELPER_BIN}"
     echo "  user '${TARGET_USER}' kept (remove manually with: userdel ${TARGET_USER})"
     exit 0
 fi
@@ -238,6 +244,11 @@ RULES=(
     # parameters and only installs Docker Engine/Compose from Docker's repo
     # (see services/docker_host.py). Container access still uses the group.
     "${TARGET_USER} ALL=(root) NOPASSWD: ${DOCKER_HELPER_BIN}"
+    # First-run setup (routers/setup.py + deploy/ethos-set-password).
+    # Argument-free again: the helper reads one JSON request on stdin, only
+    # touches the account named in /etc/ethos-nas/setup.json, and refuses to
+    # run once that state file says the appliance is claimed.
+    "${TARGET_USER} ALL=(root) NOPASSWD: ${SET_PASSWORD_HELPER_BIN}"
     # Host dependencies (services/system_deps.py). sudoers forbids wildcards in
     # arguments, so every allowed (action, id) pair gets its own exact rule.
     # The helper re-validates the id and never takes an arbitrary package name.
@@ -516,6 +527,17 @@ SAMBA_ACCOUNTS_SRC="${REPO_DIR}/deploy/ethos-samba-accounts"
 if [ -f "${SAMBA_ACCOUNTS_SRC}" ]; then
     install -m 0755 -o root -g root "${SAMBA_ACCOUNTS_SRC}" "${SAMBA_ACCOUNTS_HELPER_BIN}"
     echo "✓ ${SAMBA_ACCOUNTS_HELPER_BIN} installed (Samba passdb helper)"
+fi
+
+# ── 4d-quater. First-run setup helper (claim the appliance in the browser) ──
+# Creates /etc/ethos-nas first: on an appliance that directory is written by
+# ethos-firstboot before this installer runs, and the helper needs to keep the
+# group readable on the state file it rewrites.
+SET_PASSWORD_SRC="${REPO_DIR}/deploy/ethos-set-password"
+if [ -f "${SET_PASSWORD_SRC}" ]; then
+    install -d -m 0755 -o root -g root /etc/ethos-nas
+    install -m 0755 -o root -g root "${SET_PASSWORD_SRC}" "${SET_PASSWORD_HELPER_BIN}"
+    echo "✓ ${SET_PASSWORD_HELPER_BIN} installed (first-run setup helper)"
 fi
 
 # ── 4d-bis. Core update helper + its config and public key ──────────────────

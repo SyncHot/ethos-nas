@@ -2910,7 +2910,7 @@
             <div style="text-align:center;margin-bottom:32px;">
                 <div style="font-size:56px;display:block;margin-bottom:16px;filter:drop-shadow(0 4px 20px rgba(53,132,228,0.3));line-height:1;">&#x1F5A5;</div>
                 <div style="font-size:28px;font-weight:700;color:white;letter-spacing:-0.5px;">EthOS NAS</div>
-                <div style="font-size:13px;color: var(--text-3);margin-top:6px;">Sign in with your Linux credentials</div>
+                <div id="loginSubtitle" style="font-size:13px;color: var(--text-3);margin-top:6px;">Sign in with your Linux credentials</div>
             </div>
             <form id="loginForm" data-testid="login-form" onsubmit="return false;" autocomplete="on">
                 <div style="margin-bottom:18px;">
@@ -2939,6 +2939,42 @@
                     <span id="loginBtnSpinner" style="display:none;width:18px;height:18px;border:2px solid var(--border);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite;"></span>
                 </button>
             </form>
+            <!-- First-run setup: shown instead of the login form while the
+                 appliance is unclaimed (see backend/routers/setup.py). The code
+                 is printed on the appliance's own screen, so the first browser
+                 on the network cannot claim the box for itself. -->
+            <div id="setupPanel" data-testid="setup-panel" style="display:none;">
+                <p style="margin:0 0 18px;font-size:13px;line-height:1.6;color:var(--text-2);">
+                    This appliance has not been set up yet. Enter the
+                    <strong>setup code</strong> shown on its screen, then choose the
+                    password for <strong id="setupUser">the admin account</strong>.
+                </p>
+                <div style="margin-bottom:16px;">
+                    <label style="display:block;font-size:11px;font-weight:700;color: var(--text-2);margin-bottom:6px;letter-spacing:0.5px;text-transform:uppercase;">Setup code</label>
+                    <input id="setupCode" data-testid="setup-code" type="text" autocomplete="one-time-code" spellcheck="false"
+                        placeholder="ABCD-EFGH" autofocus
+                        style="width:100%;padding:12px 16px;border-radius:12px;border:1.5px solid var(--border);background:rgba(0,0,0,0.25);color:white;font-size:16px;letter-spacing:2px;outline:none;transition:border-color 0.2s,box-shadow 0.2s;" />
+                </div>
+                <div style="margin-bottom:16px;">
+                    <label style="display:block;font-size:11px;font-weight:700;color: var(--text-2);margin-bottom:6px;letter-spacing:0.5px;text-transform:uppercase;">New password</label>
+                    <input id="setupPassword" data-testid="setup-password" type="password" autocomplete="new-password"
+                        placeholder="At least 10 characters"
+                        style="width:100%;padding:12px 16px;border-radius:12px;border:1.5px solid var(--border);background:rgba(0,0,0,0.25);color:white;font-size:14px;outline:none;transition:border-color 0.2s,box-shadow 0.2s;" />
+                </div>
+                <div style="margin-bottom:22px;">
+                    <label style="display:block;font-size:11px;font-weight:700;color: var(--text-2);margin-bottom:6px;letter-spacing:0.5px;text-transform:uppercase;">Repeat password</label>
+                    <input id="setupConfirm" data-testid="setup-confirm" type="password" autocomplete="new-password"
+                        placeholder="Same password again"
+                        style="width:100%;padding:12px 16px;border-radius:12px;border:1.5px solid var(--border);background:rgba(0,0,0,0.25);color:white;font-size:14px;outline:none;transition:border-color 0.2s,box-shadow 0.2s;" />
+                </div>
+                <button id="setupSubmitBtn" data-testid="setup-submit" type="button"
+                    style="width:100%;padding:13px;border-radius:12px;border:none;background:linear-gradient(135deg,#3584e4,#2563eb);color:white;font-size:15px;font-weight:700;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:8px;">
+                    <span id="setupBtnText">Set up this appliance</span>
+                </button>
+                <div style="text-align:center;margin-top:14px;">
+                    <a href="#" id="setupShowLogin" style="color:var(--text-3);font-size:12px;text-decoration:none;">Already set up? Sign in</a>
+                </div>
+            </div>
             <div id="loginError" style="text-align:center;color:#ef4444;font-size:13px;min-height:22px;margin-top:16px;display:flex;align-items:center;justify-content:center;gap:6px;"></div>
         </div>
     </div>
@@ -2987,10 +3023,104 @@
 
             if (!isAuthed()) {
                 document.getElementById('loginOverlay').style.display = 'flex';
+                // A flashed appliance boots with a pending setup state: ask the
+                // server (public endpoint, no secrets) and show the claim form
+                // instead of the login form.
+                fetch('/api/setup/status', { cache: 'no-store' })
+                    .then(function(res) { return res.ok ? res.json() : null; })
+                    .then(function(state) { if (state && state.required) showSetup(state); })
+                    .catch(function(_) { /* older server or offline: keep the login form */ });
             } else {
                 var overlay = document.getElementById('loginOverlay');
                 if (overlay) overlay.style.display = 'none';
             }
+
+            function showSetup(state) {
+                var form = document.getElementById('loginForm');
+                var panel = document.getElementById('setupPanel');
+                if (!form || !panel) return;
+                form.style.display = 'none';
+                panel.style.display = 'block';
+                var subtitle = document.getElementById('loginSubtitle');
+                if (subtitle) subtitle.textContent = 'First-run setup';
+                var user = document.getElementById('setupUser');
+                if (user && state.user) user.textContent = state.user;
+                var code = document.getElementById('setupCode');
+                if (code) code.focus();
+            }
+
+            function showLoginForm() {
+                var form = document.getElementById('loginForm');
+                var panel = document.getElementById('setupPanel');
+                if (panel) panel.style.display = 'none';
+                if (form) form.style.display = 'block';
+                var subtitle = document.getElementById('loginSubtitle');
+                if (subtitle) subtitle.textContent = 'Sign in with your Linux credentials';
+                var user = document.getElementById('loginUsername');
+                if (user) user.focus();
+            }
+
+            function setupFail(message) {
+                var errorEl = document.getElementById('loginError');
+                if (!errorEl) return;
+                errorEl.textContent = '❌ ' + message;
+                errorEl.classList.remove('login-error-shake');
+                void errorEl.offsetWidth;
+                errorEl.classList.add('login-error-shake');
+            }
+
+            function submitSetup() {
+                var codeEl = document.getElementById('setupCode');
+                var pwEl = document.getElementById('setupPassword');
+                var confirmEl = document.getElementById('setupConfirm');
+                var errorEl = document.getElementById('loginError');
+                var btn = document.getElementById('setupSubmitBtn');
+                var btnText = document.getElementById('setupBtnText');
+                var code = (codeEl ? codeEl.value : '').trim();
+                var password = pwEl ? pwEl.value : '';
+                var confirm = confirmEl ? confirmEl.value : '';
+
+                if (errorEl) { errorEl.textContent = ''; errorEl.classList.remove('login-error-shake'); }
+                if (!code) { setupFail('Enter the setup code shown on the appliance screen'); return; }
+                if (password.length < 10) { setupFail('Use at least 10 characters'); return; }
+                if (password !== confirm) { setupFail('The two passwords do not match'); return; }
+
+                if (btn) btn.disabled = true;
+                if (btnText) btnText.textContent = 'Setting up…';
+
+                fetch('/api/setup/claim', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: code, password: password })
+                }).then(function(res) { return res.json().then(function(d) { return { status: res.status, data: d }; }); })
+                .then(function(result) {
+                    if (result.status === 200 && result.data && result.data.token) {
+                        localStorage.setItem('token', result.data.token);
+                        window.location.reload();
+                        return;
+                    }
+                    var detail = (result.data && result.data.detail) || 'Setup failed';
+                    setupFail(detail);
+                    if (pwEl) { pwEl.value = ''; pwEl.focus(); }
+                    if (confirmEl) confirmEl.value = '';
+                }).catch(function(_) {
+                    setupFail('Connection failed. Is the server running?');
+                }).finally(function() {
+                    if (btn) btn.disabled = false;
+                    if (btnText) btnText.textContent = 'Set up this appliance';
+                });
+            }
+
+            document.getElementById('setupSubmitBtn')?.addEventListener('click', submitSetup);
+            document.getElementById('setupShowLogin')?.addEventListener('click', function(e) {
+                e.preventDefault();
+                showLoginForm();
+            });
+            ['setupCode', 'setupPassword', 'setupConfirm'].forEach(function(id) {
+                document.getElementById(id)?.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') { e.preventDefault(); submitSetup(); }
+                });
+            });
 
             // Wire up form submission
             function submitLogin() {

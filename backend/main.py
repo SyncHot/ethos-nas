@@ -33,6 +33,7 @@ from backend.routers.network import router as network_router
 from backend.routers.files import router as files_router
 from backend.routers.terminal import router as terminal_router
 from backend.routers.auth import router as auth_router
+from backend.routers.setup import router as setup_router
 from backend.routers.backup import router as backup_router
 from backend.services.backup_scheduler import (
     start_backup_scheduler,
@@ -333,6 +334,12 @@ async def auth_middleware(request: Request, call_next):
     # unauthenticated (anyone could start/stop/disable the NAS daemon).
     public_paths = {
         "/api/auth/login",
+        # First-run setup: a flashed appliance has no account yet, so the
+        # wizard has to work before anyone can log in. Both handlers read
+        # /etc/ethos-nas/setup.json themselves and stop answering the moment it
+        # is marked claimed; /status never reveals the code.
+        "/api/setup/status",
+        "/api/setup/claim",
         "/api/app/version",
         "/api/packages/desktop-icons",
         "/docs",
@@ -427,6 +434,7 @@ app.include_router(access_control_router, prefix="/api/security", tags=["Securit
 app.include_router(files_router,     prefix="/api/files",     tags=["Files"])
 app.include_router(file_ops_router,  prefix="/api/files",     tags=["File Operations"])
 app.include_router(auth_router,      prefix="/api/auth",      tags=["Auth"])
+app.include_router(setup_router,     prefix="/api/setup",     tags=["Setup"])
 app.include_router(backup_router,     prefix="/api/backup",    tags=["Backup"])
 app.include_router(shares_router,     prefix="/api/shares",    tags=["Shares"])
 app.include_router(packages_router,   prefix="/api/packages",  tags=["Packages"])
