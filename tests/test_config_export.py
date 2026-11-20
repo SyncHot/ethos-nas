@@ -105,7 +105,10 @@ def main() -> int:
 
         with zipfile.ZipFile(io.BytesIO(archive)) as zf:
             names = zf.namelist()
-        check("archive carries the gallery index", "gallery_index.db" in names, str(names))
+        # The index may be the legacy root file or a per-user one
+        # (users/<name>/gallery_index.db) after the multi-user migration.
+        db_names = [n for n in names if n == "gallery_index.db" or n.endswith("/gallery_index.db")]
+        check("archive carries the gallery index", bool(db_names), str(names))
         check("archive carries a manifest", "manifest.json" in names, str(names))
 
         status, snapshot = call("POST", "/api/system/config-snapshots")
@@ -129,7 +132,9 @@ def main() -> int:
                                f"multipart/form-data; boundary={boundary}")
         check("import succeeds", status == 200, f"{status}, {payload[:120]}")
         restored = json.loads(payload).get("imported", []) if status == 200 else []
-        check("import restored the gallery index", "gallery_index.db" in restored, str(restored))
+        check("import restored the gallery index",
+              any(n == "gallery_index.db" or n.endswith("/gallery_index.db") for n in restored),
+              str(restored))
         status, body = call("GET", "/api/appearance/wallpaper")
         restored_wallpaper = json.loads(body).get("wallpaper") if status == 200 else None
         check("wallpaper restored by import", restored_wallpaper == wallpaper,

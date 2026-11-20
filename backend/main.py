@@ -176,6 +176,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.error("Store schema check failed", exc_info=True)
 
+    # Per-user libraries: adopt the pre-multi-user stores into the admin's
+    # directory and split the legacy music library (idempotent).
+    try:
+        from backend.services import user_data as _user_data
+
+        _user_data.adopt_all()
+    except Exception:
+        logger.error("Per-user store migration failed", exc_info=True)
+
     # Move package state/directories to packages/apps/<id> (idempotent)
     try:
         from backend.services.packages_store import migrate_legacy as _migrate_packages

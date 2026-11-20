@@ -53,7 +53,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 # services/path_scope.py, so the caller's identity is enforced here too).
 from backend.config import settings
 from backend.routers.files import _sanitize
-from backend.services import path_scope, tmdb_service
+from backend.services import path_scope, tmdb_service, user_data
 from backend.services.video_metadata import parse_video_name
 
 logger = logging.getLogger("ethos-nas.routers.video_station")
@@ -70,14 +70,20 @@ NON_MEDIA_DIRS = {"node_modules", "venv", ".venv"}
 # settings.DATA_DIR honors ETHOS_DATA_DIR so isolated test instances don't
 # clobber production state (was hardcoded to backend/data/).
 DATA_DIR = settings.DATA_DIR
-CONFIG_FILE = DATA_DIR / "video_station_config.json"
 
 from backend.services import json_store
 
-_CONFIG_STORE = json_store.get(CONFIG_FILE, version=1)
-RESUME_FILE = DATA_DIR / "video_station_resume.json"
 
-_RESUME_STORE = json_store.get(RESUME_FILE)  # {username: position}
+def _config_store():
+    """Per-user library config (roots/options/TMDB), never shared."""
+    return user_data.user_store("video_station_config.json", version=1)
+
+
+def _resume_store():
+    """Per-user playback positions, keyed by absolute file path."""
+    return user_data.user_store("video_station_resume.json")
+
+
 THUMB_DIR = DATA_DIR / "video_thumbs"
 INFO_CACHE_FILE = DATA_DIR / "video_info_cache.json"
 
@@ -223,7 +229,7 @@ def _sanitize_options(options: dict) -> dict:
     return base
 
 def _load_config() -> dict:
-    data = _CONFIG_STORE.load()
+    data = _config_store().load()
     if not isinstance(data, dict) or not data:
         return json.loads(json.dumps(DEFAULT_CONFIG))
     roots = [r for r in (data.get("roots") or []) if isinstance(r, str) and _is_allowed(r)]
@@ -232,7 +238,7 @@ def _load_config() -> dict:
 
 
 def _save_config(config: dict) -> None:
-    _CONFIG_STORE.save(config)
+    _config_store().save(config)
 
 
 def _is_allowed(abs_path: str) -> bool:
@@ -406,12 +412,12 @@ def _walk_all(roots: list[str], query: str = "") -> dict:
 
 
 def _load_resume_map() -> dict:
-    data = _RESUME_STORE.load()
+    data = _resume_store().load()
     return data if isinstance(data, dict) else {}
 
 
 def _save_resume_map(m: dict) -> None:
-    _RESUME_STORE.save(m)
+    _resume_store().save(m)
 
 
 # ── ffprobe / ffmpeg helpers ──────────────────────────────────────────────────

@@ -11,6 +11,27 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.6.5] - 2026-11-20
+
+### Added
+
+- **Per-user libraries.** Gallery, Music, Videos and Code Editor state is now
+  stored per account under `<DATA_DIR>/users/<user>/`: folder lists, private
+  PIN, albums, media index, liked tracks/playlists, video resume positions and
+  recent projects no longer leak between accounts. On upgrade the existing
+  stores are adopted by the admin; every other account starts empty.
+
+### Changed
+
+- **Config backup/export** now includes every per-user store and each account's
+  gallery index, and import restores them.
+
+### Security
+
+- A per-user gallery scan runs with the owning account's path scope; a scan
+  scheduled from one account can no longer walk another account's folders.
+- The music library no longer keeps every account's state in one document.
+
 ## [2.6.4] - 2026-11-20
 
 ### Security

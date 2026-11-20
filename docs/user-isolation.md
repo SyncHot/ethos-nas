@@ -1,7 +1,8 @@
 # Feature: Per-user filesystem scope & app isolation
 
-Status: **Phase 1 implemented** (v2.6.3/v2.6.4). Phases 2–4 are the remaining
-work for "an installed app can never reach more than the signed-in user".
+Status: **Phase 1 + Phase 2 implemented** (v2.6.4/v2.6.5). Phases 3–4 are the
+remaining work for "an installed app can never reach more than the signed-in
+user".
 
 ## Problem
 
@@ -33,11 +34,18 @@ work for "an installed app can never reach more than the signed-in user".
 
 - `backend/services/path_scope.py` — `CURRENT_ROLE` / `CURRENT_USER`
   contextvars, `scope_request`, `sanitize`, `sanitize_for`, `allowed_roots`,
-  `home_dir`, `system_scope`.
+  `home_dir`, `system_scope`/`identity_scope`.
+- `backend/services/user_data.py` — `<DATA_DIR>/users/<username>/` per-user
+  stores; adopts the pre-multi-user files into the admin's directory at startup.
+- Per-user files: `gallery_config.json`, `gallery_index.db`, `albums.json`,
+  `music_config.json`, `music_library.json`, `video_station_config.json`,
+  `video_station_resume.json`, `editor.json` (all under the user directory).
 - Share links carry `owner` + `owner_role`; the public route re-validates every
   stored path on each request.
 - qBittorrent SID sessions store the caller identity; `_require_auth` publishes
   it for `path_scope`, so a personal API key keeps its own scope.
+- Config export/import (`config_archive.py`) includes `users/**/*.json` and each
+  per-user `gallery_index.db`.
 
 ## API changes
 
@@ -62,7 +70,9 @@ work for "an installed app can never reach more than the signed-in user".
 - [x] Background workers use `system_scope()` (downloads, gallery scan, extraction)
 - [x] qBittorrent identity from SID/API key
 - [x] `tests/test_path_scope.py` + extended `tests/test_security_invariants.py`
-- [ ] Phase 2 — per-user gallery/music/video/editor stores (`DATA_DIR/users/<user>/`)
+- [x] Phase 2 — per-user gallery/music/video/editor stores
+      (`DATA_DIR/users/<user>/`), legacy stores adopted by the admin
+- [x] Backup/export includes per-user stores and gallery indexes
 - [ ] Phase 3 — per-user download config, task owners, per-user qB tasks/categories
 - [ ] Phase 4 — compose package bind hardening (`PACKAGES_ROOT` self-only)
 - [ ] Phase 5 — follow-up: per-package OS confinement for `venv` packages
@@ -76,6 +86,10 @@ work for "an installed app can never reach more than the signed-in user".
   creation, music config; admin gets 200; user search roots never advertise `/`.
 - `tests/test_qb_compat.py`, `tests/test_trash_multiuser_api.py`,
   `tests/test_video_thumb_pipeline.py`.
+- `tests/test_user_isolation.py`: two accounts get separate music/gallery/video/
+  editor state, and legacy root stores are adopted by the admin.
+- `tests/test_config_export.py`: per-user stores and indexes travel with the
+  config archive.
 
 ## Further considerations
 

@@ -42,19 +42,23 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from backend.config import settings
-from backend.services import music_search, package_client, path_scope
+from backend.services import music_search, package_client, path_scope, user_data
 
 logger = logging.getLogger("ethos-nas.routers.music")
 
 router = APIRouter(dependencies=[Depends(path_scope.scope_request)])
 
 DATA_DIR = settings.DATA_DIR
-CONFIG_FILE = DATA_DIR / "music_config.json"
 
 DEFAULT_CONFIG = {
     # Where downloaded tracks are stored (NAS-side library)
     "download_dir": str(Path.home() / "Music" / "Ethos"),
 }
+
+
+def _config_store():
+    """Per-user music settings (each account has its own download dir)."""
+    return user_data.user_store("music_config.json")
 
 # The yt-dlp engine lives in the `ethos-music-engine` package (its own venv,
 # installed from Packages). The router only talks to it over loopback.
@@ -79,17 +83,14 @@ _stream_cache: Dict[str, Tuple[str, str, float]] = {}  # video_id -> (url, conte
 
 def _load_config() -> dict:
     cfg = dict(DEFAULT_CONFIG)
-    if CONFIG_FILE.is_file():
-        try:
-            cfg.update(json.loads(CONFIG_FILE.read_text()))
-        except (json.JSONDecodeError, OSError):
-            logger.warning("music config unreadable — using defaults")
+    data = _config_store().load()
+    if isinstance(data, dict):
+        cfg.update(data)
     return cfg
 
 
 def _save_config(cfg: dict) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    _config_store().save(cfg)
 
 
 def _music_dir() -> Path:
@@ -1042,17 +1043,17 @@ def _ytdlp_version() -> Optional[str]:
 
 
 # ── Library state (server-side sync) ────────────────────────────────
-# Per-user document in data/music_library.json — the single source of truth
-# for liked tracks, playlists, playback history and podcast subscriptions,
-# shared by the web app and the Android app (ethos-music).
+# One document per account in <DATA_DIR>/users/<user>/music_library.json —
+# the single source of truth for liked tracks, playlists, playback history
+# and podcast subscriptions, shared by the web app and Android.
 
-LIBRARY_FILE = DATA_DIR / "music_library.json"
-
-from backend.services import json_store
-
-_LIBRARY_STORE = json_store.get(LIBRARY_FILE)  # shape: {track_id: track} — no version key
 HISTORY_CAP = 50
 _lib_lock = asyncio.Lock()
+
+
+def _library_store():
+    """Per-user library document (no cross-account keys to leak)."""
+    return user_data.user_store("music_library.json")
 
 
 def _empty_state() -> dict:
@@ -1066,24 +1067,29 @@ def _empty_state() -> dict:
 
 
 def _load_states() -> dict:
-    data = _LIBRARY_STORE.load()
-    return data if isinstance(data, dict) else {}
+    """The current user's state, wrapped in the legacy {uid: state} shape.
+
+    Endpoints keep using the ``states[uid]`` pattern; the file itself now
+    belongs to one account.
+    """
+    uid = user_data.current_username()
+    data = _library_store().load()
+    return {uid: data} if isinstance(data, dict) else {}
 
 
 def _save_states(states: dict) -> None:
+    uid = user_data.current_username()
     try:
-        _LIBRARY_STORE.save(states)
+        _library_store().save(states.get(uid) or _empty_state())
     except Exception as e:
-        logger.error("music: cannot write %s: %s", LIBRARY_FILE, e)
+        logger.error("music: cannot write the user library: %s", e)
 
 
 def _user_state(request: Request) -> tuple[str, dict]:
-    """(user_id, state-doc) for the authenticated user."""
-    uid = str((request.state.current_user or {}).get("sub") or "0")
-    states = _load_states()
-    st = states.get(uid)
-    if not isinstance(st, dict):
-        st = _empty_state()
+    """(username, state-doc) for the authenticated user."""
+    uid = user_data.current_username()
+    data = _library_store().load()
+    st = data if isinstance(data, dict) else _empty_state()
     # backfill missing sections (older docs)
     for k, v in _empty_state().items():
         st.setdefault(k, copy.deepcopy(v) if isinstance(v, (list, dict)) else v)

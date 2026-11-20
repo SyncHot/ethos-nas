@@ -84,9 +84,11 @@ def _sqlite_copy(src_path: Path, dest_path: Path) -> bool:
     return True
 
 
-def _sqlite_restore(payload: bytes, backup_path: Path | None = None) -> None:
-    """Overwrite the live index through SQLite's backup API (keeps WAL mode)."""
-    live = settings.DATA_DIR / DB_NAME
+def _sqlite_restore(payload: bytes, backup_path: Path | None = None,
+                    target: Path | None = None) -> None:
+    """Overwrite a live index through SQLite's backup API (keeps WAL mode)."""
+    live = Path(target) if target is not None else settings.DATA_DIR / DB_NAME
+    live.parent.mkdir(parents=True, exist_ok=True)
     if backup_path is not None and live.exists():
         try:
             _sqlite_copy(live, backup_path)
@@ -111,9 +113,13 @@ def _sqlite_restore(payload: bytes, backup_path: Path | None = None) -> None:
 
 # ------------------------------------------------------------------------- export
 def export_bytes() -> bytes:
-    """Zip the whole JSON state plus the gallery index. Raises OSError on disk errors."""
+    """Zip the whole JSON state plus the gallery indexes. Raises OSError on disk errors."""
     buf = io.BytesIO()
+    users_dir = settings.DATA_DIR / "users"
     files = sorted(p for p in settings.DATA_DIR.glob("*.json") if p.is_file())
+    if users_dir.is_dir():
+        # Per-user libraries live in DATA_DIR/users/<name>/ — include them.
+        files += sorted(p for p in users_dir.rglob("*.json") if p.is_file())
     manifest = {
         "app_version": APP_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -131,8 +137,9 @@ def export_bytes() -> bytes:
                 logger.warning("Config snapshot: skipping unreadable %s: %s", path.name, exc)
                 skipped.append({"name": path.name, "error": str(exc)})
                 continue
-            zf.writestr(path.name, payload)
-            manifest["files"].append({"name": path.name, "bytes": len(payload)})
+            name = path.relative_to(settings.DATA_DIR).as_posix()
+            zf.writestr(name, payload)
+            manifest["files"].append({"name": name, "bytes": len(payload)})
         packages_dir = settings.DATA_DIR / "packages"
         if packages_dir.is_dir():
             for path in sorted(packages_dir.glob("*.json")):
@@ -150,11 +157,17 @@ def export_bytes() -> bytes:
         if skipped:
             manifest["skipped"] = skipped
         with tempfile.TemporaryDirectory() as tmp:
-            snapshot = pathlib.Path(tmp) / DB_NAME
-            if _sqlite_copy(settings.DATA_DIR / DB_NAME, snapshot):
+            db_paths = [settings.DATA_DIR / DB_NAME]
+            if users_dir.is_dir():
+                db_paths += sorted(users_dir.glob(f"*/{DB_NAME}"))
+            for db_path in db_paths:
+                snapshot = pathlib.Path(tmp) / (db_path.parent.name + "-" + DB_NAME)
+                if not _sqlite_copy(db_path, snapshot):
+                    continue
+                name = db_path.relative_to(settings.DATA_DIR).as_posix()
                 payload = snapshot.read_bytes()
-                zf.writestr(DB_NAME, payload)
-                manifest["files"].append({"name": DB_NAME, "bytes": len(payload)})
+                zf.writestr(name, payload)
+                manifest["files"].append({"name": name, "bytes": len(payload)})
         zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2))
     return buf.getvalue()
 
@@ -177,6 +190,14 @@ def import_bytes(raw: bytes) -> dict:
     for name in names:
         if name == DB_NAME:
             continue
+        # Per-user stores: users/<safe-name>/<file>.json or …/gallery_index.db
+        if name.startswith("users/"):
+            parts = name.split("/")
+            if (len(parts) != 3
+                    or not all(p and p not in (".", "..") and "\\" not in p for p in parts)
+                    or not (parts[2] == DB_NAME or parts[2].endswith(".json"))):
+                raise ArchiveError(f"Refusing unsafe entry: {name}")
+            continue
         # Flat names plus the two package state stores — never arbitrary paths.
         if name.startswith("packages/"):
             if name not in ("packages/installed.json", "packages/sources.json"):
@@ -186,10 +207,10 @@ def import_bytes(raw: bytes) -> dict:
             raise ArchiveError(f"Refusing unsafe entry: {name}")
 
     parsed: dict[str, object] = {}
-    db_payload: bytes | None = None
+    db_payloads: dict[str, bytes] = {}
     for name in names:
-        if name == DB_NAME:
-            db_payload = zf.read(DB_NAME)
+        if name == DB_NAME or name.endswith("/" + DB_NAME):
+            db_payloads[name] = zf.read(name)
             continue
         try:
             parsed[name] = json.loads(zf.read(name))
@@ -213,9 +234,10 @@ def import_bytes(raw: bytes) -> dict:
         json_store.get(target, dict).save(value)
         imported.append(name)
 
-    if db_payload is not None:
-        _sqlite_restore(db_payload, backup_dir / DB_NAME)
-        imported.append(DB_NAME)
+    for name, payload in db_payloads.items():
+        target = settings.DATA_DIR / name
+        _sqlite_restore(payload, backup_dir / name, target=target)
+        imported.append(name)
 
     logger.warning("Config import: restored %d item(s) into %s (snapshot: %s)",
                    len(imported), settings.DATA_DIR, backup_dir.name)

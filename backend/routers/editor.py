@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from backend.config import settings
-from backend.services import path_scope
+from backend.services import path_scope, user_data
 
 logger = logging.getLogger("ethos-nas.routers.editor")
 
@@ -34,11 +34,6 @@ logger = logging.getLogger("ethos-nas.routers.editor")
 # arbitrary absolute paths otherwise (TODO.md P0-06/P0-13).
 router = APIRouter(dependencies=[Depends(path_scope.scope_request)])
 
-RECENTS_PATH: Path = settings.DATA_DIR / "editor.json"
-
-from backend.services import json_store
-
-_RECENTS_STORE = json_store.get(RECENTS_PATH, version=1)
 MAX_RECENTS = 12
 GIT_TIMEOUT_S = 15
 
@@ -88,13 +83,13 @@ _LOCK = threading.Lock()
 
 
 def _load_recents() -> list[dict]:
-    data = _RECENTS_STORE.load()
+    data = user_data.user_store("editor.json", version=1).load()
     recents = data.get("recents", []) if isinstance(data, dict) else []
     return [r for r in recents if isinstance(r, dict) and r.get("path")]
 
 
 def _save_recents(recents: list[dict]) -> None:
-    _RECENTS_STORE.save({"version": 1, "recents": recents})
+    user_data.user_store("editor.json", version=1).save({"version": 1, "recents": recents})
 
 
 class RecentIn(BaseModel):

@@ -63,7 +63,9 @@ import os
 import secrets
 import sqlite3
 import stat
+import threading
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -82,7 +84,7 @@ from backend.config import settings
 from backend.routers.files import _sanitize, _extract_video_frame, _video_fallback_svg
 # JWT payload decoder (to bind Private sessions to the logged-in user)
 from backend.routers.auth import _verify_token
-from backend.services import json_store, path_scope
+from backend.services import json_store, path_scope, user_data
 from backend.services import trash_service
 
 logger = logging.getLogger("ethos-nas.routers.gallery")
@@ -93,27 +95,56 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv", ".flv"}
 MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS
 
-CONFIG_FILE = settings.DATA_DIR / "gallery_config.json"
-INDEX_DB = settings.DATA_DIR / "gallery_index.db"
-ALBUMS_PATH = settings.DATA_DIR / "albums.json"
-
-_ALBUMS_STORE = json_store.get(ALBUMS_PATH, list)
-
 DEFAULT_CONFIG = {
     "folders": [],
     "options": {"sort": "date_desc", "include_videos": True, "grid_size": "medium"},
     "private_pin": {},   # {salt, hash, enc_salt} — see Private PIN section below
 }
 
-# ── Config persistence ────────────────────────────────────────────────────────
+
+@dataclass
+class _Library:
+    """One account's gallery: config, albums, index DB and in-memory state."""
+    username: str
+    config_store: json_store.Store
+    albums_store: json_store.Store
+    db_path: Path
+    state: dict = field(default_factory=lambda: {
+        "items": [],          # dicts: path,name,folder,size,modified,type,taken
+        "scanned_at": 0.0,    # epoch of last finished scan
+        "scanning": False,    # background walk in flight?
+        "progress": {"dirs": 0, "added": 0, "changed": 0, "removed": 0},
+    })
+    loaded_config_signature: object | None = None
+    last_auto_rescan_at: float = 0.0
 
 
-_CONFIG_STORE = json_store.get(CONFIG_FILE, dict, version=1)
+_LIBRARIES: dict[str, _Library] = {}
+_LIBRARIES_LOCK = threading.Lock()
 
 
-def _load_config() -> dict:
-    """Read gallery config; a corrupt file is quarantined by json_store."""
-    data = _CONFIG_STORE.load()
+def _library(username: str | None = None) -> _Library:
+    """The caller's gallery library (created and loaded on first use)."""
+    name = user_data.safe_username(username or user_data.current_username())
+    with _LIBRARIES_LOCK:
+        lib = _LIBRARIES.get(name)
+        if lib is None:
+            lib = _Library(
+                username=name,
+                config_store=user_data.user_store(
+                    "gallery_config.json", dict, version=1, username=name),
+                albums_store=user_data.user_store(
+                    "albums.json", list, username=name),
+                db_path=user_data.user_path("gallery_index.db", name),
+            )
+            _LIBRARIES[name] = lib
+            _load_library_index(lib)
+        return lib
+
+
+def _load_config_from(store: json_store.Store) -> dict:
+    """Read a gallery config store; a corrupt file is quarantined by json_store."""
+    data = store.load()
     try:
         if not data:
             raise ValueError("empty config")
@@ -134,8 +165,12 @@ def _load_config() -> dict:
         return json.loads(json.dumps(DEFAULT_CONFIG))
 
 
+def _load_config() -> dict:
+    return _load_config_from(_library().config_store)
+
+
 def _save_config(config: dict) -> None:
-    _CONFIG_STORE.save(config)
+    _library().config_store.save(config)
 
 
 def _is_allowed(abs_path: str) -> bool:
@@ -377,15 +412,23 @@ def _private_video_thumb(enc: str, key: bytes, orig: str, size: int) -> Optional
 # ── Index (in-memory, persist on rescan) ─────────────────────────────────────
 
 _INDEX_LOCK = asyncio.Lock()
-_index_state = {
-    "items": [],          # dicts: path,name,folder,size,modified,type,taken
-    "scanned_at": 0.0,    # epoch of last finished scan
-    "scanning": False,    # background walk in flight?
-    "progress": {"dirs": 0, "added": 0, "changed": 0, "removed": 0},
-}
-_loaded_config_signature = None  # (folder paths tuple, include_videos) — stale guard
-_last_auto_rescan_at = 0.0
 AUTO_RESCAN_MIN_INTERVAL = 30.0
+
+
+class _IndexState:
+    """Per-identity view of the current account's in-memory index state."""
+
+    def __getitem__(self, key):
+        return _library().state[key]
+
+    def __setitem__(self, key, value):
+        _library().state[key] = value
+
+    def get(self, key, default=None):
+        return _library().state.get(key, default)
+
+
+_index_state = _IndexState()
 
 
 def _config_signature(cfg: dict):
@@ -395,10 +438,15 @@ def _config_signature(cfg: dict):
 # ── Index persistence (SQLite) + EXIF extraction ─────────────────────────────
 
 
-def _db_connect() -> sqlite3.Connection:
-    """Open the media index database, creating the schema if needed."""
-    INDEX_DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(INDEX_DB, timeout=15.0)
+def _db_path() -> Path:
+    return _library().db_path
+
+
+def _db_connect(path: Path | None = None) -> sqlite3.Connection:
+    """Open a media index database, creating the schema if needed."""
+    target = Path(path) if path is not None else _db_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(target, timeout=15.0)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS media (
                path     TEXT PRIMARY KEY,
@@ -432,12 +480,11 @@ def _db_connect() -> sqlite3.Connection:
     return conn
 
 
-def _load_index_from_disk() -> None:
-    """Best-effort load of the persisted index at import time."""
-    global _loaded_config_signature
+def _load_library_index(lib: _Library) -> None:
+    """Best-effort load of one account's persisted index."""
     try:
-        if INDEX_DB.exists():
-            conn = _db_connect()
+        if lib.db_path.exists():
+            conn = _db_connect(lib.db_path)
             try:
                 rows = conn.execute(
                     "SELECT path,name,folder,size,mtime,type,taken_at,private,favorite,camera,"
@@ -447,7 +494,7 @@ def _load_index_from_disk() -> None:
                     "SELECT value FROM meta WHERE key='scanned_at'").fetchone()
             finally:
                 conn.close()
-            _index_state["items"] = [
+            lib.state["items"] = [
                 {"path": p, "name": n, "folder": f, "size": s,
                  "modified": m, "type": t, "taken": ta, "private": bool(pv),
                  "favorite": bool(fv), "camera": cam or "",
@@ -455,14 +502,11 @@ def _load_index_from_disk() -> None:
                 for (p, n, f, s, m, t, ta, pv, fv, cam, lat, lon, dur) in rows
             ]
             if meta:
-                _index_state["scanned_at"] = float(meta[0])
+                lib.state["scanned_at"] = float(meta[0])
     except Exception as exc:
-        logger.warning("Gallery index unreadable (%s) — starting empty", exc)
-    cfg = _load_config()
-    _loaded_config_signature = _config_signature(cfg)
-
-
-_load_index_from_disk()
+        logger.warning("Gallery index unreadable for %s (%s) — starting empty",
+                       lib.username, exc)
+    lib.loaded_config_signature = _config_signature(_load_config_from(lib.config_store))
 
 
 def _gps_decimal(gps_ifd):
@@ -711,15 +755,15 @@ def _scan_root(conn: sqlite3.Connection, root: str, progress: dict) -> set:
     return seen
 
 
-def _do_scan(cfg: dict) -> None:
-    """Incremental scan of all configured folders (runs in a worker thread).
+def _do_scan(cfg: dict, username: str, role: str) -> None:
+    """Incremental scan of one account's folders (runs in a worker thread).
 
     Incremental: upsert new/changed files, drop deleted ones, then
-    re-materialise the in-memory index from SQLite. Runs under the system
-    identity because the gallery config/index is shared and managed by an
-    admin; the request that scheduled it must not narrow the walk.
+    re-materialise that account's in-memory index from its SQLite catalog.
+    The worker carries the owner's identity so the path scope matches the
+    folders that account configured.
     """
-    with path_scope.system_scope():
+    with path_scope.identity_scope(username, role):
         _do_scan_scoped(cfg)
 
 
@@ -775,46 +819,48 @@ def _do_scan_scoped(cfg: dict) -> None:
 
 
 async def _run_rescan() -> None:
-    """Background incremental rescan of all configured folders."""
-    global _loaded_config_signature
-    cfg = _load_config()
+    """Background incremental rescan of the caller's configured folders."""
+    username, role = path_scope.current_identity()
+    name = user_data.safe_username(username)
+    lib = _library(name)
+    cfg = _load_config_from(lib.config_store)
     sig = _config_signature(cfg)
     async with _INDEX_LOCK:
-        if _index_state["scanning"]:
+        if lib.state["scanning"]:
             return
-        _index_state["scanning"] = True
-        _index_state["progress"] = {"dirs": 0, "added": 0, "changed": 0, "removed": 0}
+        lib.state["scanning"] = True
+        lib.state["progress"] = {"dirs": 0, "added": 0, "changed": 0, "removed": 0}
     try:
-        await asyncio.get_running_loop().run_in_executor(None, _do_scan, cfg)
-        _loaded_config_signature = sig
-        logger.info("Gallery rescan complete: %d items", len(_index_state["items"]))
+        await asyncio.get_running_loop().run_in_executor(None, _do_scan, cfg, name, role)
+        lib.loaded_config_signature = sig
+        logger.info("Gallery rescan complete for %s: %d items", name, len(lib.state["items"]))
     except Exception as exc:
-        logger.error("Gallery rescan failed: %s", exc)
+        logger.error("Gallery rescan failed for %s: %s", name, exc)
     finally:
         async with _INDEX_LOCK:
-            _index_state["scanning"] = False
+            lib.state["scanning"] = False
 
 
 def _ensure_fresh_index(force: bool = False) -> None:
     """Kick a background rescan if the index is missing/stale (fire and forget)."""
-    global _last_auto_rescan_at
-    cfg = _load_config()
+    lib = _library()
+    cfg = _load_config_from(lib.config_store)
     sig = _config_signature(cfg)
-    config_changed = _loaded_config_signature != sig
-    empty_library = len(_index_state["items"]) == 0 and bool(cfg["folders"])
+    config_changed = lib.loaded_config_signature != sig
+    empty_library = len(lib.state["items"]) == 0 and bool(cfg["folders"])
     if not (config_changed or empty_library or force):
         return
     if not cfg["folders"]:
         return
-    if _index_state["scanning"]:
+    if lib.state["scanning"]:
         return
     # An empty library would otherwise re-trigger a full walk on every /items
     # request — throttle auto-rescans to at most one per interval.
     now = time.time()
     if not force and not config_changed \
-            and (now - _last_auto_rescan_at) < AUTO_RESCAN_MIN_INTERVAL:
+            and (now - lib.last_auto_rescan_at) < AUTO_RESCAN_MIN_INTERVAL:
         return
-    _last_auto_rescan_at = now
+    lib.last_auto_rescan_at = now
     try:
         asyncio.get_running_loop().create_task(_run_rescan())
     except RuntimeError:
@@ -932,7 +978,6 @@ async def gallery_save_config(payload: dict = Body(...)):
     # not hold this request open (_run_rescan is idempotent under its lock).
     if ("folders" in payload and isinstance(payload["folders"], list)
             or "include_videos" in (payload.get("options") or {})):
-        global _loaded_config_signature
         asyncio.get_running_loop().create_task(_run_rescan())
     return {"ok": True, **_public_config(cfg)}
 
@@ -1107,7 +1152,7 @@ async def gallery_trash(body: GalleryTrashRequest, request: Request) -> dict:
         rm = set(removed)
         _index_state["items"] = [it for it in _index_state["items"]
                                  if it["path"] not in rm]
-        conn = sqlite3.connect(INDEX_DB, timeout=15.0)
+        conn = sqlite3.connect(_db_path(), timeout=15.0)
         try:
             cur = conn.cursor()
             for ap in removed:
@@ -1193,7 +1238,7 @@ async def gallery_set_private(body: GalleryPrivateRequest, request: Request) -> 
     indexed: set[str] = set()
     rows: dict[str, int] = {}
     if wanted:
-        conn = sqlite3.connect(INDEX_DB, timeout=15.0)
+        conn = sqlite3.connect(_db_path(), timeout=15.0)
         try:
             cur = conn.cursor()
             marks = ",".join("?" * len(wanted))
@@ -1226,7 +1271,7 @@ async def gallery_set_private(body: GalleryPrivateRequest, request: Request) -> 
 
     if done:
         flag = 1 if body.private else 0
-        conn = sqlite3.connect(INDEX_DB, timeout=15.0)
+        conn = sqlite3.connect(_db_path(), timeout=15.0)
         try:
             cur = conn.cursor()
             for ap in sorted(done):
@@ -1257,7 +1302,7 @@ async def gallery_set_favorite(body: GalleryFavoriteRequest) -> dict:
     flag = bool(body.favorite)
     done: list[str] = []
     if wanted:
-        conn = sqlite3.connect(INDEX_DB, timeout=15.0)
+        conn = sqlite3.connect(_db_path(), timeout=15.0)
         try:
             cur = conn.cursor()
             marks = ",".join("?" * len(wanted))
@@ -1365,7 +1410,7 @@ async def gallery_private_pin_set(body: PinSetRequest, request: Request) -> dict
         if failed_paths:
             # A plaintext file must never stay flagged private (it would be
             # served unencrypted via /api/files/raw) — revert those flags.
-            conn = sqlite3.connect(INDEX_DB, timeout=15.0)
+            conn = sqlite3.connect(_db_path(), timeout=15.0)
             try:
                 for ap in failed_paths:
                     conn.execute("UPDATE media SET private=0 WHERE path=?", (ap,))
@@ -1628,12 +1673,12 @@ ALBUMS_LOCK = asyncio.Lock()
 
 
 def _load_albums() -> list:
-    data = _ALBUMS_STORE.load()
+    data = _library().albums_store.load()
     return [a for a in data if isinstance(a, dict) and a.get("id")] if isinstance(data, list) else []
 
 
 def _save_albums(albums: list) -> None:
-    _ALBUMS_STORE.save(albums)
+    _library().albums_store.save(albums)
 
 
 def _find_album(album_id: str) -> Optional[dict]:

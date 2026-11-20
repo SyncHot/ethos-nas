@@ -101,6 +101,12 @@ class system_scope:
         return False
 
 
+# Generic explicit-identity scope for delegated work (a per-user gallery scan,
+# a public share link acting for its creator). Same implementation as the
+# system scope, named for the call site.
+identity_scope = system_scope
+
+
 def _under(path: str, root: str) -> bool:
     root = root.rstrip(os.sep) or root
     return path == root or path.startswith(root + os.sep)
