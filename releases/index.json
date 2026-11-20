@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-20T13:00:23+00:00",
+  "generated_at": "2026-11-20T13:01:19+00:00",
   "latest": {
-    "version": "2.4.0",
-    "git_sha": "55fe51e",
-    "git_sha_full": "55fe51ef3951edc3c05c314d754f6d2696aedcd0",
-    "build": 56,
-    "released_at": "2026-11-20T13:00:23+00:00",
-    "notes": "Setup: a freshly flashed appliance can be claimed in the browser with the code shown on its screen — no HDMI keyboard, no default password"
+    "version": "2.4.1",
+    "git_sha": "8484f2c",
+    "git_sha_full": "8484f2cc40821cc0aae83666b865c95f94889f23",
+    "build": 58,
+    "released_at": "2026-11-20T13:01:19+00:00",
+    "notes": "Setup: the 'EthOS is set up' notification now appears after claiming the appliance"
   },
   "releases": [
+    {
+      "version": "2.4.1",
+      "git_sha": "8484f2c",
+      "git_sha_full": "8484f2cc40821cc0aae83666b865c95f94889f23",
+      "build": 58,
+      "released_at": "2026-11-20T13:01:19+00:00",
+      "notes": "Setup: the 'EthOS is set up' notification now appears after claiming the appliance"
+    },
     {
       "version": "2.4.0",
       "git_sha": "55fe51e",
