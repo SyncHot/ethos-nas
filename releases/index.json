@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-20T15:51:28+00:00",
+  "generated_at": "2026-11-20T16:05:20+00:00",
   "latest": {
-    "version": "2.6.5",
-    "git_sha": "e3df643",
-    "git_sha_full": "e3df6432c23f51e94802f514ecd103cd49789f7f",
-    "build": 73,
-    "released_at": "2026-11-20T15:51:28+00:00",
-    "notes": "Libraries: per-user gallery, music, video and editor state"
+    "version": "2.6.6",
+    "git_sha": "0f07f64",
+    "git_sha_full": "0f07f646524be2728dfde09b29648035dd1d0acc",
+    "build": 75,
+    "released_at": "2026-11-20T16:05:20+00:00",
+    "notes": "Downloads: per-user queues, folders, categories and qBittorrent scope"
   },
   "releases": [
+    {
+      "version": "2.6.6",
+      "git_sha": "0f07f64",
+      "git_sha_full": "0f07f646524be2728dfde09b29648035dd1d0acc",
+      "build": 75,
+      "released_at": "2026-11-20T16:05:20+00:00",
+      "notes": "Downloads: per-user queues, folders, categories and qBittorrent scope"
+    },
     {
       "version": "2.6.5",
       "git_sha": "e3df643",
