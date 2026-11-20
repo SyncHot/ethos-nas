@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-20T14:06:07+00:00",
+  "generated_at": "2026-11-20T14:27:36+00:00",
   "latest": {
-    "version": "2.5.0",
-    "git_sha": "918444a",
-    "git_sha_full": "918444a765acce6e9509c3cb5e9ea9ebc4c68153",
-    "build": 61,
-    "released_at": "2026-11-20T14:06:07+00:00",
-    "notes": "Setup: a freshly flashed appliance no longer asks for a code on its own network — just pick the admin password"
+    "version": "2.6.0",
+    "git_sha": "3e971e8",
+    "git_sha_full": "3e971e835aa9cdba919cd6e767a8cc7f531344a3",
+    "build": 63,
+    "released_at": "2026-11-20T14:27:36+00:00",
+    "notes": "Setup: pick your own username, not just the password, when claiming a new appliance"
   },
   "releases": [
+    {
+      "version": "2.6.0",
+      "git_sha": "3e971e8",
+      "git_sha_full": "3e971e835aa9cdba919cd6e767a8cc7f531344a3",
+      "build": 63,
+      "released_at": "2026-11-20T14:27:36+00:00",
+      "notes": "Setup: pick your own username, not just the password, when claiming a new appliance"
+    },
     {
       "version": "2.5.0",
       "git_sha": "918444a",
