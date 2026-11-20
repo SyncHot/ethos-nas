@@ -2956,6 +2956,13 @@
                         style="width:100%;padding:12px 16px;border-radius:12px;border:1.5px solid var(--border);background:rgba(0,0,0,0.25);color:white;font-size:16px;letter-spacing:2px;outline:none;transition:border-color 0.2s,box-shadow 0.2s;" />
                 </div>
                 <div style="margin-bottom:16px;">
+                    <label style="display:block;font-size:11px;font-weight:700;color: var(--text-2);margin-bottom:6px;letter-spacing:0.5px;text-transform:uppercase;">Username</label>
+                    <input id="setupUsername" data-testid="setup-username" type="text" autocomplete="username" spellcheck="false"
+                        placeholder="ethosadmin"
+                        style="width:100%;padding:12px 16px;border-radius:12px;border:1.5px solid var(--border);background:rgba(0,0,0,0.25);color:white;font-size:14px;outline:none;transition:border-color 0.2s,box-shadow 0.2s;" />
+                    <small style="display:block;margin-top:6px;font-size:11px;color: var(--text-3);">Lowercase letters, digits, <code>-</code> and <code>_</code>. Leave it to keep the name above.</small>
+                </div>
+                <div style="margin-bottom:16px;">
                     <label style="display:block;font-size:11px;font-weight:700;color: var(--text-2);margin-bottom:6px;letter-spacing:0.5px;text-transform:uppercase;">New password</label>
                     <input id="setupPassword" data-testid="setup-password" type="password" autocomplete="new-password"
                         placeholder="At least 10 characters"
@@ -3060,6 +3067,8 @@
                 if (subtitle) subtitle.textContent = 'First-run setup';
                 var user = document.getElementById('setupUser');
                 if (user && state.user) user.textContent = state.user;
+                var nameEl = document.getElementById('setupUsername');
+                if (nameEl) nameEl.value = state.user || '';
                 var focusEl = needsCode ? document.getElementById('setupCode')
                                         : document.getElementById('setupPassword');
                 if (focusEl) focusEl.focus();
@@ -3093,6 +3102,8 @@
                 var btn = document.getElementById('setupSubmitBtn');
                 var btnText = document.getElementById('setupBtnText');
                 var code = (codeEl ? codeEl.value : '').trim();
+                var usernameEl = document.getElementById('setupUsername');
+                var username = (usernameEl ? usernameEl.value : '').trim();
                 var password = pwEl ? pwEl.value : '';
                 var confirm = confirmEl ? confirmEl.value : '';
                 var panel = document.getElementById('setupPanel');
@@ -3100,6 +3111,10 @@
 
                 if (errorEl) { errorEl.textContent = ''; errorEl.classList.remove('login-error-shake'); }
                 if (needsCode && !code) { setupFail('Enter the setup code shown on the appliance screen'); return; }
+                if (username && !/^[a-z_][a-z0-9_-]{0,31}$/.test(username)) {
+                    setupFail('Usernames use lowercase letters, digits, - and _');
+                    return;
+                }
                 if (password.length < 10) { setupFail('Use at least 10 characters'); return; }
                 if (password !== confirm) { setupFail('The two passwords do not match'); return; }
 
@@ -3109,7 +3124,7 @@
                 fetch('/api/setup/claim', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ code: code, password: password })
+                    body: JSON.stringify({ code: code, password: password, username: username })
                 }).then(function(res) { return res.json().then(function(d) { return { status: res.status, data: d }; }); })
                 .then(function(result) {
                     if (result.status === 200 && result.data && result.data.token) {

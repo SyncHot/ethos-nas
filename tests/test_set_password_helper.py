@@ -40,12 +40,32 @@ helper._run = fake_run
 helper.os.chown = lambda *a, **k: None
 
 
+EXISTING = {"ethosadmin", "someone"}
+
+
 class _Account:
     pw_uid = 1000
+    pw_dir = "/home/ethosadmin"
+    pw_gid = 1000
+
+
+def _getpwnam(name):
+    if name in EXISTING:
+        return _Account()
+    raise KeyError(name)
+
+
+class _Group:
+    gr_name = "ethosadmin"
+    gr_gid = 1000
 
 
 # ...and the admin account only exists inside an EthOS image.
-helper.pwd = type("_Pwd", (), {"getpwnam": staticmethod(lambda name: _Account())})
+helper.pwd = type("_Pwd", (), {"getpwnam": staticmethod(_getpwnam)})
+helper.grp = type("_Grp", (), {
+    "getgrgid": staticmethod(lambda gid: _Group()),
+    "getgrnam": staticmethod(lambda name: _Group()),
+})
 
 
 def reset(claimed=False, user="ethosadmin"):
@@ -113,6 +133,37 @@ CALLS.clear()
 _, error = attempt(action="setup-password", username="ethosadmin", password="Passw0rdPass")
 check("second use refused", error is not None, str(error))
 check("no commands on second use", not CALLS)
+
+print("choosing a username")
+reset()
+response, error = attempt(action="setup-password", username="ethosadmin",
+                           password="Passw0rdPass", new_username="marcin")
+check("rename accepted", response == {"ok": True, "username": "marcin"}, str(error or response))
+commands = [call["args"] for call in CALLS]
+check("account renamed with usermod",
+      any(args[:3] == ["usermod", "-l", "marcin"] for args in commands), str(commands))
+check("private group renamed too",
+      any(args[:3] == ["groupmod", "-n", "marcin"] for args in commands), str(commands))
+check("password set on the new name",
+      any(args[0] == "chpasswd" and call["stdin"] == "marcin:Passw0rdPass\n"
+          for args, call in zip(commands, CALLS)), str(commands))
+state = json.loads(STATE.read_text(encoding="utf-8"))
+check("state records the new username", state.get("user") == "marcin", str(state))
+
+for bad, why in (("Root", "uppercase"), ("-bad", "leading dash"), ("a" * 33, "too long"),
+                 ("bad name", "space"), ("root", "reserved"), ("someone", "taken")):
+    reset()
+    _, error = attempt(action="setup-password", username="ethosadmin",
+                       password="Passw0rdPass", new_username=bad)
+    check(f"invalid username refused ({why})", error is not None, str(error))
+    check(f"nothing executed for {why}", not CALLS)
+
+reset()
+response, error = attempt(action="setup-password", username="ethosadmin",
+                          password="Passw0rdPass", new_username="ethosadmin")
+check("keeping the image name works", response == {"ok": True, "username": "ethosadmin"}, str(error))
+check("no rename when the name is unchanged",
+      not any(call["args"][0] in ("usermod", "groupmod") for call in CALLS), str(CALLS))
 
 print("input handling")
 reset()

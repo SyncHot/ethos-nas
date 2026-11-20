@@ -33,6 +33,7 @@ Hard rules applied here:
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Optional
 
@@ -87,7 +88,13 @@ def _password_problem(password: str) -> str:
 class ClaimRequest(BaseModel):
     code: str = ""
     password: str = ""
+    # Optional: the login name the operator wants instead of the image default.
+    username: str = ""
     model_config = {"extra": "forbid"}
+
+
+# Same rule as deploy/ethos-set-password: useradd's portable alphabet.
+USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 
 
 def _state() -> Optional[dict]:
@@ -169,12 +176,13 @@ def _helper_command() -> list[str]:
     return [settings.SET_PASSWORD_HELPER]
 
 
-def _call_helper(username: str, password: str) -> tuple[bool, str]:
+def _call_helper(username: str, password: str, new_username: str = "") -> tuple[bool, str]:
     """Run the root helper on a thread; returns (ok, detail)."""
     request = json.dumps({
         "action": "setup-password",
         "username": username,
         "password": password,
+        **({"new_username": new_username} if new_username else {}),
     }).encode()
 
     def _run() -> tuple[bool, str]:
@@ -259,13 +267,23 @@ async def setup_claim(req: ClaimRequest, request: Request) -> dict:
         # A typo is not a guess: do not count it towards the rate limit.
         raise HTTPException(status_code=400, detail=problem)
 
-    ok, detail = await asyncio.to_thread(_call_helper, username, req.password)
+    # The helper renames the image's account to this name. Validating here keeps
+    # a typo from spawning a privileged process and gives a readable message.
+    chosen = str(req.username or "").strip() or username
+    if chosen != username:
+        if not USERNAME_RE.fullmatch(chosen) or chosen.endswith("-"):
+            raise HTTPException(
+                status_code=400,
+                detail="Use lowercase letters, digits, '-' and '_' (max 32)",
+            )
+
+    ok, detail = await asyncio.to_thread(_call_helper, username, req.password, chosen)
     if not ok:
         _record_failure(client)
         raise HTTPException(status_code=400, detail=detail or "Could not set the password")
 
     _clear_failures(client)
-    logger.info("First-run setup completed for account %s", username)
+    logger.info("First-run setup completed for account %s", chosen)
     try:
         from backend.services.notifications_service import emit_event
 
@@ -281,4 +299,4 @@ async def setup_claim(req: ClaimRequest, request: Request) -> dict:
 
     # Same code path as a normal login: PAM verifies the password we just set,
     # the account is registered in users.json and the response carries a JWT.
-    return await auth_login(_LoginRequest(username=username, password=req.password))
+    return await auth_login(_LoginRequest(username=chosen, password=req.password))

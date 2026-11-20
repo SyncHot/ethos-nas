@@ -149,6 +149,22 @@ check("first attempts are rejected but allowed",
 check("next attempt is rate-limited", statuses[-1] == 429, str(statuses))
 check("rate limit did not reach the helper", helper_request() is None)
 
+print("choosing a username")
+reset()
+resp = client.post("/api/setup/claim",
+                   json={"code": CODE, "password": PASSWORD, "username": "bad name"})
+check("invalid username refused", resp.status_code == 400, str(resp.status_code))
+check("invalid username never reaches the helper", helper_request() is None)
+
+reset()
+resp = client.post("/api/setup/claim",
+                   json={"code": CODE, "password": PASSWORD, "username": "marcin"})
+check("chosen username accepted", resp.status_code == 200, str(resp.json())[:120])
+check("helper is told to rename",
+      (helper_request() or {}).get("new_username") == "marcin", str(helper_request()))
+check("response logs in as the new name",
+      (resp.json().get("user") or {}).get("username") == "marcin", str(resp.json().get("user")))
+
 print("claim policy (who has to type the code)")
 # Same app, different peer addresses: the wizard only insists on the code when
 # the caller cannot be trusted by origin.

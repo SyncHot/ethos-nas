@@ -11,6 +11,17 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-11-20
+
+### Added
+
+- **Pick your own username at first boot.** The setup wizard now has a username
+  field, pre-filled with the image's `ethosadmin`. The root helper renames the
+  account in place (`usermod -l` + home move + `groupmod`), so the uid, sudo
+  groups and home contents survive and the appliance keeps exactly one admin.
+  Names are validated against useradd's portable alphabet and refused if
+  reserved or already taken.
+
 ## [2.5.0] - 2026-11-20
 
 ### Changed

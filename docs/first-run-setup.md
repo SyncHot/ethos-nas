@@ -53,7 +53,7 @@ the field when it is `false`.
 | Method | Path | Auth | Notes |
 |---|---|---|---|
 | `GET` | `/api/setup/status` | public | `{required, user, hostname, code_required}`; never the code |
-| `POST` | `/api/setup/claim` | public | `{code, password}` → same payload as `/api/auth/login` |
+| `POST` | `/api/setup/claim` | public | `{code, password, username?}` → same payload as `/api/auth/login` |
 
 Both paths are in `public_paths` in `backend/main.py` **as exact paths** — a
 fresh appliance has no account, so the wizard has to work before login.
@@ -68,6 +68,20 @@ Guards on `/api/setup/claim`:
   class — checked in the router *and* in the helper;
 - neither the code nor the password is ever logged; the response is a normal
   login payload, so the wizard lands the operator straight in the dashboard.
+
+## Choosing your own username
+
+The image creates one account (`ETHOS_ADMIN_USER`, `ethosadmin` by default). The
+wizard lets the operator replace that name: the helper renames the account in
+place (`usermod -l`, home moved with `-d -m`, private group renamed with
+`groupmod`), so the uid, the `sudo/adm/render/video` groups and the home
+contents stay intact and the appliance still has exactly one admin.
+
+Rules: lowercase letters, digits, `-` and `_`, max 32 characters, no trailing
+`-`, not an existing account, not a reserved system name (and not `ethos-nas`,
+the service account the helper itself runs under). Leaving the field empty keeps
+the image's name. The renamed account is what `/api/setup/status` reports and
+what the wizard signs you in as.
 
 ## Files
 
