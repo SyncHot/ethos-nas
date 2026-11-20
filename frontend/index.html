@@ -2944,12 +2944,12 @@
                  is printed on the appliance's own screen, so the first browser
                  on the network cannot claim the box for itself. -->
             <div id="setupPanel" data-testid="setup-panel" style="display:none;">
-                <p style="margin:0 0 18px;font-size:13px;line-height:1.6;color:var(--text-2);">
+                <p style="margin:0 0 18px;font-size:13px;line-height:1.6;color:var(--text-2);" data-setup-intro>
                     This appliance has not been set up yet. Enter the
                     <strong>setup code</strong> shown on its screen, then choose the
                     password for <strong id="setupUser">the admin account</strong>.
                 </p>
-                <div style="margin-bottom:16px;">
+                <div style="margin-bottom:16px;" data-setup-code-field>
                     <label style="display:block;font-size:11px;font-weight:700;color: var(--text-2);margin-bottom:6px;letter-spacing:0.5px;text-transform:uppercase;">Setup code</label>
                     <input id="setupCode" data-testid="setup-code" type="text" autocomplete="one-time-code" spellcheck="false"
                         placeholder="ABCD-EFGH" autofocus
@@ -3041,12 +3041,28 @@
                 if (!form || !panel) return;
                 form.style.display = 'none';
                 panel.style.display = 'block';
+                // On the appliance's own network the code is unnecessary: the
+                // person who flashed it is already there. It is only demanded
+                // when the request arrives through a proxy or from outside.
+                var needsCode = state.code_required !== false;
+                panel.dataset.noCode = needsCode ? '' : '1';
+                var codeField = panel.querySelector('[data-setup-code-field]');
+                if (codeField) codeField.style.display = needsCode ? '' : 'none';
+                var intro = panel.querySelector('[data-setup-intro]');
+                if (intro && !needsCode) {
+                    intro.textContent = 'This appliance has not been set up yet. Choose the password for ';
+                    var account = document.createElement('strong');
+                    account.textContent = state.user || 'the admin account';
+                    intro.appendChild(account);
+                    intro.appendChild(document.createTextNode('.'));
+                }
                 var subtitle = document.getElementById('loginSubtitle');
                 if (subtitle) subtitle.textContent = 'First-run setup';
                 var user = document.getElementById('setupUser');
                 if (user && state.user) user.textContent = state.user;
-                var code = document.getElementById('setupCode');
-                if (code) code.focus();
+                var focusEl = needsCode ? document.getElementById('setupCode')
+                                        : document.getElementById('setupPassword');
+                if (focusEl) focusEl.focus();
             }
 
             function showLoginForm() {
@@ -3079,9 +3095,11 @@
                 var code = (codeEl ? codeEl.value : '').trim();
                 var password = pwEl ? pwEl.value : '';
                 var confirm = confirmEl ? confirmEl.value : '';
+                var panel = document.getElementById('setupPanel');
+                var needsCode = !(panel && panel.dataset.noCode);
 
                 if (errorEl) { errorEl.textContent = ''; errorEl.classList.remove('login-error-shake'); }
-                if (!code) { setupFail('Enter the setup code shown on the appliance screen'); return; }
+                if (needsCode && !code) { setupFail('Enter the setup code shown on the appliance screen'); return; }
                 if (password.length < 10) { setupFail('Use at least 10 characters'); return; }
                 if (password !== confirm) { setupFail('The two passwords do not match'); return; }
 

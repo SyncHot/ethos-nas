@@ -11,6 +11,19 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-11-20
+
+### Changed
+
+- **First-run setup no longer demands a code on your own network.** The claim
+  code still exists — without it the first browser to reach a fresh appliance
+  could set its admin password — but the image now records a policy: with
+  `local` (the default) anyone on the appliance's LAN claims with just a
+  password, while requests arriving through a reverse proxy or from a public
+  address still have to type the code printed on the screen. `code` enforces it
+  everywhere, `open` drops it entirely. The wizard hides the field when it is
+  not needed, and `GET /api/setup/status` reports `code_required` per caller.
+
 ## [2.4.1] - 2026-11-20
 
 ### Fixed

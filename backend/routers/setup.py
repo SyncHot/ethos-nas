@@ -16,6 +16,12 @@ Why the code: the box is reachable at ``ethos-nas.local`` before it is claimed.
 Without a secret that only someone physically at the device can read, the first
 browser to hit a fresh appliance would be able to set its admin password.
 
+It is not a tax on the person who flashed the image, though. The image records a
+policy in the state file (``claim``), and ``local`` — the default — lets callers
+on the appliance's own network claim with just a password; the code is only
+demanded when the request arrives through a reverse proxy or from a public
+address, i.e. when the peer address says nothing about who is knocking.
+
 Hard rules applied here:
   * ``/api/setup/status`` never returns the code or the provisioned password.
   * ``/api/setup/claim`` is rate-limited per client address and dies with the
@@ -45,6 +51,17 @@ router = APIRouter()
 MAX_ATTEMPTS = 5
 ATTEMPT_WINDOW_SECONDS = 600
 _ATTEMPTS: dict[str, list[float]] = {}
+
+# How much proof a first-run claim needs. The image writes this into the state
+# file (ETHOS_SETUP_CLAIM in /etc/ethos-os/firstboot.env), so the policy travels
+# with the appliance instead of depending on the service environment.
+#
+#   code  — always require the code printed on the appliance's screen
+#   local — LAN visitors claim straight away; anything coming through a reverse
+#           proxy or from a public address needs the code
+#   open  — never require a code (a home appliance that is never exposed)
+CLAIM_MODES = ("code", "local", "open")
+DEFAULT_CLAIM_MODE = "local"
 
 # Mirrors deploy/ethos-set-password. The helper is the authority (it runs as
 # root) — checking here as well keeps a rejected password from spawning a
@@ -90,6 +107,45 @@ def _state() -> Optional[dict]:
 
 def _normalise(code: str) -> str:
     return "".join(str(code or "").upper().split()).replace("-", "")
+
+
+def _claim_mode(state: dict) -> str:
+    mode = str(state.get("claim") or DEFAULT_CLAIM_MODE).strip().lower()
+    return mode if mode in CLAIM_MODES else DEFAULT_CLAIM_MODE
+
+
+def _is_private_host(host: str) -> bool:
+    """True for loopback, link-local and RFC1918/ULA addresses."""
+    import ipaddress
+
+    try:
+        address = ipaddress.ip_address(str(host or "").strip("[]"))
+    except ValueError:
+        return False
+    return bool(address.is_private or address.is_loopback or address.is_link_local)
+
+
+def _code_required(state: dict, request: Request) -> bool:
+    """Does this caller have to present the printed claim code?
+
+    In ``local`` mode a LAN visitor does not: they are already inside the
+    network the appliance was plugged into, and asking them to read a code off a
+    screen is friction the person who just flashed the image should not pay.
+
+    Behind a reverse proxy (any X-Forwarded-For / X-Real-IP) the peer address is
+    the proxy, so a public caller would look private — such requests always need
+    the code.
+    """
+    mode = _claim_mode(state)
+    if mode == "open":
+        return False
+    if mode == "code":
+        return True
+    if request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip") \
+            or request.headers.get("forwarded"):
+        return True
+    client = request.client.host if request.client else ""
+    return not _is_private_host(client)
 
 
 def _rate_limited(client: str) -> bool:
@@ -149,6 +205,8 @@ async def setup_status(request: Request) -> dict:
         "required": True,
         "user": str(state.get("user") or ""),
         "hostname": request.url.hostname or "",
+        # The wizard hides the code field when the caller does not need it.
+        "code_required": _code_required(state, request),
     }
 
 
@@ -170,15 +228,19 @@ async def setup_claim(req: ClaimRequest, request: Request) -> dict:
     expected = _normalise(state.get("code"))
     supplied = _normalise(req.code)
     # compare_digest keeps the comparison constant-time and only accepts ASCII;
-    # anything else is a non-match by definition.
+    # anything else is a non-match by definition. The code is only demanded when
+    # the caller's origin warrants it (see _code_required).
     import hmac
 
-    matched = (
-        bool(expected)
-        and expected.isascii()
-        and supplied.isascii()
-        and hmac.compare_digest(expected, supplied)
-    )
+    if _code_required(state, request):
+        matched = (
+            bool(expected)
+            and expected.isascii()
+            and supplied.isascii()
+            and hmac.compare_digest(expected, supplied)
+        )
+    else:
+        matched = True
     if not matched:
         _record_failure(client)
         logger.warning("Setup claim rejected for %s (bad code)", client)

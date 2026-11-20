@@ -149,6 +149,48 @@ check("first attempts are rejected but allowed",
 check("next attempt is rate-limited", statuses[-1] == 429, str(statuses))
 check("rate limit did not reach the helper", helper_request() is None)
 
+print("claim policy (who has to type the code)")
+# Same app, different peer addresses: the wizard only insists on the code when
+# the caller cannot be trusted by origin.
+lan_client = TestClient(app, client=("192.168.1.10", 5555))
+wan_client = TestClient(app, client=("8.8.8.8", 5555))
+
+reset()
+STATE.write_text(json.dumps({"user": GOOD_USER, "code": CODE, "claim": "local"}), encoding="utf-8")
+check("LAN caller sees the wizard without a code",
+      lan_client.get("/api/setup/status").json().get("code_required") is False)
+check("public caller must type the code",
+      wan_client.get("/api/setup/status").json().get("code_required") is True)
+
+resp = lan_client.post("/api/setup/claim", json={"code": "", "password": PASSWORD})
+check("LAN caller claims without a code", resp.status_code == 200, str(resp.json())[:120])
+check("claim still marked the state", bool(json.loads(STATE.read_text()).get("claimed_at")))
+
+reset()
+STATE.write_text(json.dumps({"user": GOOD_USER, "code": CODE, "claim": "local"}), encoding="utf-8")
+resp = wan_client.post("/api/setup/claim", json={"code": "", "password": PASSWORD})
+check("public caller without the code is refused", resp.status_code == 403, str(resp.status_code))
+
+reset()
+STATE.write_text(json.dumps({"user": GOOD_USER, "code": CODE, "claim": "local"}), encoding="utf-8")
+resp = lan_client.post("/api/setup/claim",
+                       json={"code": "", "password": PASSWORD},
+                       headers={"X-Forwarded-For": "8.8.8.8"})
+check("proxied request always needs the code", resp.status_code == 403, str(resp.status_code))
+
+reset()
+STATE.write_text(json.dumps({"user": GOOD_USER, "code": CODE, "claim": "code"}), encoding="utf-8")
+check("'code' mode demands it even on the LAN",
+      lan_client.get("/api/setup/status").json().get("code_required") is True)
+resp = lan_client.post("/api/setup/claim", json={"code": "", "password": PASSWORD})
+check("'code' mode refuses a bare claim", resp.status_code == 403, str(resp.status_code))
+
+reset()
+STATE.write_text(json.dumps({"user": GOOD_USER, "code": CODE, "claim": "open"}), encoding="utf-8")
+check("'open' mode never asks", wan_client.get("/api/setup/status").json().get("code_required") is False)
+resp = wan_client.post("/api/setup/claim", json={"code": "", "password": PASSWORD})
+check("'open' mode claims without a code", resp.status_code == 200, str(resp.status_code))
+
 failed = [name for name, ok, _ in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
 sys.exit(1 if failed else 0)
