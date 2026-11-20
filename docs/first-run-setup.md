@@ -63,7 +63,7 @@ Guards on `/api/setup/claim`:
 | `backend/config.py` | `SETUP_STATE_FILE`, `SET_PASSWORD_HELPER`, `SET_PASSWORD_VIA_SUDO` |
 | `frontend/index.html` | `#setupPanel` inside the login card |
 | `setup_scripts/setup_service.sh` | installs the helper + its argument-free sudoers rule |
-| `tests/test_set_claim.py` | flow: status, claim, single use, rate limit |
+| `tests/test_setup_claim.py` | flow: status, claim, single use, rate limit |
 | `tests/test_set_password_helper.py` | helper: refusals, stdin, marking claimed |
 | `docs/first-run-setup.md` | this file |
 
