@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-20T16:05:20+00:00",
+  "generated_at": "2026-11-20T16:09:26+00:00",
   "latest": {
-    "version": "2.6.6",
-    "git_sha": "0f07f64",
-    "git_sha_full": "0f07f646524be2728dfde09b29648035dd1d0acc",
-    "build": 75,
-    "released_at": "2026-11-20T16:05:20+00:00",
-    "notes": "Downloads: per-user queues, folders, categories and qBittorrent scope"
+    "version": "2.6.7",
+    "git_sha": "60d175f",
+    "git_sha_full": "60d175fff7bda413192bb96181adf0839989d84d",
+    "build": 77,
+    "released_at": "2026-11-20T16:09:26+00:00",
+    "notes": "Packages: compose binds limited to the package's own files"
   },
   "releases": [
+    {
+      "version": "2.6.7",
+      "git_sha": "60d175f",
+      "git_sha_full": "60d175fff7bda413192bb96181adf0839989d84d",
+      "build": 77,
+      "released_at": "2026-11-20T16:09:26+00:00",
+      "notes": "Packages: compose binds limited to the package's own files"
+    },
     {
       "version": "2.6.6",
       "git_sha": "0f07f64",
@@ -201,14 +209,6 @@
       "build": 9,
       "released_at": "2026-11-15T12:18:49+00:00",
       "notes": "Updates can now be installed from Settings → System: signed index, pre-update snapshot, git/pip update as the repo owner, automatic rollback when the service does not come back healthy. Also adds the update status endpoint and helper contract tests."
-    },
-    {
-      "version": "2.1.0",
-      "git_sha": "b4071ef",
-      "git_sha_full": "b4071ef299360c918d366336b75cf4e8f71ca359",
-      "build": 7,
-      "released_at": "2026-11-15T11:54:12+00:00",
-      "notes": "Update check: Settings → System now shows the running version and whether a newer release is published (signed index). Products renamed: Files, Packages, Videos, Cameras, Downloads, Photos. Public repository, MIT license."
     }
   ]
 }
