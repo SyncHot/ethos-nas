@@ -10,12 +10,13 @@ ethos-firstboot (root, before ethos-nas)
   ├── admin account ………… locked in the image (no usable password)
   ├── random console password … single-use fallback printed on screen
   ├── claim code …………… 8 chars, no 0/O/1/I  → /etc/ethos-nas/setup.json
-  └── banner ……………………… URL + setup code
+  │                          (only printed/required when the policy asks)
+  └── banner ……………………… URL (+ setup code in code/local mode)
 
 browser  http://ethos-nas.local:9000
   ├── GET  /api/setup/status …… {required: true, user: "ethosadmin"}   (public)
-  ├── wizard: setup code + new password (+ repeat)
-  └── POST /api/setup/claim ……… code + password
+  ├── wizard: username + new password (+ repeat)   ← default, no code
+  └── POST /api/setup/claim ……… password (+ code when the policy demands it)
         └── sudo -n /usr/local/bin/ethos-set-password
               ├── refuses unless setup.json exists without claimed_at
               ├── only for the account recorded in setup.json
@@ -25,28 +26,31 @@ browser  http://ethos-nas.local:9000
         └── PAM login with the new password → JWT → dashboard
 ```
 
-## Why a code and not just "first visitor wins"
+## Why a code exists at all
 
-The box is reachable at `ethos-nas.local` **before** it is claimed. Without a
-secret that only someone physically at the appliance can read, the first browser
-on the network could set its admin password. But the person who flashed the image
-should not have to read a code off a screen they may not even have.
+The box is reachable at `ethos-nas.local` **before** it is claimed, so without any
+secret the first browser on the network could set its admin password. But the
+person who flashes the image is holding the box — asking them to read a code off
+a screen is friction with no security value on a home network.
 
 So the image records a **claim policy** in the state file (`claim`), set from
 `ETHOS_SETUP_CLAIM` in `/etc/ethos-os/firstboot.env`:
 
 | Policy | Who types the code | Use it when |
 |---|---|---|
-| `local` *(default)* | nobody on the appliance's own network; the code is required only when the request arrives through a reverse proxy (`X-Forwarded-For`/`Forwarded`) or from a public address | home/appliance behind a router — the normal case |
+| `open` *(default)* | nobody, ever — the wizard asks only for the admin username and password | a home box, a VM, or any appliance that is claimed on the desk it was flashed on |
+| `local` | nobody on the appliance's own network; the code is required only when the request arrives through a reverse proxy (`X-Forwarded-For`/`Forwarded`) or from a public address | a box that may be reached from outside while still unclaimed |
 | `code` | everyone, always | the box is published on the internet, or you cannot trust the LAN |
-| `open` | nobody, ever | a lab/VM where the first visitor is always you |
 
-`local` keeps the anti-hijack property for the case that matters (an exposed
-appliance) while making setup a two-field form for the normal case. A peer behind
-a proxy looks private to the server, so proxied requests always need the code.
+`open` means one form and no code; the appliance is claimed by the first visitor,
+which is why first boot should not be left unattended on an untrusted network.
+Switch to `local` or `code` (edit `/etc/ethos-os/firstboot.env`, then
+`sudo rm /etc/ethos-nas/setup.json && sudo systemctl restart ethos-firstboot`)
+when the box will be exposed before it is claimed.
 
 `/api/setup/status` returns `code_required` for the caller, and the wizard hides
-the field when it is `false`.
+the field when it is `false` — so with the default the code input is not shown at
+all.
 
 ## API
 

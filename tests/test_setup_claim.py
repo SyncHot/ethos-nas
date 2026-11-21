@@ -74,8 +74,10 @@ def check(name, ok, detail=""):
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}{suffix}")
 
 
-def reset(code=CODE, claimed=False):
+def reset(code=CODE, claimed=False, claim=None):
     state = {"user": GOOD_USER, "code": code}
+    if claim:
+        state["claim"] = claim
     if claimed:
         state["claimed_at"] = "2026-01-01T00:00:00+00:00"
     STATE.write_text(json.dumps(state), encoding="utf-8")
@@ -103,7 +105,7 @@ STATE.unlink()
 check("no setup state means nothing to claim", client.get("/api/setup/status").json().get("required") is False)
 
 print("claim endpoint")
-reset()
+reset(claim="code")
 resp = client.post("/api/setup/claim", json={"code": "WRON-CODE", "password": PASSWORD})
 check("wrong code refused", resp.status_code == 403, str(resp.status_code))
 check("wrong code never reaches the helper", helper_request() is None)
@@ -115,7 +117,7 @@ check("weak password never reaches the helper", helper_request() is None)
 resp = client.post("/api/setup/claim", json={"code": CODE, "password": PASSWORD, "extra": 1})
 check("unknown field rejected", resp.status_code == 422, str(resp.status_code))
 
-reset()
+reset(claim="code")
 resp = client.post("/api/setup/claim", json={"code": "abcd efgh", "password": PASSWORD})
 body = resp.json()
 check("code accepted case- and dash-insensitively", resp.status_code == 200, str(body)[:160])
@@ -139,7 +141,7 @@ check("second claim never reaches the helper", helper_request() is None)
 check("status reports setup is done", client.get("/api/setup/status").json().get("required") is False)
 
 print("rate limit")
-reset()
+reset(claim="code")
 statuses = [
     client.post("/api/setup/claim", json={"code": f"BAD{i}CODE", "password": PASSWORD}).status_code
     for i in range(setup_module.MAX_ATTEMPTS + 1)
@@ -170,6 +172,16 @@ print("claim policy (who has to type the code)")
 # the caller cannot be trusted by origin.
 lan_client = TestClient(app, client=("192.168.1.10", 5555))
 wan_client = TestClient(app, client=("8.8.8.8", 5555))
+
+# The default has to be "no code": a freshly flashed appliance is claimed by the
+# first person who opens the wizard, whoever that is and wherever they are.
+reset()
+check("default policy asks nobody for a code",
+      wan_client.get("/api/setup/status").json().get("code_required") is False)
+check("default policy reports the account to create",
+      wan_client.get("/api/setup/status").json().get("user") == GOOD_USER)
+resp = wan_client.post("/api/setup/claim", json={"code": "", "password": PASSWORD})
+check("default policy claims without a code", resp.status_code == 200, str(resp.json())[:120])
 
 reset()
 STATE.write_text(json.dumps({"user": GOOD_USER, "code": CODE, "claim": "local"}), encoding="utf-8")

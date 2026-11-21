@@ -57,12 +57,15 @@ _ATTEMPTS: dict[str, list[float]] = {}
 # file (ETHOS_SETUP_CLAIM in /etc/ethos-os/firstboot.env), so the policy travels
 # with the appliance instead of depending on the service environment.
 #
-#   code  — always require the code printed on the appliance's screen
-#   local — LAN visitors claim straight away; anything coming through a reverse
-#           proxy or from a public address needs the code
-#   open  — never require a code (a home appliance that is never exposed)
+#   open  — never require a code (default): the wizard asks only for the admin
+#           username and password. Whoever flashed the image is holding the box,
+#           so making them read a code off a screen is friction with no security
+#           value on a home network.
+#   local — LAN visitors claim straight away; anything arriving through a reverse
+#           proxy or from a public address needs the code printed on screen
+#   code  — always require the code (box published to the internet while unclaimed)
 CLAIM_MODES = ("code", "local", "open")
-DEFAULT_CLAIM_MODE = "local"
+DEFAULT_CLAIM_MODE = "open"
 
 # Mirrors deploy/ethos-set-password. The helper is the authority (it runs as
 # root) — checking here as well keeps a rejected password from spawning a

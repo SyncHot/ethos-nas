@@ -11,6 +11,20 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.6.8] - 2026-11-21
+
+### Changed
+
+- **First-run setup no longer asks for a setup code.** The default claim policy
+  is now `open`: the wizard shows one form — admin username, password, repeat —
+  and nothing to read off a screen. Whoever flashed the image is holding the box,
+  so the code was friction without security value on a home network. The image
+  ships `ETHOS_SETUP_CLAIM=open` in `/etc/ethos-os/firstboot.env` and the
+  first-boot banner only prints a code when the policy asks for one. Set the
+  policy to `local` (code only for proxy/public callers) or `code` (always) when
+  the box will be reachable from outside before it is claimed — see
+  `docs/first-run-setup.md`.
+
 ## [2.6.7] - 2026-11-20
 
 ### Security
