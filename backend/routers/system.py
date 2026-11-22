@@ -295,6 +295,13 @@ def _doctor_checks() -> dict:
         "Re-run setup_scripts/setup_service.sh and restart EthOS to join the docker group",
         required=False)
 
+    # OS package update helper (Settings → System). Optional: an install that
+    # never re-ran setup_service.sh simply cannot install Ubuntu updates yet.
+    from backend.services import os_update_service
+    add("os-update-helper", os_update_service.helper_available(), settings.OS_UPDATE_HELPER,
+        "Run: sudo bash setup_scripts/setup_service.sh (installs the OS update helper "
+        "and its two sudoers rules)", required=False)
+
     # User store reachable
     try:
         from backend.services import users_store

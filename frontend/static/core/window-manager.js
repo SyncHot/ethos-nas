@@ -877,11 +877,12 @@ export function closeTopbarDropdown() {
 // Restart overlay — countdown + health probe, then page refresh
 // ════════════════════════════════════════════
 
-export function showRestartOverlay({ title = 'Restarting EthOS NAS…', waitTimeout = 90 } = {}) {
+export function showRestartOverlay({ title = 'Restarting EthOS NAS…', waitTimeout = 90, waitForDown = false } = {}) {
     if (document.getElementById('restartOverlay')) return; // already showing
 
     const COUNTDOWN_START = 6;  // seconds of grace before switching to "waiting" state
     const WAIT_TIMEOUT = Math.max(30, Number(waitTimeout) || 90);
+    const DOWN_TIMEOUT = 60;    // full reboot: how long the server may take to stop
 
     const overlay = document.createElement('div');
     overlay.id = 'restartOverlay';
@@ -902,6 +903,8 @@ export function showRestartOverlay({ title = 'Restarting EthOS NAS…', waitTime
 
     let remaining = COUNTDOWN_START;
     let waited = 0;
+    let downWaited = 0;
+    let waitingForDown = waitForDown;
     let done = false;
 
     // Any HTTP response (even a 401) means the server is back up.
@@ -915,7 +918,30 @@ export function showRestartOverlay({ title = 'Restarting EthOS NAS…', waitTime
 
     const timer = setInterval(async () => {
         if (done) return;
-        if (await serverUp()) { done = true; clearInterval(timer); location.reload(); return; }
+        const up = await serverUp();
+
+        // A full reboot needs one extra phase: the HTTP server keeps answering
+        // for a few seconds after `systemctl reboot`, so reloading on the first
+        // successful probe would show a working UI that dies a moment later.
+        if (waitingForDown) {
+            if (up) {
+                downWaited += 1;
+                titleEl.textContent = title;
+                hintEl.textContent = 'Waiting for the server to stop…';
+                countEl.textContent = `${downWaited}s`;
+                if (downWaited >= DOWN_TIMEOUT) {
+                    done = true; clearInterval(timer);
+                    titleEl.textContent = 'Server did not restart';
+                    hintEl.innerHTML = '<button id="restartOverlayRetry" style="margin-top:6px;padding:8px 20px;font-size:13px;border-radius:9px;border:none;background:var(--accent,#5b9aff);color:white;cursor:pointer;">Try reloading now</button>';
+                    overlay.querySelector('#restartOverlayRetry').addEventListener('click', () => location.reload());
+                }
+                return;
+            }
+            waitingForDown = false;
+            waited = 0;
+        }
+
+        if (up) { done = true; clearInterval(timer); location.reload(); return; }
         if (remaining > 1) {
             remaining -= 1;
             countEl.textContent = String(remaining);

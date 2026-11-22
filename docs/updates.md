@@ -1,8 +1,11 @@
 # Core updates — check and apply
 
 Status: **check + apply shipped** (2026-11-15). An admin can install the
-published release from Settings → System; the privileged helper verifies the
+published release from Settings → Updates; the privileged helper verifies the
 signed index, applies the commit, restarts the service and rolls back on failure.
+
+> Ubuntu **package** upgrades (apt) are a separate layer with their own helper
+> and no rollback — see [`os-updates.md`](os-updates.md).
 
 ## Why
 

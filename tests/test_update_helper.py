@@ -56,6 +56,9 @@ def main() -> int:
           "systemd-run --scope" in helper and "ETHOS_UPDATE_SCOPED" in helper)
     check("refreshes its installed copy atomically",
           "ethos-update.new" in helper and "mv -f" in helper)
+    check("refreshes the installed OS package helper too",
+          "[ -x /usr/local/bin/ethos-os-update ]" in helper
+          and "ethos-os-update.new" in helper)
     check("health probe with timeout",
           "api/system/status" in helper and "HEALTH_TIMEOUT=90" in helper)
     check("auto-rollback restores the previous commit",

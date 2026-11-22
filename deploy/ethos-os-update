@@ -1,0 +1,318 @@
+#!/bin/bash
+# ethos-os-update — privileged helper for Ubuntu OS package updates.
+#
+# Installed by setup_scripts/setup_service.sh as /usr/local/bin/ethos-os-update
+# and reachable through two ARGUMENT-EXACT sudoers rules:
+#
+#   ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-os-update check
+#   ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-os-update apply
+#
+# Contract:
+#   * exactly one argument: check | apply — nothing else is ever accepted
+#   * no package names, versions, URLs or commands come from the web UI; apt
+#     installs exactly what its own configured sources resolve
+#   * `check` only refreshes the package lists and writes a JSON snapshot
+#   * `apply` installs the available upgrades and writes progress/result JSON
+#
+# Everything here runs as root, so the state directory and the fixed JSON keys
+# are the only interface the service sees. Spec: docs/os-updates.md.
+set -euo pipefail
+
+CONF="/etc/ethos-nas/os-update.conf"
+LOCK="/run/ethos-os-update.lock"
+
+log() { printf 'ethos-os-update: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit "${2:-1}"; }
+
+if [ "$(id -u)" -ne 0 ]; then
+    die "must run as root (via sudo)"
+fi
+if [ "$#" -ne 1 ]; then
+    die "usage: ${0##*/} <check|apply>" 2
+fi
+ACTION="$1"
+case "${ACTION}" in
+    check|apply) ;;
+    *) die "unknown action: ${ACTION}" 2 ;;
+esac
+
+[ -r "${CONF}" ] || die "missing ${CONF} — re-run setup_scripts/setup_service.sh"
+# shellcheck disable=SC1090
+. "${CONF}"
+for var in DATA_DIR SERVICE_USER; do
+    [ -n "${!var:-}" ] || die "${CONF} does not define ${var}"
+done
+
+command -v apt-get >/dev/null 2>&1 || die "apt-get not found (Ubuntu/Debian only)" 5
+
+# `apply` can outlive the service it belongs to: a package upgrade may restart
+# ethos-nas (or a dependency of it). Re-exec once in a transient systemd scope
+# owned by PID 1, exactly like deploy/ethos-update does for its own restart.
+if [ "${ACTION}" = "apply" ] && [ -z "${ETHOS_OS_UPDATE_SCOPED:-}" ] \
+        && [ -d /run/systemd/system ] && command -v systemd-run >/dev/null 2>&1; then
+    exec systemd-run --scope --collect --quiet --unit="ethos-os-update-$$" \
+        --setenv=ETHOS_OS_UPDATE_SCOPED=1 -- "$0" apply
+fi
+
+STATE_DIR="${DATA_DIR}/os-update"
+mkdir -p "${STATE_DIR}"
+chmod 0755 "${STATE_DIR}"
+
+# The service reads the JSON files and owns its own state.json in this
+# directory; root creates it, so hand the directory to the service user.
+OWN_UID="$(id -u "${SERVICE_USER}" 2>/dev/null || echo 0)"
+OWN_GID="$(id -g "${SERVICE_USER}" 2>/dev/null || echo 0)"
+if [ "${OWN_UID}" != "0" ]; then
+    chown "${OWN_UID}:${OWN_GID}" "${STATE_DIR}" 2>/dev/null || true
+fi
+
+# One operation at a time. apt has its own locks; this one keeps `check` from
+# racing `apply` (and vice versa) inside EthOS itself.
+exec 9>"${LOCK}" || die "cannot open ${LOCK}"
+flock -n 9 || die "another OS update operation is already running" 3
+
+export DEBIAN_FRONTEND=noninteractive
+export APT_LISTCHANGES_FRONTEND=none
+export LC_ALL=C
+
+exec python3 - "${ACTION}" "${STATE_DIR}" "${OWN_UID}" "${OWN_GID}" <<'PY'
+import datetime
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+ACTION, STATE_DIR, OWN_UID, OWN_GID = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+CHECK = os.path.join(STATE_DIR, "check.json")
+JOB = os.path.join(STATE_DIR, "job.json")
+RESULT = os.path.join(STATE_DIR, "result.json")
+APT_LOG = os.path.join(STATE_DIR, "apt.log")
+
+MAX_PACKAGES = 500
+FIELD_MAX = 200
+MAX_LOG_BYTES = 2 * 1024 * 1024
+MIN_FREE_BYTES = 512 * 1024 * 1024
+APT_OPTS = ["-o", "DPkg::Lock::Timeout=600", "-o", "APT::Color=0"]
+INST_RE = re.compile(r"^Inst (\S+) \[([^\]]*)\] \((\S+) ([^)]*)\)")
+
+
+def log(message: str) -> None:
+    print(f"ethos-os-update: {message}", file=sys.stderr, flush=True)
+
+
+def now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def clean(value) -> str:
+    text = "".join(ch for ch in str(value) if ch.isprintable()).strip()
+    return text[:FIELD_MAX]
+
+
+def write_json(path: str, data: dict) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    os.chmod(path, 0o644)
+    try:
+        os.chown(path, OWN_UID, OWN_GID)
+    except OSError:
+        pass
+
+
+def reboot_required() -> bool:
+    return os.path.exists("/run/reboot-required")
+
+
+def run_apt(argv: list[str], timeout: int) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"cannot run {argv[0]}: {exc}")
+        raise SystemExit(4) from None
+
+
+def scan_packages(refresh_lists: bool) -> tuple[list, int, int, int]:
+    """Refresh (optionally) and simulate the upgrade. Returns bounded metadata."""
+    if refresh_lists:
+        update = run_apt(["apt-get", "update", "-qq", *APT_OPTS], 300)
+        if update.returncode != 0:
+            log((update.stderr or update.stdout or "apt-get update failed")[-500:])
+            raise SystemExit(4)
+    sim = run_apt(["apt-get", "-s", "--with-new-pkgs", "upgrade", *APT_OPTS], 180)
+    if sim.returncode != 0:
+        log((sim.stderr or sim.stdout or "apt-get simulation failed")[-500:])
+        raise SystemExit(4)
+
+    packages: list[dict] = []
+    total = 0
+    security = 0
+    kept: list[str] = []
+    in_kept_back = False
+    for line in sim.stdout.splitlines():
+        match = INST_RE.match(line)
+        if match:
+            name, old, new, origin = match.groups()
+            is_security = "-security" in origin.lower()
+            total += 1
+            security += 1 if is_security else 0
+            if len(packages) < MAX_PACKAGES:
+                packages.append({
+                    "name": clean(name),
+                    "from": clean(old),
+                    "to": clean(new),
+                    "origin": clean(origin),
+                    "security": is_security,
+                })
+            continue
+        if line.startswith("The following packages have been kept back:"):
+            in_kept_back = True
+            continue
+        if in_kept_back:
+            # The package list is indented; apt's summary line ("0 upgraded, …")
+            # starts at column 0 and ends the block — there is no blank line.
+            if line.strip() and line[:1].isspace():
+                kept.extend(part for part in line.split() if part)
+            else:
+                in_kept_back = False
+    return packages, total, security, len(kept)
+
+
+def write_check(packages: list, total: int, security: int, kept: int) -> None:
+    write_json(CHECK, {
+        "checked_at": now_iso(),
+        "checked_at_epoch": int(time.time()),
+        "count": total,
+        "security_count": security,
+        "kept_back": kept,
+        "packages": packages,
+    })
+
+
+def write_job(status: str, step: str, percent: int, detail: str = "",
+              upgraded: int = 0) -> None:
+    write_json(JOB, {
+        "status": status,
+        "step": step,
+        "percent": max(0, min(100, int(percent))),
+        "detail": clean(detail),
+        "upgraded": int(upgraded),
+        "reboot_required": reboot_required(),
+        "pid": os.getpid(),
+        "at": now_iso(),
+    })
+
+
+def write_result(status: str, detail: str, upgraded: int) -> None:
+    data = {
+        "status": status,
+        "step": "done",
+        "detail": clean(detail),
+        "upgraded": int(upgraded),
+        "reboot_required": reboot_required(),
+        "at": now_iso(),
+    }
+    write_json(RESULT, data)
+    write_json(JOB, {**data, "percent": 100, "pid": os.getpid()})
+
+
+def do_check() -> int:
+    packages, total, security, kept = scan_packages(refresh_lists=True)
+    write_check(packages, total, security, kept)
+    log(f"check: {total} update(s), {security} security, {kept} kept back")
+    return 0
+
+
+def do_apply() -> int:
+    write_job("running", "preflight", 0, "checking disk space")
+    free = shutil.disk_usage("/").free
+    if free < MIN_FREE_BYTES:
+        write_result("failed", f"only {free // (1024 * 1024)} MiB free on / — need 512 MiB", 0)
+        return 6
+
+    write_job("running", "preflight", 2, "resolving upgrades")
+    packages, total, _security, _kept = scan_packages(refresh_lists=False)
+    if total == 0:
+        write_result("up_to_date", "no package upgrades to install", 0)
+        return 0
+
+    write_job("running", "upgrade", 3, f"upgrading 0/{total}")
+    cmd = [
+        "apt-get", "-y", "--with-new-pkgs", "upgrade",
+        "-o", "Dpkg::Options::=--force-confdef",
+        "-o", "Dpkg::Options::=--force-confold",
+        *APT_OPTS,
+    ]
+    done = 0
+    last_write = 0.0
+    last_line = ""
+    log_truncated = False
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1)
+    except OSError as exc:
+        write_result("failed", f"cannot start apt-get: {exc}", 0)
+        return 4
+
+    with open(APT_LOG, "w", encoding="utf-8", errors="replace") as log_fh:
+        os.chmod(APT_LOG, 0o644)
+        log_fh.write(f"# {now_iso()} apt-get upgrade ({total} package(s))\n")
+        assert proc.stdout is not None
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
+            if not log_truncated:
+                if log_fh.tell() + len(raw) > MAX_LOG_BYTES:
+                    log_fh.write("# log truncated\n")
+                    log_truncated = True
+                else:
+                    log_fh.write(raw)
+                    log_fh.flush()
+            if line.strip():
+                last_line = line.strip()
+            if line.startswith("Setting up "):
+                done += 1
+            now = time.monotonic()
+            if now - last_write >= 1.0:
+                percent = min(99, 3 + int(done * 96 / total))
+                write_job("running", "upgrade", percent, f"upgrading {done}/{total}", upgraded=done)
+                last_write = now
+        rc = proc.wait()
+
+    if rc != 0:
+        detail = f"apt-get upgrade exited with {rc}"
+        if last_line:
+            detail += f": {last_line}"
+        write_result("failed", detail, done)
+        return 4
+
+    write_job("running", "verify", 99, "refreshing the update list", upgraded=done)
+    try:
+        packages, total, security, kept = scan_packages(refresh_lists=False)
+        write_check(packages, total, security, kept)
+    except SystemExit:
+        log("could not refresh check.json after the upgrade — the next check will")
+
+    write_result("ok", f"{done} package(s) upgraded", done)
+    log(f"apply: {done} package(s) upgraded")
+    return 0
+
+
+try:
+    raise SystemExit(do_check() if ACTION == "check" else do_apply())
+except SystemExit:
+    raise
+except Exception as exc:  # never leave a `running` job behind on a crash
+    log(f"unexpected failure: {exc}")
+    if ACTION == "apply":
+        try:
+            write_result("failed", f"{type(exc).__name__}: {exc}", 0)
+        except Exception:
+            log("could not write result.json")
+    raise SystemExit(1) from None
+PY

@@ -58,13 +58,19 @@ PENDING: set[str] = set()
 # Documented layout exceptions — tokens only, never the rail.
 LAYOUT_EXCEPTIONS = {"files.js", "terminal.js", "login.js", "app-drawer.js", "fm-controls.js"}
 
-SETTINGS_SECTIONS = ("overview", "updates", "maintenance", "users", "security", "appearance", "about")
+SETTINGS_SECTIONS = ("overview", "updates", "system", "maintenance", "users", "security", "appearance", "about")
 SETTINGS_TESTIDS = (
     "settings-caches-card",
     "core-update-card",
     "core-update-status",
     "core-update-check",
     "core-update-apply",
+    "settings-system-card",
+    "settings-os-status",
+    "settings-os-check",
+    "settings-os-apply",
+    "settings-os-table",
+    "settings-os-reboot",
     "health-config-row",
     "health-cfg-save",
     "apk-link-moments",

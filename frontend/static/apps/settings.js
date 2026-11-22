@@ -11,7 +11,7 @@ import { showAlert, showConfirm, showFormModal } from '../core/modal.js';
 import { showRestartOverlay } from '../core/window-manager.js';
 import { startTask } from '../core/progress.js';
 import { skeletonRows, emptyState, errorState } from '../core/states.js';
-import { logError } from '../core/logger.js';
+import { logError, logInfo } from '../core/logger.js';
 import { mountShell } from '../core/ui-shell.js';
 import { openLogs } from './logs.js';
 import {
@@ -24,6 +24,7 @@ const SECTION_KEY = 'ethos-settings-section';
 const SECTIONS = [
     { id: 'overview', label: 'Health', title: 'System Health', subtitle: 'Health checks and system alerts at a glance.' },
     { id: 'updates', label: 'Updates', title: 'Updates', subtitle: 'Core releases and the Android apps.' },
+    { id: 'system', label: 'System', title: 'System', subtitle: 'Ubuntu release, package updates and reboot state.' },
     { id: 'maintenance', label: 'Maintenance', title: 'Maintenance', subtitle: 'Caches, health thresholds and the danger zone.' },
     { id: 'users', label: 'Users', title: 'User Accounts', subtitle: 'Create accounts, roles and passwords. Each account is a Linux user.' },
     { id: 'security', label: 'Security', title: 'Security', subtitle: 'Your session, API key and hardening notes.' },
@@ -421,6 +422,248 @@ async function _applyUpdate() {
         }
     };
     setTimeout(tick, 1500);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// System — Ubuntu OS package updates
+// ════════════════════════════════════════════════════════════════════════════
+
+const OS_TABLE_ROWS = 40;
+
+async function renderSystem(isCurrent) {
+    const isAdmin = _isAdmin();
+    const [data, applyState] = await Promise.all([
+        apiRequest('/api/system/os-update').catch((err) => {
+            logError('Settings: OS update status unavailable', err?.detail || err?.message);
+            return null;
+        }),
+        apiRequest('/api/system/os-update/status').catch((err) => {
+            logError('Settings: OS update job unavailable', err?.detail || err?.message);
+            return null;
+        }),
+    ]);
+    if (!isCurrent()) return;
+
+    const os = data?.os || {};
+    const packages = Array.isArray(data?.packages) ? data.packages : [];
+    const count = Number(data?.update_count) || 0;
+    const security = Number(data?.security_count) || 0;
+    const checked = data?.checked_at_iso ? `last checked ${_relTime(data.checked_at_iso)}` : 'never checked';
+    let statusText = 'Loading update status…';
+    let tone = '';
+    if (!data) {
+        statusText = 'OS update status is unavailable — check the Logs app.';
+        tone = 'error';
+    } else if (data.enabled === false) {
+        statusText = 'OS update checks are disabled on this server (ETHOS_OS_UPDATE_ENABLED=0).';
+    } else if (!data.helper) {
+        statusText = 'The privileged helper is not installed. Run “sudo bash setup_scripts/setup_service.sh” once on the server.';
+        tone = 'warn';
+    } else if (data.error) {
+        statusText = `Check failed — ${data.error}${data.attempted_at_iso ? ` (${_relTime(data.attempted_at_iso)})` : ''}`;
+        tone = 'error';
+    } else if (count > 0) {
+        statusText = `${count} package update${count === 1 ? '' : 's'} available`
+            + `${security ? ` · ${security} security` : ''} — ${checked}`;
+        tone = 'warn';
+    } else if (data.checked_at) {
+        statusText = `Ubuntu is up to date — ${checked}`;
+    } else {
+        statusText = 'Not checked yet — run a check to ask the Ubuntu archive.';
+    }
+
+    const auto = data?.auto_upgrades || 'unknown';
+    const autoTag = auto === 'enabled'
+        ? '<span class="ui-tag is-ok">enabled</span>'
+        : (auto === 'disabled' ? '<span class="ui-tag">disabled</span>' : '<span class="ui-tag is-info">unknown</span>');
+    const reboot = data?.reboot_required === true;
+    const rebootNames = Array.isArray(data?.reboot_packages) ? data.reboot_packages : [];
+    const keptBack = Number(data?.kept_back) || 0;
+    const canApply = isAdmin && data?.helper === true && data?.enabled !== false && count > 0;
+
+    const tableRows = packages.slice(0, OS_TABLE_ROWS).map((pkg) => `<tr>
+            <td>${escapeHtml(pkg.name)}${pkg.security ? ' <span class="ui-tag is-warn">security</span>' : ''}</td>
+            <td class="path">${escapeHtml(pkg.from || '—')}</td>
+            <td class="path">${escapeHtml(pkg.to || '—')}</td>
+            <td class="path">${escapeHtml(pkg.origin || '')}</td>
+        </tr>`).join('');
+    const more = packages.length > OS_TABLE_ROWS
+        ? `<p class="ui-muted">and ${packages.length - OS_TABLE_ROWS} more package(s)…</p>` : '';
+
+    shell.view.innerHTML = `
+        <section class="ui-panel" data-testid="settings-system-card">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('download', 13)} Ubuntu <span class="ui-tag" data-testid="settings-os-version">${escapeHtml(os.pretty || 'Linux')}</span></h2>
+                    <p class="ui-muted${tone ? ` ${tone}` : ''}" data-testid="settings-os-status">${escapeHtml(statusText)}</p>
+                </div>
+                <div class="ui-row">
+                    ${isAdmin
+                        ? `<button class="ui-btn small" data-action="os-check" data-testid="settings-os-check">${uiIcon('refresh', 12)} Check for updates</button>
+                           <button class="ui-btn small primary" data-action="os-apply" data-testid="settings-os-apply" ${canApply ? '' : 'hidden'}>${uiIcon('download', 12)} Install updates</button>`
+                        : '<span class="ui-tag">Admin required</span>'}
+                </div>
+            </div>
+            <div class="ui-panel-body ui-list">
+                <div class="ui-list-row"><span class="ui-tag is-info">kernel</span><span class="ui-list-row-main">${escapeHtml(os.kernel || 'unknown')}${os.ethos_os ? ` · EthOS OS ${escapeHtml(os.ethos_os)}` : ''}</span></div>
+                <div class="ui-list-row"><span class="ui-tag is-info">auto</span><span class="ui-list-row-main">${autoTag} unattended-upgrades installs security packages in the background when enabled — this page installs everything that is left</span></div>
+                ${keptBack > 0
+                    ? `<div class="ui-list-row"><span class="ui-tag is-warn">held</span><span class="ui-list-row-main">${keptBack} package(s) kept back by apt (phased updates or dependency changes)</span></div>`
+                    : ''}
+            </div>
+        </section>
+
+        ${packages.length
+            ? `<section class="ui-panel">
+                    <div class="ui-toolbar">
+                        <div>
+                            <h2>${uiIcon('download', 13)} Available updates</h2>
+                            <p class="ui-muted">${count} package(s)${security ? ` · ${security} security` : ''} · apt installs them without removing anything</p>
+                        </div>
+                        <span class="ui-tag">apt</span>
+                    </div>
+                    <div class="ui-panel-body ui-table-wrap">
+                        <table class="ui-table" data-testid="settings-os-table">
+                            <thead><tr><th>Package</th><th>Installed</th><th>Available</th><th>Origin</th></tr></thead>
+                            <tbody>${tableRows}</tbody>
+                        </table>
+                        ${more}
+                    </div>
+                </section>`
+            : ''}
+
+        ${reboot
+            ? `<section class="ui-panel" data-testid="settings-os-reboot-card">
+                    <div class="ui-toolbar">
+                        <div>
+                            <h2>${uiIcon('alert', 13)} Reboot required</h2>
+                            <p class="ui-muted">Ubuntu installed updates that need a restart${rebootNames.length ? ` (${escapeHtml(rebootNames.join(', '))})` : ''}. Nothing restarts on its own.</p>
+                        </div>
+                        ${isAdmin
+                            ? `<button class="ui-btn danger" data-action="os-reboot" data-testid="settings-os-reboot">${uiIcon('refresh', 12)} Restart now</button>`
+                            : '<span class="ui-tag">Admin required</span>'}
+                    </div>
+                </section>`
+            : ''}`;
+
+    shell.view.querySelector('[data-action="os-check"]')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            await apiRequest('/api/system/os-update/check', { method: 'POST' });
+        } catch (err) {
+            logError('Settings: OS update check failed', err?.detail || err?.message);
+            notify({ kind: 'error', title: 'Update check failed', message: err?.detail || err?.message || 'Unknown error' });
+        }
+        renderSection('system');
+    });
+
+    shell.view.querySelector('[data-action="os-apply"]')?.addEventListener('click', () => { _applyOsUpdate(count, security); });
+    shell.view.querySelector('[data-action="os-reboot"]')?.addEventListener('click', () => { _rebootServer(); });
+
+    if (applyState?.running) {
+        logInfo('Settings: reattaching to a running OS update', applyState?.job?.step || 'running');
+        _watchOsUpdate();
+    }
+
+    shell.setStatus(data ? `${count} package update(s) · ${auto} auto updates` : 'OS update status unavailable',
+        data && !data.error && data.helper ? 'ok' : 'warn');
+}
+
+async function _applyOsUpdate(count, security) {
+    const ok = await showConfirm(
+        'Install Ubuntu updates',
+        `Install ${count} package update${count === 1 ? '' : 's'}${security ? ` (${security} security)` : ''} now?\n\n`
+        + 'apt installs the upgrades without removing packages and the NAS keeps running, but services may be '
+        + 'restarted. A reboot can be required afterwards — nothing restarts on its own.',
+    );
+    if (!ok) return;
+
+    try {
+        await apiRequest('/api/system/os-update', { method: 'POST' });
+    } catch (err) {
+        logError('Settings: OS update could not start', err?.detail || err?.message);
+        showAlert('Could not start the update', err?.detail || err?.message || 'Unknown error');
+        return;
+    }
+
+    const task = startTask({
+        appId: 'system',
+        title: 'Updating Ubuntu',
+        detail: 'starting the helper…',
+        percent: null,
+        testIdPrefix: 'os-update',
+    });
+    _watchOsUpdate(task);
+}
+
+async function _watchOsUpdate(existingTask = null) {
+    const task = existingTask || startTask({
+        appId: 'system',
+        title: 'Updating Ubuntu',
+        detail: 'reattaching to the helper…',
+        percent: null,
+        testIdPrefix: 'os-update',
+    });
+    const token = navToken;
+
+    const tick = async () => {
+        if (token !== navToken) return; // another section took over
+        let state;
+        try {
+            state = await apiRequest('/api/system/os-update/status');
+        } catch (err) {
+            logError('Settings: OS update status lost', err?.detail || err?.message);
+            setTimeout(tick, 3000);
+            return;
+        }
+        const job = state?.job || {};
+        if (job.status === 'running') {
+            const percent = Number.isFinite(Number(job.percent)) ? Number(job.percent) : null;
+            const detail = `${job.step || 'working'}`
+                + `${job.upgraded ? ` · ${job.upgraded} upgraded` : ''}`
+                + `${job.detail ? ` — ${job.detail}` : ''}`;
+            task.update({ percent, detail });
+            setTimeout(tick, 2000);
+            return;
+        }
+        const result = state?.result || {};
+        if (result.status === 'ok') {
+            task.finish('done', { percent: 100, detail: result.detail || 'updates installed' });
+            notify({
+                kind: result.reboot_required ? 'warning' : 'success',
+                title: result.reboot_required ? 'Reboot required' : 'Ubuntu updated',
+                message: result.reboot_required
+                    ? 'Updates need a restart — open Settings → System.'
+                    : (result.detail || 'All updates installed'),
+            });
+            renderSection('system');
+        } else if (result.status === 'up_to_date') {
+            task.finish('done', { percent: 100, detail: result.detail || 'already up to date' });
+            renderSection('system');
+        } else if (result.status === 'failed') {
+            task.finish('failed', { percent: 100, detail: result.detail || 'update failed' });
+            showAlert('Ubuntu update failed', result.detail || 'The helper reported a failure.');
+            renderSection('system');
+        } else {
+            setTimeout(tick, 2000);
+        }
+    };
+    setTimeout(tick, 1200);
+}
+
+async function _rebootServer() {
+    const ok = await showConfirm('Reboot server',
+        'Reboot the whole server now? This disconnects all users.', { danger: true });
+    if (!ok) return;
+    try {
+        await apiRequest('/api/system/shutdown', { method: 'POST', body: { action: 'reboot', confirm: true } });
+        notify({ kind: 'info', title: 'Reboot', message: 'The server is rebooting…' });
+        showRestartOverlay({ title: 'Rebooting the server…', waitTimeout: 240, waitForDown: true });
+    } catch (err) {
+        logError('Settings: reboot failed', err?.detail || err?.message);
+        showAlert('Reboot failed', err?.detail || err?.message || 'Could not reach the server');
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1218,6 +1461,7 @@ async function renderAbout(isCurrent) {
 const RENDERERS = {
     overview: renderHealth,
     updates: renderUpdates,
+    system: renderSystem,
     maintenance: renderMaintenance,
     users: renderUsers,
     security: renderSecurity,

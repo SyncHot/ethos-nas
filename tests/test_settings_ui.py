@@ -2,7 +2,7 @@
 """Settings window E2E — rail shell, every section, both themes.
 
 Boots an isolated EthOS instance (temp ETHOS_DATA_DIR), then drives the real
-Settings window: 218 px rail, seven sections, admin gating, dark theme and the
+Settings window: 218 px rail, eight sections, admin gating, dark theme and the
 ≤ 780 px horizontal strip.
 
 Requires Playwright (`pip install -r requirements-dev.txt`). Skips when the
@@ -38,6 +38,7 @@ FAILURES = []
 SECTIONS = [
     ("overview", '[data-testid="settings-health-panel"]'),
     ("updates", '[data-testid="core-update-card"]'),
+    ("system", '[data-testid="settings-system-card"]'),
     ("maintenance", '[data-testid="settings-caches-card"]'),
     ("users", ".ui-table"),
     ("security", '[data-testid="api-key-card"]'),
@@ -118,8 +119,8 @@ def main() -> int:
             check("Settings window renders the shell", page.locator('[data-testid="settings-shell"]').count() == 1)
             rail_width = page.eval_on_selector('[data-testid="settings-rail"]', "el => getComputedStyle(el).width")
             check("rail is 218 px", rail_width == "218px", rail_width)
-            check("rail has seven sections",
-                  page.locator('[data-testid^="settings-nav-"]').count() == 7,
+            check("rail has eight sections",
+                  page.locator('[data-testid^="settings-nav-"]').count() == 8,
                   str(page.locator('[data-testid^="settings-nav-"]').count()))
 
             for section, selector in SECTIONS:
@@ -176,6 +177,10 @@ def main() -> int:
             user_page.wait_for_selector('[data-testid="settings-caches-card"]')
             restart_disabled = user_page.eval_on_selector('[data-action="restart"]', "el => el.disabled")
             check("non-admin cannot restart", restart_disabled is True)
+            user_page.click('[data-testid="settings-nav-system"]')
+            user_page.wait_for_selector('[data-testid="settings-system-card"]')
+            check("non-admin has no OS update check button",
+                  user_page.locator('[data-testid="settings-os-check"]').count() == 0)
             check("no page errors for non-admin", not user_errors, "; ".join(user_errors[:3]))
 
             browser.close()

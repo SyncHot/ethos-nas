@@ -11,6 +11,41 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-11-22
+
+### Added
+
+- **Ubuntu package updates from the UI (Settings → System).** A new rail section
+  shows the Ubuntu release and kernel, whether `unattended-upgrades` is active,
+  every pending package upgrade (with security tags and the apt origin) and
+  installs them with one admin action. Only the current Ubuntu release is
+  upgraded: `do-release-upgrade`, snap and package removals are out of scope.
+- **Reboot notice.** Kernel/system-library upgrades set `/run/reboot-required`;
+  the section shows what needs the restart and offers an explicit **Restart now**
+  button (the page waits for the server to stop, then for it to come back).
+- **Background update check** (every 24 h, sleeps first) with Notification Center
+  events for available updates, a finished install and a pending reboot.
+- `GET /api/system/os-update`, `GET /api/system/os-update/status`,
+  `POST /api/system/os-update/check` and `POST /api/system/os-update` (admin on
+  the two mutations).
+
+### Security
+
+- apt runs only through the new root-owned `ethos-os-update` helper, reachable by
+  **two argument-exact sudoers rules** (`check`, `apply`). The web UI can never
+  pass a package name, version, URL or command; the helper locks itself, waits
+  for the apt/dpkg lock, refuses below 512 MiB free on `/` and uses
+  `--force-confdef/--force-confold` so prompts cannot block.
+- `--with-new-pkgs` installs kernel updates without `dist-upgrade`: nothing is
+  removed, `autoremove` and `purge` are never run.
+
+### Upgrade
+
+- Run `sudo bash setup_scripts/setup_service.sh` once on existing servers to
+  install the `ethos-os-update` helper and its two sudoers rules. Until then
+  Settings → System and `GET /api/system/doctor` show the setup hint and the
+  mutating endpoints answer 409.
+
 ## [2.7.0] - 2026-11-22
 
 ### Added

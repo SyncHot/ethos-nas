@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.8.0"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -175,6 +175,18 @@ class Settings:
     UPDATE_TTL_SECONDS: int = int(os.getenv("ETHOS_UPDATE_TTL_SECONDS", "3600"))
     # Background check cadence (the first run happens one interval after start).
     UPDATE_CHECK_HOURS: float = float(os.getenv("ETHOS_UPDATE_CHECK_HOURS", "24"))
+
+    # ── OS package updates (services/os_update_service.py, docs/os-updates.md) ─
+    # Ubuntu apt upgrades of the *current release only*: no release upgrade, no
+    # snap. The backend never runs apt itself — it calls the root-owned helper
+    # `ethos-os-update check|apply`, which accepts no other arguments.
+    OS_UPDATE_ENABLED: bool = os.getenv("ETHOS_OS_UPDATE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    OS_UPDATE_HELPER: str = os.getenv("ETHOS_OS_UPDATE_HELPER", "/usr/local/bin/ethos-os-update")
+    # Tests point OS_UPDATE_HELPER at a fixture script and run it directly.
+    OS_UPDATE_VIA_SUDO: bool = not os.getenv("ETHOS_OS_UPDATE_HELPER")
+    OS_UPDATE_TTL_SECONDS: int = int(os.getenv("ETHOS_OS_UPDATE_TTL_SECONDS", "3600"))
+    OS_UPDATE_CHECK_HOURS: float = float(os.getenv("ETHOS_OS_UPDATE_CHECK_HOURS", "24"))
+    OS_UPDATE_CHECK_TIMEOUT: int = int(os.getenv("ETHOS_OS_UPDATE_CHECK_TIMEOUT", "180"))
 
     # ── System Health Monitor (services/health_monitor_service.py) ───────────
     # How often the background checker runs (seconds).

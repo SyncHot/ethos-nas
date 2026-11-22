@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.config import APP_VERSION, DEFAULT_JWT_SECRET, settings
 from backend.routers.system import router as system_router, stats_ws_router
 from backend.routers.system_update import router as system_update_router
+from backend.routers.system_os_update import router as system_os_update_router
 from backend.routers.processes import router as processes_router
 from backend.routers.logs import router as logs_router
 from backend.routers.logs_ws import (
@@ -234,6 +235,19 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.error("Update result reconcile failed", exc_info=True)
 
+    # OS package updates (apt) — background check + a previously unfinished
+    # helper result. Sleeps first, so dev/test instances never touch apt.
+    from backend.services.os_update_service import (
+        reconcile_result as _reconcile_os_update_result,
+        start_os_update_checker,
+        stop_os_update_checker,
+    )
+    start_os_update_checker()
+    try:
+        _reconcile_os_update_result()
+    except Exception:
+        logger.error("OS update result reconcile failed", exc_info=True)
+
     # Cameras: resume motion-detection threads for enabled cameras
     from backend.services.camera_service import start_all_motion_threads, stop_all_motion_threads
     _motion_cams = start_all_motion_threads()
@@ -263,6 +277,7 @@ async def lifespan(app: FastAPI):
     await stop_retention_sweeper()
     await stop_autoban()
     await stop_update_checker()
+    await stop_os_update_checker()
     from backend.services import package_runtime as _package_runtime_stop
     await _package_runtime_stop.shutdown_all()
     from backend.services.camera_service import stop_all_recordings
@@ -450,6 +465,7 @@ async def frontend_cache_middleware(request: Request, call_next):
 # ── API routers ───────────────────────────────────────────────────────────────
 app.include_router(system_router,    prefix="/api/system",    tags=["System"])
 app.include_router(system_update_router, prefix="/api/system/update", tags=["System"])
+app.include_router(system_os_update_router, prefix="/api/system/os-update", tags=["System"])
 app.include_router(processes_router, prefix="/api/processes", tags=["Processes"])
 app.include_router(logs_router,      prefix="/api/logs",      tags=["Logs"])
 app.include_router(docker_router,    prefix="/api",           tags=["Docker"])
