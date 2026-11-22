@@ -99,12 +99,20 @@ def core_app_version() -> tuple[int, ...]:
 
 
 def _ports(mapping: list) -> list[int]:
-    """Host ports published by one compose service."""
+    """Host ports published by one compose service.
+
+    A single-value entry (`"8094"`) publishes only the container port — Docker
+    assigns a free host port — so it can never collide and is not collected here.
+    A range (`"18190-18194:18190-18194"`) is skipped for the same reason: its
+    host side is not a fixed single port.
+    """
     out: list[int] = []
     for item in mapping or []:
-        text = str(item)
-        host = text.split(":", 1)[0] if ":" in text else text
-        host = host.split("/", 1)[0]
+        text = str(item).split("/", 1)[0]
+        parts = text.split(":")
+        if len(parts) == 1:
+            continue
+        host = parts[-2] if len(parts) >= 3 else parts[0]
         if host.isdigit():
             out.append(int(host))
     return out

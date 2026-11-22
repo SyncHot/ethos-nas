@@ -518,15 +518,15 @@ and swap code paths (keeping `.venv`, `backend/data`, untracked files). Reuse th
 
 # §10 · Package QA follow-ups
 
-Source: `docs/packages-qa.md` (sweep 2026-11-22, 25 packages @ `db6df8f`, core 2.28.5).
+Source: `docs/packages-qa.md` (sweep 2026-11-22, 25 packages @ `3e66992`, core 2.28.5).
 Tools: `scripts/ethos-qa static|api`, `tests/test_packages_qa_ui.py`.
 
-### ☐ Q-01 · Port collisions with host services — `S`
-`ethos-monitor` 3001 (wawalocal-user), `ethos-rss` 8080 (wawalocal-api), `vmm` console 8094
-(ethos-nas-site). 2.28.5 remaps a compose package to the next free port, so the install works but
-the documented port is not what users get; venv/native services still fail. Move them outside the
-used range and keep the "known in-use ports" list in `ethos-packages/AGENTS.md` current.
-`ethos-git` 3000 → 3005 (`2186e5b`).
+### ☑ Q-01 · Port collisions with host services — `S`
+`ethos-git` 3000 → 3005 (`2186e5b`), `ethos-monitor` 3001 → 3091 and `ethos-rss` 8080 → 8085
+(`3e66992`); containers keep their internal ports, only the published host port changed. `vmm` was a
+tool false positive (its console is a container-only `"8094"` mapping, Docker picks the host port) —
+`_ports()` now skips single-value and range mappings, and the sweep reports **no** port collision.
+Rule for the future: venv/native services cannot be remapped, so they must never claim a common port.
 
 ### ☐ Q-02 · Music and Books surfaces are Polish only — `L`
 `ethos-music` (185 non-English chars) plus the core PWAs `/music` (`music.js` 94 lines) and `/books`

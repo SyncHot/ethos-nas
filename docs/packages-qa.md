@@ -59,11 +59,11 @@ scheme · `S17` catalog copy · `S18` language · `A01–A06` live API/health/lo
 | `ethos-git-diff` | 1.0.1 | native | — | host tokens (18) | 34 | 0 |
 | `ethos-kanban` | 1.0.2 | native | 8098 | host tokens (34) | 36 | 12 |
 | `ethos-media-enhance` | 1.0.2 | engine | 8097 | — | 0 | 0 |
-| `ethos-monitor` | 1.0.0 | window | 3001 | — | 0 | 0 |
+| `ethos-monitor` | 1.0.1 | window | 3091 | — | 0 | 0 |
 | `ethos-music` | 1.0.3 | native | — | own tokens (17) + dark | 7 | 0 |
 | `ethos-music-engine` | 1.0.1 | engine | 8096 | — | 0 | 0 |
 | `ethos-photos` | 1.0.3 | native | — | host tokens (152) | 136 | 61 |
-| `ethos-rss` | 1.0.0 | window | 8080 | — | 0 | 0 |
+| `ethos-rss` | 1.0.1 | window | 8085 | — | 0 | 0 |
 | `ethos-shares` | 1.3.0 | native | — | own tokens (23) + dark | 37 | 0 |
 | `ethos-sticky-notes` | 2.0.0 | native | 8099 | own tokens (42) + dark | 38 | 0 |
 | `ethos-surveillance` | 2.0.0 | native | — | own tokens (24) + dark | 28 | 0 |
@@ -88,23 +88,22 @@ every window painted in light **and** dark, no iframe for native modules, and �
   `"The <id> service is not responding. Start it in Package Center and try again."`
   Guard: `tests/test_package_proxy_error.py`.
 
-### ☐ P1-02 · Three packages ship a port this NAS already uses
-`ethos-qa static --live` compares every declared port with `docker ps`:
+### ☑ P1-02 · No package collides with a host service any more
+`ethos-qa static --live` compares every published host port with `docker ps`. It found three, all
+now gone:
 
-| Package | Wants | Already published by |
-|---|---|---|
-| `ethos-monitor` | 3001 | `wawalocal-user-1` |
-| `ethos-rss` | 8080 | `wawalocal-api-1` |
-| `vmm` (console) | 8094 | `ethos-nas-site` |
+| Package | Wanted | Was taken by | Now |
+|---|---|---|---|
+| `ethos-git` | 3000 | a compose project | 3005 (`2186e5b`) |
+| `ethos-monitor` | 3001 | `wawalocal-user-1` | **3091** (`3e66992`) |
+| `ethos-rss` | 8080 | `wawalocal-api-1` | **8085** (`3e66992`) |
 
-These no longer break the install: 2.28.5 republishes a compose package on the next free port and
-keeps the remap across updates. The defect that remains is **documentation and expectation** — the
-manifest, the README and the package changelog promise `3001`/`8080`, the user gets something else,
-and the venv/native services (which cannot be remapped) still fail. `ethos-git` had the same problem
-on 3000 and was moved to 3005 (`2186e5b`).
-- **Fix.** Pick ports outside the host's used range and record the rule in the packages `AGENTS.md`
-  ("known in-use ports" list); vmm's console range must not overlap a documented service. Ports that
-  are merely *listening* with an unreadable owner stay `info`.
+`vmm` was a **false positive in the tool**: its console uses `"8094"`, a container-only mapping
+where Docker assigns the host port, so it can never collide. `_ports()` now skips single-value and
+range mappings. Because 2.28.5 remaps a busy compose port anyway, the remaining risk was that the
+manifest/README/changelog promised a port the user did not get — moving the two packages fixes that
+at the source. Venv/native services cannot be remapped, so they must never declare a host port that
+is commonly used (they are the `info` rows in the sweep).
 
 ### ☐ P1-03 · The Music and Books surfaces are Polish; everything else is English
 The gap is wider than one package: `ethos-music` (185 non-English characters in the module) *and*
