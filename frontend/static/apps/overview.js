@@ -9,30 +9,16 @@ import { apiFetch } from '../core/api.js';
 import { poll } from '../core/poller.js';
 import { connectWs } from '../core/ws.js';
 import { onAppClose } from '../core/window-manager.js';
+import { formatBytes, formatSpeed, formatUptime } from '../core/utils.js';
 import { mountShell, applyBarWidths } from '../core/ui-shell.js';
 
 const _ov = { ws: null, stops: [], lastNet: null, unsub: null };
 let shell = null;
 
-function fmtBytes(n) {
-    if (n === null || n === undefined || !isFinite(n)) return '—';
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let i = 0;
-    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-    return `${n >= 100 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
-}
-
+// Rates need "—" for a missing counter; core/formatSpeed assumes a number.
 function fmtRate(bps) {
     if (bps === null || bps === undefined || !isFinite(bps)) return '—';
-    return fmtBytes(Math.max(0, bps)) + '/s';
-}
-
-function fmtUptime(sec) {
-    if (!sec && sec !== 0) return '—';
-    const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
-    if (d > 0) return `${d}d ${h}h`;
-    if (h > 0) return `${h}h ${m}m`;
-    return `${m}m`;
+    return formatSpeed(Math.max(0, bps));
 }
 
 function _tone(percent) {
@@ -151,7 +137,7 @@ function _paintStats(s) {
         // Memory
         const mem = s.memory || {};
         const ramEl = document.getElementById('ovRamText');
-        if (ramEl) ramEl.textContent = `${fmtBytes(mem.used)} / ${fmtBytes(mem.total)} (${Math.round(mem.percent || 0)}%)`;
+        if (ramEl) ramEl.textContent = `${formatBytes(mem.used)} / ${formatBytes(mem.total)} (${Math.round(mem.percent || 0)}%)`;
         _setBar(document.getElementById('ovCardRam'), mem.percent);
 
         // Temperature
@@ -161,7 +147,7 @@ function _paintStats(s) {
         // Disk
         const d = s.disk || {};
         const diskEl = document.getElementById('ovDiskText');
-        if (diskEl) diskEl.textContent = `${fmtBytes(d.used)} / ${fmtBytes(d.total)} (${Math.round(d.percent || 0)}%)`;
+        if (diskEl) diskEl.textContent = `${formatBytes(d.used)} / ${formatBytes(d.total)} (${Math.round(d.percent || 0)}%)`;
         _setBar(document.getElementById('ovCardDisk'), d.percent);
 
         // Network rate from counter deltas between ticks (~2 s apart)
@@ -181,7 +167,7 @@ function _paintStats(s) {
         const hn = document.getElementById('ovHostname');
         if (hn) hn.textContent = s.hostname || '—';
         const up = document.getElementById('ovUptime');
-        if (up) up.textContent = fmtUptime(s.uptime_seconds);
+        if (up) up.textContent = formatUptime(s.uptime_seconds);
 }
 
 async function _loadContainers() {

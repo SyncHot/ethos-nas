@@ -5,7 +5,6 @@
 
 const GLYPHS = {
     // Docker — stacked container layers
-    storage: '<path d="M4 6h16v4H4z"/><path d="M4 14h16v4H4z"/>',
     containers: '<path d="M12 2.5L20.5 7.25L12 12L3.5 7.25L12 2.5Z"/><path d="M3.5 11.75L12 16.5L20.5 11.75"/><path d="M3.5 16.25L12 21L20.5 16.25"/>',
     // Docker images — image frame with mountain
     images: '<rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="9.5" r="1.8"/><path d="M20.5 15.5L16.5 11.5L7 20"/>',
@@ -51,6 +50,8 @@ const GLYPHS = {
     // Universal Search — magnifier
     search: '<circle cx="11" cy="11" r="6.5"/><path d="M20.5 20.5L15.6 15.6"/>',
     sharing: '<circle cx="9" cy="8" r="3"/><path d="M3.5 20c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><circle cx="17.5" cy="9" r="2.5"/><path d="M14.8 14.6c2.9-.4 5.2 1.6 5.2 4.4"/>',
+    // Shared Links — chain link
+    'shared-links': '<path d="M10.5 13.5a4.5 4.5 0 0 0 6.8.5l2.2-2.2a4.5 4.5 0 0 0-6.4-6.4l-1.3 1.3"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.8-.5l-2.2 2.2a4.5 4.5 0 0 0 6.4 6.4l1.3-1.3"/>',
 };
 
 // Cohesive muted palette — every tile uses the same 135deg angle and a
@@ -76,6 +77,7 @@ export const APP_ICON_GRADIENTS = {
     cron:       'linear-gradient(135deg,#fbbf24,#b45309)',
     search:     'linear-gradient(135deg,#fbbf24,#d97706)',
     sharing:    'linear-gradient(135deg,#2dd4bf,#0f766e)',
+    'shared-links': 'linear-gradient(135deg,#60a5fa,#4338ca)',
 };
 
 export const FALLBACK_GRADIENT = 'linear-gradient(135deg,#64748b,#475569)';

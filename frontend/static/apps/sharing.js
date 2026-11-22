@@ -9,7 +9,9 @@ import { showConfirm } from '../core/modal.js';
 import { notify } from '../core/notification-center.js';
 import { skeletonRows, errorState } from '../core/states.js';
 import { mountShell } from '../core/ui-shell.js';
+import { uiIcon } from '../core/icons.js';
 import { logError } from '../core/logger.js';
+import { pickFile, pickFolder } from '../core/file-picker.js';
 import { openShareDialog } from '../core/share-dialog.js';
 import {
     fetchIncoming, fetchOutgoing, incomingTableHtml, outgoingTableHtml,
@@ -69,13 +71,16 @@ async function renderSection(id) {
     }
 }
 
-function _toolbar(title, count, testid) {
+function _toolbar(title, count, testid, actions = '') {
     return `<div class="ui-toolbar">
         <div>
             <h2>${title}</h2>
             <p class="ui-muted">${count} item${count === 1 ? '' : 's'}</p>
         </div>
-        <button class="ui-btn small" data-refresh data-testid="${testid}">Refresh</button>
+        <div class="ui-row">
+            ${actions}
+            <button class="ui-btn small" data-refresh data-testid="${testid}">Refresh</button>
+        </div>
     </div>`;
 }
 
@@ -99,7 +104,9 @@ async function renderOutgoing(isCurrent) {
     outgoing = await fetchOutgoing();
     if (!isCurrent()) return;
     shell.view.innerHTML = `<section class="ui-panel" data-testid="sharing-outgoing-panel">
-        ${_toolbar('Shared by me', outgoing.length, 'sharing-outgoing-refresh')}
+        ${_toolbar('Shared by me', outgoing.length, 'sharing-outgoing-refresh', `
+            <button class="ui-btn small primary" data-new-share="folder" data-testid="sharing-new-folder">${uiIcon('folder', 12)} Share folder…</button>
+            <button class="ui-btn small" data-new-share="file" data-testid="sharing-new-file">${uiIcon('plus', 12)} Share file…</button>`)}
         <div data-sharing-table>${outgoingTableHtml(outgoing)}</div>
     </section>`;
     shell.setStatus(outgoing.length ? `${outgoing.length} active share${outgoing.length === 1 ? '' : 's'}` : 'You have not shared anything');
@@ -132,4 +139,26 @@ async function renderOutgoing(isCurrent) {
         },
     });
     panel?.querySelector('[data-refresh]')?.addEventListener('click', () => renderSection('outgoing'));
+    panel?.querySelectorAll('[data-new-share]').forEach((button) => {
+        button.addEventListener('click', () => startShare(button.dataset.newShare));
+    });
+}
+
+/** Pick a folder or file, then reuse the one shared dialog (Files/Photos/Music use it too). */
+async function startShare(mode) {
+    const picked = mode === 'folder'
+        ? await pickFolder({ title: 'Select a folder to share' })
+        : await pickFile({ title: 'Select a file to share' });
+    if (!picked) return;
+    const label = String(picked).split('/').filter(Boolean).pop() || String(picked);
+    try {
+        const saved = await openShareDialog({ kind: 'path', resource: picked, label });
+        if (saved) await renderSection('outgoing');
+    } catch (err) {
+        logError('Sharing: could not open the share dialog', err?.detail || err?.message || String(err));
+        notify({
+            kind: 'error', title: 'Could not share this item',
+            message: err?.detail || err?.message || 'The share dialog could not be opened.',
+        });
+    }
 }

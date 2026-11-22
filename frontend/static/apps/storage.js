@@ -3,7 +3,7 @@ import { escapeAttr, escapeHtml, formatBytes } from '../core/utils.js';
 import { uiIcon } from '../core/icons.js';
 import { apiRequest } from '../core/api.js';
 import { showConfirm, showFormModal } from '../core/modal.js';
-import { skeletonRows, emptyState, errorState } from '../core/states.js';
+import { skeletonRows, emptyState, errorState, wireStateActions } from '../core/states.js';
 import { logError } from '../core/logger.js';
 import { notify } from '../core/notification-center.js';
 import { mountShell, applyBarWidths } from '../core/ui-shell.js';
@@ -58,7 +58,7 @@ async function loadDisksTab(isCurrent) {
             const rotational = typeof disk.rotational === 'boolean' ? disk.rotational : null;
             const kind = rotational === null ? 'USB drive' : (rotational ? 'HDD' : 'SSD');
             const kindIcon = rotational === null ? 'usb' : (rotational ? 'disk' : 'ssd');
-            const sizeGb = disk.size_bytes ? (disk.size_bytes / 1073741824).toFixed(1) : '?';
+            const sizeLabel = disk.size_bytes ? formatBytes(disk.size_bytes) : '—';
             const smartTag = smart === null
                 ? '<span class="ui-tag" title="Health is measured by the SMART Health app (smartctl)">SMART —</span>'
                 : `<span class="ui-tag ${smart ? 'is-ok' : 'is-bad'}">${smart ? 'Healthy' : 'Warning'}</span>`;
@@ -75,7 +75,7 @@ async function loadDisksTab(isCurrent) {
                 </div>
                 <div class="ui-panel-body">
                     <dl class="ui-kv">
-                        <div><dt class="ui-kv-key">Size</dt><dd class="ui-kv-value mono">${sizeGb} GB</dd></div>
+                        <div><dt class="ui-kv-key">Size</dt><dd class="ui-kv-value mono">${sizeLabel}</dd></div>
                         <div><dt class="ui-kv-key">Type</dt><dd class="ui-kv-value">${kind}</dd></div>
                         <div><dt class="ui-kv-key">Interface</dt><dd class="ui-kv-value">${escapeHtml(disk.transport || '—')}</dd></div>
                         <div><dt class="ui-kv-key">Partitions</dt><dd class="ui-kv-value">${Number(disk.partitions ?? 0)}</dd></div>
@@ -88,17 +88,25 @@ async function loadDisksTab(isCurrent) {
 
         content.innerHTML = `
             <div class="ui-toolbar">
-                <h2>${uiIcon('disk', 13)} Physical Disks</h2>
-                <span class="ui-tag">${disks.length} disk${disks.length === 1 ? '' : 's'}</span>
+                <div>
+                    <h2>${uiIcon('disk', 13)} Physical Disks</h2>
+                    <p class="ui-muted">Drives attached to this host.</p>
+                </div>
+                <div class="ui-row">
+                    <span class="ui-tag">${disks.length} disk${disks.length === 1 ? '' : 's'}</span>
+                    <button class="ui-btn small" data-refresh-disks data-testid="storage-refresh-disks">${uiIcon('refresh', 12)} Refresh</button>
+                </div>
             </div>
             ${disks.length
                 ? `<div class="ui-grid">${cards}</div>`
                 : emptyState({ icon: 'disk', title: 'No disks detected', hint: 'Attached drives appear here.' })}`;
 
+        content.querySelector('[data-refresh-disks]')?.addEventListener('click', () => _runSection('disks'));
         shell.setStatus(`${disks.length} disk(s)`, 'ok');
     } catch (err) {
         if (!isCurrent()) return;
         content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        wireStateActions(content, { retry: () => _runSection('disks') });
         shell.setStatus('Could not read disks', 'error');
         logError('Storage: disks unavailable', err?.detail || err?.message);
     }
@@ -141,8 +149,14 @@ async function loadPartitionsTab(isCurrent) {
 
         content.innerHTML = `
             <div class="ui-toolbar">
-                <h2>${uiIcon('partition', 13)} Mounted Partitions</h2>
-                <span class="ui-tag">${parts.length} partition${parts.length === 1 ? '' : 's'}</span>
+                <div>
+                    <h2>${uiIcon('partition', 13)} Mounted Partitions</h2>
+                    <p class="ui-muted">Mounted filesystems and their usage.</p>
+                </div>
+                <div class="ui-row">
+                    <span class="ui-tag">${parts.length} partition${parts.length === 1 ? '' : 's'}</span>
+                    <button class="ui-btn small" data-refresh-partitions data-testid="storage-refresh-partitions">${uiIcon('refresh', 12)} Refresh</button>
+                </div>
             </div>
             ${parts.length ? `<div class="ui-panel"><div class="ui-table-wrap"><table class="ui-table">
                     <thead><tr><th>Device</th><th>Mountpoint</th><th>Filesystem</th>
@@ -151,11 +165,13 @@ async function loadPartitionsTab(isCurrent) {
                 </table></div></div>`
                 : emptyState({ icon: 'partition', title: 'No partitions detected', hint: 'Attached disks have no mounted filesystems.' })}`;
 
+        content.querySelector('[data-refresh-partitions]')?.addEventListener('click', () => _runSection('partitions'));
         applyBarWidths(content);
         shell.setStatus(`${parts.length} mounted partition(s)`, 'ok');
     } catch (err) {
         if (!isCurrent()) return;
         content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        wireStateActions(content, { retry: () => _runSection('partitions') });
         shell.setStatus('Could not read partitions', 'error');
         logError('Storage: partitions unavailable', err?.detail || err?.message);
     }
@@ -177,11 +193,11 @@ async function loadUsbTab(isCurrent) {
         _usbFilesystems = data.supported_filesystems || [];
 
         const cards = devices.map((device) => {
-            const sizeGb = device.size_bytes ? (device.size_bytes / 1073741824).toFixed(1) : '?';
+            const sizeLabel = device.size_bytes ? formatBytes(device.size_bytes) : '—';
             const partitions = device.partitions || [];
             const partitionRows = partitions.length
                 ? partitions.map((part) => {
-                    const size = part.size_bytes ? (part.size_bytes / 1073741824).toFixed(1) : '?';
+                    const size = part.size_bytes ? formatBytes(part.size_bytes) : '—';
                     let status;
                     let mountButton = '';
                     if (!part.mountable) {
@@ -197,7 +213,7 @@ async function loadUsbTab(isCurrent) {
                         <span class="ui-tag">${escapeHtml(part.name)}</span>
                         ${part.label ? `<span>${escapeHtml(part.label)}</span>` : ''}
                         ${part.mountable ? `<span class="ui-tag is-info">${escapeHtml(part.fstype || '—')}</span>` : ''}
-                        <span class="ui-tag">${size} GB</span>
+                        <span class="ui-tag">${size}</span>
                         ${part.managed ? '<span class="ui-tag is-ok">Persistent</span>' : ''}
                         <span class="ui-list-row-main">${status}</span>
                         ${mountButton}
@@ -214,7 +230,7 @@ async function loadUsbTab(isCurrent) {
                         <span class="ui-muted">${uiIcon('usb', 24)}</span>
                         <div>
                             <h2>${escapeHtml(device.label || device.model || device.name)}</h2>
-                            <p class="ui-muted path">${escapeHtml(device.device)} · ${sizeGb} GB</p>
+                            <p class="ui-muted path">${escapeHtml(device.device)} · ${sizeLabel}</p>
                         </div>
                     </div>
                     <div class="ui-row">
@@ -228,18 +244,26 @@ async function loadUsbTab(isCurrent) {
 
         content.innerHTML = `
             <div class="ui-toolbar">
-                <h2>${uiIcon('usb', 13)} USB Storage Devices</h2>
-                <span class="ui-tag">${devices.length} device${devices.length === 1 ? '' : 's'}</span>
+                <div>
+                    <h2>${uiIcon('usb', 13)} USB Storage Devices</h2>
+                    <p class="ui-muted">Removable drives, partitions and mount state.</p>
+                </div>
+                <div class="ui-row">
+                    <span class="ui-tag">${devices.length} device${devices.length === 1 ? '' : 's'}</span>
+                    <button class="ui-btn small" data-refresh-usb data-testid="storage-refresh-usb">${uiIcon('refresh', 12)} Refresh</button>
+                </div>
             </div>
             ${devices.length
                 ? `<div class="ui-grid">${cards}</div>`
                 : emptyState({ icon: 'usb', title: 'No USB storage connected', hint: 'Plug a drive in and refresh this view.' })}`;
 
         _wireUsbActions(content);
+        content.querySelector('[data-refresh-usb]')?.addEventListener('click', () => _runSection('usb'));
         shell.setStatus(`${devices.length} USB device(s)`, 'ok');
     } catch (err) {
         if (!isCurrent()) return;
         content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        wireStateActions(content, { retry: () => _runSection('usb') });
         shell.setStatus('Could not read USB devices', 'error');
         logError('Storage: USB devices unavailable', err?.detail || err?.message);
     }

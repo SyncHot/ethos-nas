@@ -130,7 +130,11 @@ async function loadLinks() {
                 ? `<span title="${escapeAttr(link.files.join('\n'))}">${link.files.length} photos</span>`
                 : escapeHtml(link.path);
             return `<tr data-testid="sl-row-${escapeAttr(link.id)}">
-                <td>${escapeHtml(link.name)}</td>
+                <td>
+                    <div>${escapeHtml(link.name)}</div>
+                    <p class="ui-muted path" title="${escapeAttr(_linkUrl(link.token))}"
+                       style="font-size:10px;max-width:380px;word-break:break-all;margin:2px 0 0;">${escapeHtml(_linkUrl(link.token))}</p>
+                </td>
                 <td class="path">${pathCell}</td>
                 <td>${escapeHtml(_fmtDate(link.created_at))}</td>
                 <td>${escapeHtml(link.expires_at ? _fmtDate(link.expires_at) : 'Never')}</td>
@@ -195,7 +199,8 @@ async function createLink() {
 async function handleRowAction(button) {
     const action = button.dataset.act;
     if (action === 'copy') {
-        await copyText(_linkUrl(button.dataset.token));
+        const copied = await copyText(_linkUrl(button.dataset.token));
+        if (copied) flashCopied(button);
     } else if (action === 'open') {
         window.open(_linkUrl(button.dataset.token), '_blank', 'noopener');
     } else if (action === 'del') {
@@ -212,10 +217,18 @@ async function handleRowAction(button) {
     }
 }
 
+function flashCopied(button) {
+    const original = button.textContent;
+    button.textContent = 'Copied';
+    button.disabled = true;
+    setTimeout(() => { button.textContent = original; button.disabled = false; }, 1400);
+}
+
 async function copyText(text) {
     try {
         await navigator.clipboard.writeText(text);
         notify({ kind: 'success', message: 'Link copied to clipboard' });
+        return true;
     } catch (err) {
         logError('Shared links: clipboard unavailable', err?.message || String(err));
         const textarea = document.createElement('textarea');
@@ -227,10 +240,13 @@ async function copyText(text) {
         try {
             document.execCommand('copy');
             notify({ kind: 'success', message: 'Link copied to clipboard' });
+            return true;
         } catch (fallbackError) {
             logError('Shared links: fallback copy failed', fallbackError?.message || String(fallbackError));
             notify({ kind: 'error', message: 'Failed to copy link' });
+            return false;
+        } finally {
+            textarea.remove();
         }
-        textarea.remove();
     }
 }

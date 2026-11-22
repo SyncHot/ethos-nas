@@ -17,12 +17,14 @@ let _termArea = null;
 let _themeObserver = null;
 let _sessionIdSeq = 0;
 
+// Status colours are theme tokens — the terminal follows light/dark like every
+// other window (docs/app-ui.md → Theming).
 const STATUS_COLORS = {
-    connecting: '#f59e0b',
-    connected: '#22c55e',
-    reconnecting: '#f59e0b',
-    error: '#ef4444',
-    disconnected: '#64748b',
+    connecting: 'var(--ui-warn)',
+    connected: 'var(--ui-ok)',
+    reconnecting: 'var(--ui-warn)',
+    error: 'var(--ui-bad)',
+    disconnected: 'var(--text-3)',
 };
 
 function _el(tag, attrs = {}, ...children) {
@@ -50,7 +52,7 @@ export async function renderTerminalPage(body) {
 
     const statusDot = _el('span', {
         id: 'termStatusDot',
-        style: 'width:8px;height:8px;border-radius:50%;background:#64748b;display:inline-block;flex-shrink:0;',
+        style: 'width:8px;height:8px;border-radius:50%;background:var(--text-3);display:inline-block;flex-shrink:0;',
     });
     const statusLabel = _el('span', {
         id: 'termStatusLabel', 'data-testid': 'terminal-status',
@@ -145,7 +147,7 @@ function _createSession(target) {
     if (!_termArea) return null;
 
     if (typeof window.Terminal === 'undefined' || typeof window.FitAddon === 'undefined') {
-        _termArea.innerHTML = `<div style="padding:16px;color:#ef4444;font-size:13px;">xterm.js failed to load from the CDN. Check the internet connection and reopen the Terminal.</div>`;
+        _termArea.innerHTML = `<div style="padding:16px;color:var(--ui-bad);font-size:13px;">xterm.js failed to load from the CDN. Check the internet connection and reopen the Terminal.</div>`;
         return null;
     }
 
@@ -279,7 +281,7 @@ function _renderTabs() {
         const active = s.id === _activeId;
         const dot = _el('span', {
             'data-tab-dot': String(s.id),
-            style: `width:7px;height:7px;border-radius:50%;background:${STATUS_COLORS[s.statusKind] || '#64748b'};display:inline-block;flex-shrink:0;`,
+            style: `width:7px;height:7px;border-radius:50%;background:${STATUS_COLORS[s.statusKind] || 'var(--text-3)'};display:inline-block;flex-shrink:0;`,
         });
         const label = _el('span', {
             style: 'max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
@@ -311,7 +313,7 @@ function _syncToolbar() {
     if (badge && s) badge.textContent = s.target;
     const dot = _body.querySelector('#termStatusDot');
     const label = _body.querySelector('#termStatusLabel');
-    if (dot && s) dot.style.background = STATUS_COLORS[s.statusKind] || '#64748b';
+    if (dot && s) dot.style.background = STATUS_COLORS[s.statusKind] || 'var(--text-3)';
     if (label && s) label.textContent = s.statusText || 'disconnected';
 }
 
@@ -320,11 +322,11 @@ function _setStatus(s, kind, text) {
     s.statusKind = kind;
     s.statusText = text;
     const dot = _tabBar ? _tabBar.querySelector(`[data-tab-dot="${s.id}"]`) : null;
-    if (dot) dot.style.background = STATUS_COLORS[kind] || '#64748b';
+    if (dot) dot.style.background = STATUS_COLORS[kind] || 'var(--text-3)';
     if (s.id === _activeId) {
         const d = _body && _body.querySelector('#termStatusDot');
         const l = _body && _body.querySelector('#termStatusLabel');
-        if (d) d.style.background = STATUS_COLORS[kind] || '#64748b';
+        if (d) d.style.background = STATUS_COLORS[kind] || 'var(--text-3)';
         if (l) l.textContent = text;
     }
 }

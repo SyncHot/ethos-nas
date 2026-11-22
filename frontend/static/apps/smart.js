@@ -1,15 +1,18 @@
 // EthOS NAS — SMART Disk Health (single-pane shell)
 import { escapeAttr, escapeHtml, formatBytes } from '../core/utils.js';
 import { apiRequest } from '../core/api.js';
-import { skeletonRows, emptyState, errorState } from '../core/states.js';
+import { poll } from '../core/poller.js';
+import { skeletonRows, emptyState, errorState, wireStateActions } from '../core/states.js';
 import { uiIcon } from '../core/icons.js';
 import { logError } from '../core/logger.js';
 import { mountShell } from '../core/ui-shell.js';
 
 let shell = null;
+let _autoStop = null;
 
 export async function renderSmartPage(body) {
     if (!body) return;
+    if (_autoStop) { _autoStop(); _autoStop = null; }
     shell?.destroy();
     shell = mountShell(body, {
         idPrefix: 'smart',
@@ -30,15 +33,22 @@ export async function renderSmartPage(body) {
 
     shell.view.querySelector('[data-testid="smart-refresh-btn"]')?.addEventListener('click', () => loadDisks());
     await loadDisks();
+    // Temperatures and power-on hours drift while the window is open; a slow
+    // refresh keeps the view honest without a loading flash (poll pauses while
+    // the tab is hidden and stops when the window closes).
+    _autoStop = poll(() => loadDisks({ silent: true }), 60_000,
+        { appId: 'smart', immediate: false, name: 'smart' });
 }
 
-async function loadDisks() {
+async function loadDisks({ silent = false } = {}) {
     if (!shell) return;
     const content = shell.view.querySelector('#smartDisks');
     const count = shell.view.querySelector('#smartCount');
     if (!content) return;
-    content.innerHTML = skeletonRows(4);
-    shell.setStatus('Loading SMART data…');
+    if (!silent) {
+        content.innerHTML = skeletonRows(4);
+        shell.setStatus('Loading SMART data…');
+    }
 
     try {
         const data = await apiRequest('/api/smart');
@@ -83,10 +93,11 @@ async function loadDisks() {
             </section>`;
         }).join('')}</div>`;
 
-        shell.setStatus(`${disks.length} disk(s) checked`, failing ? 'warn' : 'ok');
+        shell.setStatus(`${disks.length} disk(s) checked · updated ${new Date().toLocaleTimeString()}`, failing ? 'warn' : 'ok');
     } catch (err) {
         if (!shell.root.isConnected) return;
         content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        wireStateActions(content, { retry: () => loadDisks() });
         shell.setStatus('Could not read SMART data', 'error');
         logError('SMART: disk data unavailable', err?.detail || err?.message);
     }

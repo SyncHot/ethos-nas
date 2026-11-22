@@ -11,6 +11,34 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.28.7] - 2026-11-22
+
+### Added
+
+- **Sharing → Shared by me can start a new share** without leaving the app: “Share
+  folder…” and “Share file…” open the same picker and recipient dialog the Files
+  context menu uses, so a view-only grant no longer requires finding the item in
+  Files, Photos or Music first.
+- **Storage has a Refresh button on every tab** (Disks, Partitions, USB), and the
+  **SMART Disk Health** window refreshes itself every 60 s with a “checked · updated
+  HH:MM” line, so temperatures and power-on hours stay current.
+- **Shared Links shows the public URL on each row**; Copy now confirms (“Copied”) and
+  the URL is visible for copying by hand when the clipboard API is unavailable.
+
+### Fixed
+
+- Windows that failed to load (Storage tabs, SMART, System Services) now offer a
+  working **Retry** instead of a dead error card.
+- Overview, Storage and SMART use the shared byte / rate / uptime formatters, and
+  Shared Links lost the “GB GB” suffix on device sizes.
+- Shared Links has its own desktop icon glyph and gradient instead of the generic
+  fallback, and the icon set no longer carries a duplicate key.
+
+### Changed
+
+- The Terminal status dots and error text use theme tokens, so they switch with
+  light/dark instead of staying on dark-only hex colours.
+
 ## [2.28.6] - 2026-11-22
 
 ### Added

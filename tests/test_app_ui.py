@@ -28,6 +28,8 @@ APPS = STATIC / "apps"
 CSS = "frontend/static/css/ethos-ui.css"
 SHELL = "frontend/static/core/ui-shell.js"
 INDEX_HTML = "frontend/index.html"
+REGISTRY_JS = "frontend/static/core/registry.js"
+APP_ICONS_JS = "frontend/static/core/app-icons.js"
 INSTRUCTIONS = ".github/instructions/app-ui.instructions.md"
 AGENTS = "AGENTS.md"
 DOC = "docs/app-ui.md"
@@ -185,6 +187,27 @@ def main() -> int:
     check("Settings has no hardcoded hex colour", not HEX_COLOUR.search(settings),
           ", ".join(HEX_COLOUR.findall(settings)[:3]))
     check("Settings has no raw white/black text colour", not RAW_COLOUR.search(settings))
+
+    # ── 6. Every registered app has an icon ───────────────────────────────
+    # The desktop grid and the app drawer both fall back to an emoji when a
+    # glyph is missing, so a new app silently ships with the wrong icon system.
+    # `shared-links` did exactly that (no glyph, no gradient).
+    registry_src = _read(REGISTRY_JS)
+    icons_src = _read(APP_ICONS_JS)
+    registry_ids = [a or b for a, b in re.findall(
+        r"^\s{4}(?:'([a-z-]+)'|([a-z]+)):\s*\{\s*id:", registry_src, re.MULTILINE)]
+    check("registry ids are discoverable", len(registry_ids) >= 15, str(registry_ids))
+    glyph_block = icons_src.split("export const APP_ICON_GRADIENTS", 1)[0]
+    gradient_block = icons_src.split("export const APP_ICON_GRADIENTS", 1)[1]
+    glyph_keys = [a or b for a, b in re.findall(
+        r"^\s{4}(?:'([a-z-]+)'|([a-z]+)):\s*'", glyph_block, re.MULTILINE)]
+    gradient_keys = [a or b for a, b in re.findall(
+        r"^\s{4}(?:'([a-z-]+)'|([a-z]+)):\s+'", gradient_block, re.MULTILINE)]
+    for app_id in registry_ids:
+        check(f"app icon glyph exists for {app_id}", app_id in glyph_keys, app_id)
+        check(f"app icon gradient exists for {app_id}", app_id in gradient_keys, app_id)
+    duplicates = sorted({key for key in glyph_keys if glyph_keys.count(key) > 1})
+    check("app icon glyphs have no duplicate keys", not duplicates, ", ".join(duplicates))
 
     print()
     if failures:

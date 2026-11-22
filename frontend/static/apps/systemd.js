@@ -2,7 +2,7 @@
 // Dedicated EthOS NAS service panel + the full systemd unit table.
 import { escapeAttr, escapeHtml } from '../core/utils.js';
 import { apiRequest } from '../core/api.js';
-import { skeletonRows, emptyState, errorState } from '../core/states.js';
+import { skeletonRows, emptyState, errorState, wireStateActions } from '../core/states.js';
 import { showConfirm } from '../core/modal.js';
 import { notify } from '../core/notification-center.js';
 import { uiIcon } from '../core/icons.js';
@@ -105,6 +105,7 @@ async function loadEthosService() {
     } catch (err) {
         if (!shell.root.isConnected) return;
         content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
+        wireStateActions(content, { retry: () => loadEthosService() });
         shell.setStatus('Could not read the EthOS service', 'error');
         logError('Systemd: EthOS service status unavailable', err?.detail || err?.message);
     }
@@ -184,6 +185,7 @@ async function loadUnits() {
     } catch (err) {
         if (!shell.root.isConnected) return;
         content.innerHTML = `<tr><td colspan="4">${errorState({ detail: err?.detail || err?.message || 'Unknown error' })}</td></tr>`;
+        wireStateActions(content, { retry: () => loadUnits() });
         shell.setStatus('Could not read systemd units', 'error');
         logError('Systemd: unit list unavailable', err?.detail || err?.message);
     }
