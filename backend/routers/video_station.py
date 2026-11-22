@@ -60,7 +60,7 @@ from pydantic import BaseModel
 # Shared path sanitizer from the File Manager router (delegates to
 # services/path_scope.py, so the caller's identity is enforced here too).
 from backend.config import settings
-from backend.routers.files import _sanitize
+from backend.routers.files import _sanitize, _sanitize_read
 from backend.services import path_scope, task_registry, user_data, video_engine, video_hls
 from backend.services.metadata import service as metadata_service
 from backend.services.metadata.base import MetadataConfigError
@@ -210,9 +210,18 @@ def _save_config(config: dict) -> None:
 
 
 def _is_allowed(abs_path: str) -> bool:
-    """True when the caller's path scope accepts `abs_path`."""
+    """True when the caller's own path scope accepts `abs_path`."""
     try:
         path_scope.sanitize(abs_path)
+        return True
+    except HTTPException:
+        return False
+
+
+def _is_allowed_read(abs_path: str) -> bool:
+    """Own scope or a received share — for read-only browsing endpoints."""
+    try:
+        path_scope.sanitize_read(abs_path)
         return True
     except HTTPException:
         return False
@@ -248,7 +257,7 @@ def _list_dir(path: str, query: str = "") -> dict:
     """One directory level: subfolders (that contain videos somewhere below or
     are roots of interest) + video files directly inside."""
     abs_path = os.path.abspath(os.path.expanduser(path))
-    if not _is_allowed(abs_path):
+    if not _is_allowed_read(abs_path):
         raise HTTPException(status_code=403, detail="Path outside allowed roots")
     if not os.path.isdir(abs_path):
         raise HTTPException(status_code=404, detail="Folder not found")
@@ -671,7 +680,7 @@ async def browse(path: str | None = Query(default=None)) -> dict:
 
         return {"roots": await asyncio.to_thread(_roots)}
 
-    if not _is_allowed(base):
+    if not _is_allowed_read(base):
         raise HTTPException(status_code=403, detail="Path outside allowed roots")
     if not os.path.isdir(base):
         raise HTTPException(status_code=404, detail="Folder not found")
@@ -735,9 +744,9 @@ async def stream(path: str = Query(...)) -> FileResponse:
 
     Serves the raw file. Files the browser can't decode directly (AC3/EAC3/DTS
     audio, HEVC video, MKV containers) should be played via /transcode instead
-    — see `info` which reports `needs_transcode`.
+    — see `info` which reports `needs_transcode`. Received shares are readable.
     """
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
     ext = os.path.splitext(abs_path)[1].lower()
@@ -799,7 +808,7 @@ async def transcode(
     `q` = quality preset (fast|balanced|high). The player re-requests with a new
     t when seeking past its buffer (a live pipe has no byte-range seek).
     """
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
     if not FFMPEG_BIN:
@@ -900,7 +909,7 @@ class HlsRequest(BaseModel):
 @router.post("/hls")
 async def start_hls(payload: HlsRequest) -> dict:
     """Start a bounded fMP4 HLS session for non-direct media (mobile-friendly)."""
-    abs_path = _sanitize(payload.path)
+    abs_path = _sanitize_read(payload.path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
     if not FFMPEG_BIN:
@@ -1026,7 +1035,7 @@ async def hls_segment(sid: str, name: str) -> FileResponse:
 @router.get("/subtitles")
 async def subtitles(path: str = Query(...)) -> dict:
     """Sibling subtitle files (.srt/.vtt) next to the video."""
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
     folder = os.path.dirname(abs_path)
@@ -1165,7 +1174,7 @@ async def thumbnail(
     """
     if not FFMPEG_BIN:
         raise HTTPException(status_code=404, detail="ffmpeg not available")
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -1211,7 +1220,7 @@ async def thumbnail(
 @router.get("/info")
 async def info(path: str = Query(...)) -> dict:
     """ffprobe metadata (duration, resolution, codecs, bitrate) + file size."""
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
     result = await _probe(abs_path)

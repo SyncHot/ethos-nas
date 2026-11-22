@@ -63,6 +63,7 @@ const SOURCE_LABELS = {
     backup: 'Backup',
     shares: 'Shares',
     'share-links': 'Share Links',
+    sharing: 'Sharing',
     firewall: 'Firewall',
     health: 'Health',
     surveillance: 'Surveillance',
@@ -101,6 +102,25 @@ function _setBadge(value) {
 }
 
 export function getUnreadCount() { return state.unread; }
+
+/**
+ * Ask the browser for notification permission from a user gesture.
+ *
+ * The Notification API lives only in this module (rule 4 in
+ * docs/notifications.md). Apps that need Web Push — for example the Sticky
+ * Notes PWA — call this helper instead of touching `Notification` directly.
+ * Returns `granted`, `denied` or `default` and never throws.
+ */
+export async function requestNotificationPermission() {
+    if (typeof Notification === 'undefined') return 'denied';
+    if (Notification.permission === 'granted') return 'granted';
+    if (Notification.permission === 'denied') return 'denied';
+    try {
+        return await Notification.requestPermission();
+    } catch {
+        return 'denied';
+    }
+}
 
 // ── Public entry point ───────────────────────────────────────────────────────
 
@@ -740,12 +760,8 @@ async function _setSetting(name, enabled) {
             notify({ kind: 'warning', message: 'This browser does not support desktop notifications.' });
             return;
         }
-        try {
-            if (Notification.permission === 'default') await Notification.requestPermission();
-        } catch {
-            // User dismissed the prompt.
-        }
-        if (Notification.permission !== 'granted') {
+        const permission = await requestNotificationPermission();
+        if (permission !== 'granted') {
             _revertSetting('notifDesktopToggle');
             notify({ kind: 'warning', message: 'Desktop notifications are blocked for this site.' });
             return;

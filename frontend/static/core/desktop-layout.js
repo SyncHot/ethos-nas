@@ -26,7 +26,7 @@ const DEFAULT_ORDER = [
     "overview", "storage", "files", "trash", "terminal",
     "network", "security", "services", "settings", "processes", "logs", "packages",
     "smart", "systemd", "cron",
-    "search", "shared-links",
+    "search", "shared-links", "sharing",
 ];
 
 /**

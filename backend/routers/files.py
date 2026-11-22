@@ -111,8 +111,14 @@ def _sanitize(path: str) -> str:
 
     Delegates to services/path_scope.py so sync.py and file_ops.py apply the
     identical rule: non-admins are limited to their own home, /mnt and /media.
+    Write endpoints must keep using this function.
     """
     return path_scope.sanitize(path)
+
+
+def _sanitize_read(path: str) -> str:
+    """Scope check for read-only endpoints, including received shares."""
+    return path_scope.sanitize_read(path)
 
 
 def _permission_denied(exc: Exception, path: str) -> HTTPException:
@@ -949,7 +955,7 @@ def _transcode_worker(abs_path: str, height: int):
 @router.get("/transcode-status")
 async def transcode_status(path: str = Query(...), height: int = Query(720, ge=360, le=1080)) -> dict:
     """Report status of the H.264 transcode for a video file."""
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -981,7 +987,7 @@ async def transcode_stream(path: str = Query(...), height: int = Query(720, ge=3
     requesting this — a partially written file is not Range-stable, so while
     the job runs we return 202 + Retry-After instead of streaming garbage.
     """
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     out_file = _transcoded_file(abs_path, height)
     if not _transcode_is_fresh(out_file, abs_path):
         job = _transcode_jobs.get(abs_path)
@@ -1002,9 +1008,10 @@ async def start_transcode(path: str = Query(...), height: int = Query(720, ge=36
     Browsers cannot decode HEVC/AV1 8K streams; transcoding to H.264 ≤1080p
     makes any video playable in the built-in player. One job at a time —
     concurrent requests for other files are queued by the semaphore and
-    reported as ``queued``.
+    reported as ``queued``. Transcoding only reads the source and writes a
+    cache file, so a received share may use it.
     """
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -1053,7 +1060,7 @@ async def list_directory(
     Args:
         path: Absolute filesystem path to the directory
     """
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.exists(abs_path):
         raise HTTPException(status_code=404, detail="Path not found")
     if not os.path.isdir(abs_path):
@@ -1089,14 +1096,15 @@ async def list_directory(
         "total": total,
         "limit": limit,
         "offset": offset,
-        "can_write": os.access(abs_path, os.W_OK),
+        # Own scope only: a received share is always read-only.
+        "can_write": path_scope.can_write(abs_path),
     }
 
 
 @router.get("/stat")
 async def stat_item(path: str = Query("/")) -> dict:
     """Return metadata for a single file or directory (for the Properties dialog)."""
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.exists(abs_path):
         raise HTTPException(status_code=404, detail="Path not found")
     info = _file_info(abs_path)
@@ -1108,7 +1116,7 @@ async def stat_item(path: str = Query("/")) -> dict:
         except OSError:
             info["item_count"] = None
         info["size"] = 0
-    info["can_write"] = os.access(abs_path, os.W_OK)
+    info["can_write"] = path_scope.can_write(abs_path)
     return info
 
 
@@ -1390,8 +1398,8 @@ async def rename_item(body: FileRenameRequest) -> dict:
 
 @router.get("/download")
 async def download_file(path: str = Query(...)) -> FileResponse:
-    """Download a file as an attachment."""
-    abs_path = _sanitize(path)
+    """Download a file as an attachment (own files or a received share)."""
+    abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(abs_path, filename=os.path.basename(abs_path))
@@ -1409,7 +1417,7 @@ async def raw_file(path: str = Query(...)) -> FileResponse:
     can upload could run script with a victim's session. The sandbox CSP keeps
     such a document inert while images and video still render normally.
     """
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(abs_path, headers={
@@ -1542,7 +1550,7 @@ async def thumbnail(
     that append ``&v=<source mtime>`` (the gallery does) get a one-year
     immutable cache; unversioned callers get a short private cache instead.
     """
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -1600,7 +1608,7 @@ async def video_thumbnail(
         path: Absolute filesystem path to the video file.
         size: Thumbnail width in pixels (64-640, default 320).
     """
-    abs_path = _sanitize(path)
+    abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -1713,14 +1721,14 @@ async def set_video_cover(body: VideoCoverRequest) -> dict:
 async def warm_thumbnails(paths: str = Query(...)):
     """Pre-generate video thumbnails in the bounded background worker.
 
-    Returns immediately with the number of jobs queued. Paths go through the
-    same ``path_scope.sanitize()`` as every other file endpoint; already-cached
-    and backing-off files are skipped so a warm call never burns CPU twice.
+    Returns immediately with the number of jobs queued. Paths use the shared
+    read scope (thumbs are derived cache, not writes); already-cached and
+    backing-off files are skipped so a warm call never burns CPU twice.
     """
     accepted = 0
     for p in [p.strip() for p in paths.split(",") if p.strip()][:60]:
         try:
-            abs_path = _sanitize(p)
+            abs_path = _sanitize_read(p)
             if not os.path.isfile(abs_path) or Path(abs_path).suffix.lower() not in _VIDEO_EXTS:
                 continue
             if _video_master_is_fresh(abs_path):

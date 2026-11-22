@@ -25,6 +25,7 @@ const APP_REGISTRY = {
     cron:        { id: 'cron',      title: 'Cron Jobs', icon: '⏰' },
     search:      { id: 'search',   title: 'Universal Search', icon: '🔍' },
     'shared-links': { id: 'shared-links', title: 'Shared Links', icon: '🔗' },
+    sharing:     { id: 'sharing',  title: 'Sharing', icon: '🤝' },
 };
 
 export function getRegistry() {

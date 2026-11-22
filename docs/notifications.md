@@ -9,7 +9,7 @@ backend subsystems all feed the same store, the same bell badge and the same
 right-edge sheet. Nothing else may render a toast, a notification panel or an
 event history — `tests/test_notification_ui.py` fails the build if anything tries.
 
-- [x] Backend store v2 (`json_store`, dedupe, action buttons, package sources)
+- [x] Backend store v3 (`json_store`, dedupe, action buttons, package sources, targeted audiences)
 - [x] `POST /api/notifications` with a source policy
 - [x] `/ws/notifications` push (no more 30 s badge polling)
 - [x] Top-bar bell + right-edge sheet, day grouping, filters, search, per-row actions
@@ -62,7 +62,7 @@ otherwise appear when an action both toasts locally and emits server-side.
 
 ## Data model
 
-`<DATA_DIR>/notifications.json` — `{"version": 2, "events": [...]}` via
+`<DATA_DIR>/notifications.json` — `{"version": 3, "events": [...]}` via
 `services/json_store.py` (atomic writes, fsync, migration backups, corruption
 quarantine). Capped at `MAX_EVENTS = 500`; oldest rows are trimmed first.
 
@@ -74,6 +74,7 @@ quarantine). Capped at `MAX_EVENTS = 500`; oldest rows are trimmed first.
   "message": "ubuntu-24.04.iso",
   "source": "downloads",
   "created_at": "2026-11-14T12:34:56+00:00",
+  "users": [],
   "read": false,
   "read_by": [],
   "action": { "label": "Open Downloads", "appId": "downloads" },
@@ -83,15 +84,17 @@ quarantine). Capped at `MAX_EVENTS = 500`; oldest rows are trimmed first.
 ```
 
 - `kind` — `success` | `error` | `warning` | `info` (anything else becomes `info`).
-- `read` — global flag shared by every account; `read_by` is reserved for
-  per-user read state (populated by the API today, not used for the badge).
+- `users` — audience; empty means a broadcast. Targeted events are only listed,
+  counted and pushed to the named accounts.
+- `read` — legacy global flag used by broadcasts; `read_by` holds per-user read state.
+  A targeted event is never marked globally read.
 - `action` — optional button: `appId` (opens a desktop app) and/or same-origin
   `href`. Labels are capped at 40 chars, `appId` must match `^[a-z0-9][a-z0-9_.-]{0,59}$`,
   `href` must start with `/`.
 - `dedupe_key` — repeats from the same source within `DEDUPE_WINDOW_SECONDS = 300`
   bump `count` and `created_at` instead of adding a row (hot disk, flapping service).
 - `source` — `system`, `files`, `storage`, `downloads`, `docker`, `packages`,
-  `backup`, `shares`, `share-links`, `firewall`, `health`, `surveillance`, or
+  `backup`, `shares`, `share-links`, `sharing`, `firewall`, `health`, `surveillance`, or
   `pkg:<package-id>` for package-originated events.
 
 ## REST API
@@ -118,9 +121,10 @@ All routes require a JWT (the global middleware); nothing here is public.
 
 ## WebSocket
 
-`/ws/notifications?token=<jwt>` — every authenticated user may subscribe (the
-store is global). Missing/invalid token closes with **4001**; the client stops
-reconnecting on that code (handled by `core/ws.js`).
+`/ws/notifications?token=<jwt>` — every authenticated user may subscribe. The hub tracks
+the username from the token and drops `event` frames whose `users` audience does not include
+that account; `unread` in every frame is computed per connection. Missing/invalid token closes
+with **4001**; the client stops reconnecting on that code (handled by `core/ws.js`).
 
 Frames (`{"type": ...}` envelope):
 
@@ -133,8 +137,8 @@ Frames (`{"type": ...}` envelope):
 {"type": "cleared", "unread": 0}
 ```
 
-`event` is the full v2 record, so a client can render it without a refetch.
-`unread` is authoritative — the badge is always set to it, never incremented.
+`event` is the full v3 record, so a client can render it without a refetch.
+`unread` is authoritative and per-user — the badge is always set to it, never incremented.
 
 The socket is global: it is opened by `startNotificationPolling()` and has no
 `appId`, so closing a window never kills it. A 60 s REST poll runs as a safety

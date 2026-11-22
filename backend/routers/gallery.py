@@ -84,7 +84,7 @@ from backend.config import settings
 from backend.routers.files import _sanitize, _extract_video_frame, _video_fallback_svg
 # JWT payload decoder (to bind Private sessions to the logged-in user)
 from backend.routers.auth import _verify_token
-from backend.services import json_store, path_scope, user_data
+from backend.services import json_store, path_scope, sharing_service, user_data
 from backend.services import trash_service
 
 logger = logging.getLogger("ethos-nas.routers.gallery")
@@ -174,9 +174,18 @@ def _save_config(config: dict) -> None:
 
 
 def _is_allowed(abs_path: str) -> bool:
-    """True when the caller's path scope accepts `abs_path`."""
+    """True when the caller's own path scope accepts `abs_path`."""
     try:
         path_scope.sanitize(abs_path)
+        return True
+    except HTTPException:
+        return False
+
+
+def _is_allowed_read(abs_path: str) -> bool:
+    """Own scope or a received share — for read-only gallery scans."""
+    try:
+        path_scope.sanitize_read(abs_path)
         return True
     except HTTPException:
         return False
@@ -1693,9 +1702,48 @@ def _album_path_set(album_id: str) -> set:
     return {p for p in (a or {}).get("paths", []) if isinstance(p, str)}
 
 
+def _albums_for(username: str) -> list:
+    """Albums from an explicit account's store (read-only sharing view)."""
+    data = _library(username).albums_store.load()
+    return [a for a in data if isinstance(a, dict) and a.get("id")] if isinstance(data, list) else []
+
+
+def _album_path_set_for(username: str, album_id: str) -> set:
+    for album in _albums_for(username):
+        if album.get("id") == album_id:
+            return {p for p in (album.get("paths") or []) if isinstance(p, str)}
+    return set()
+
+
 @router.get("/albums")
-async def gallery_list_albums() -> dict:
-    """Album list with live counts (only items still present in the index)."""
+async def gallery_list_albums(owner: str = Query(default="")) -> dict:
+    """Album list with live counts.
+
+    `owner` switches to a read-only shared view: only albums explicitly granted
+    to the caller by that account are returned, each tagged `shared: true`.
+    """
+    caller = user_data.current_username()
+    if owner and owner != caller:
+        grants = [g for g in sharing_service.list_incoming(caller)
+                  if g.get("kind") == "album" and g.get("owner") == owner]
+        if not grants:
+            raise HTTPException(status_code=403, detail="No albums shared by this user")
+        granted = {str(g.get("resource") or "") for g in grants}
+        indexed = {
+            it["path"] for it in (_library(owner).state["items"] or [])
+            if not it.get("private") and not str(it.get("path") or "").endswith(ENC_SUFFIX)
+        }
+        out = []
+        for album in _albums_for(owner):
+            if album["id"] not in granted:
+                continue
+            paths = [p for p in album.get("paths", []) if isinstance(p, str)]
+            out.append({"id": album["id"], "name": album.get("name", ""),
+                        "count": sum(1 for p in paths if p in indexed),
+                        "created": float(album.get("created") or 0),
+                        "owner": owner, "shared": True})
+        return {"albums": out, "owner": owner}
+
     indexed = {it["path"] for it in (_index_state["items"] or [])}
     out = []
     for a in _load_albums():
@@ -1805,6 +1853,7 @@ async def gallery_items(
     day: str = Query(default="", description="'YYYY-MM-DD' — restrict to one local calendar day (effective date). Index-backed scopes only."),
     fav: str = Query(default="", description="'1' — only favorited items (within the current scope; private items still hidden without a session)"),
     album: str = Query(default="", description="Album id — restrict to that album's items (private members stay hidden without a Private session)"),
+    owner: str = Query(default="", description="Read-only shared album: the album owner's username"),
 ):
     """Paginated media items straight from the index.
 
@@ -1815,7 +1864,48 @@ async def gallery_items(
 
     view=private additionally requires an active Private session: pass the
     ps_token from /private-pin/verify as ?ps=… (a plain login is not enough).
+
+    `owner` requires an album grant, ignores `folder`, forbids the private view
+    and reads the owner's index; private/encrypted items are never returned.
     """
+    caller = user_data.current_username()
+    if owner and owner != caller:
+        if not album:
+            raise HTTPException(status_code=400, detail="album required for a shared view")
+        if view == "private":
+            raise HTTPException(status_code=403, detail="private items are not shared")
+        if not sharing_service.allows_resource(caller, owner, "album", album):
+            raise HTTPException(status_code=404, detail="unknown album")
+        aset = _album_path_set_for(owner, album)
+        items = [
+            it for it in (_library(owner).state["items"] or [])
+            if it.get("path") in aset
+            and not it.get("private")
+            and not str(it.get("path") or "").endswith(ENC_SUFFIX)
+        ]
+        items = _filter_items(items, "", q)
+        cam = (camera or "").strip().lower()
+        if cam:
+            items = [it for it in items if (it.get("camera") or "").strip().lower() == cam]
+        if fav == "1":
+            items = [it for it in items if it.get("favorite")]
+        dstart, dend = _day_range_local(day)
+        if dstart is not None and dend is not None:
+            items = [it for it in items if dstart <= _eff_date(it) < dend]
+        total = len(items)
+        ordered = _sort_items(items, sort or "date_desc")
+        page = ordered[offset:offset + limit]
+        return {
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "items": [dict(it) for it in page],
+            "folders": [],
+            "stale": False,
+            "owner": owner,
+            "album": album,
+        }
+
     if view == "private":
         user = _request_user(request)
         if not _session_for(request.query_params.get("ps", ""), user):
@@ -1836,7 +1926,7 @@ async def gallery_items(
     if folder:
         abs_folder = os.path.abspath(os.path.expanduser(folder))
         under_root = any(abs_folder == r or abs_folder.startswith(r + os.sep) for r in roots)
-        if not under_root and _is_allowed(abs_folder):
+        if not under_root and _is_allowed_read(abs_folder):
             loop = asyncio.get_running_loop()
             found = await loop.run_in_executor(
                 None, _walk_folder_sync, abs_folder, include_videos)
@@ -2110,9 +2200,10 @@ async def gallery_meta(
     """File + EXIF metadata for one item (public, or session-gated private).
 
     Private items are decrypted to a 0600 temp file just long enough to read
-    the EXIF header; no plaintext copy is persisted.
+    the EXIF header; no plaintext copy is persisted. Items in a shared album
+    are readable through the normal read scope.
     """
-    ap = path_scope.sanitize(path or "")
+    ap = path_scope.sanitize_read(path or "")
     loop = asyncio.get_running_loop()
     tmp = None
     try:

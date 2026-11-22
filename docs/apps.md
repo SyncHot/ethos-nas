@@ -30,7 +30,8 @@ and one status line — matching the native package windows.
 | Network | `apps/network.js` | `/api/network` |
 | Logs | `apps/logs.js` | `/api/logs`, `/ws/logs/*` |
 | Search | `apps/search.js` | `/api/files/universal-search` |
-| Settings | `apps/settings.js` (rail: Health · Updates · Maintenance · Users · Security · Appearance · About) | `/api/system`, `/api/auth`, `/api/health`, `/api/app/version` |
+| Sharing | `apps/sharing.js` | `/api/sharing` (`docs/sharing.md`) |
+| Settings | `apps/settings.js` (rail: Health · Updates · Maintenance · Users · Sharing · Security · Appearance · About) | `/api/system`, `/api/auth`, `/api/health`, `/api/app/version`, `/api/sharing` |
 
 ---
 

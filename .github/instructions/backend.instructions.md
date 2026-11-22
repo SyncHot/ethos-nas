@@ -23,6 +23,9 @@ applyTo: "backend/**/*.py"
   `Depends(require_role(...))` from `backend.routers.auth`.
 - Filesystem paths: mount `Depends(scope_request)` and call `path_scope.sanitize(path)` on every path
   (sources and destinations). `scope_request` must remain `async def`.
+- Read-only endpoints may use `path_scope.sanitize_read(path)` to honour received user grants.
+  Never use it on a write: `sanitize()` must stay share-unaware. Grant creation uses
+  `sanitize_share()` (`/home`, `/mnt`, `/media` only, never DATA_DIR). Spec: `docs/sharing.md`.
 - Never add a public prefix; public paths are the exact-path set in `backend/main.py`.
 
 ## State

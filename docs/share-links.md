@@ -1,5 +1,10 @@
 # Feature: Public Share Links (Files "Share")
 
+> **Not the same as user sharing.** Share links are anonymous public URLs. To let another
+> EthOS account read a file, album, playlist or folder without a token URL, use **Sharing**
+> (`docs/sharing.md`, `/api/sharing`). Recipients authenticate normally and a grant is revoked
+> with one click; the public-link system is separate and unaffected.
+
 Tokenized, expiring share URLs for files and folders — the Files app's
 "Share link" feature. Lets the owner hand out a URL that downloads content
 without giving the recipient an EthOS account or SMB access.

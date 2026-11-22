@@ -13,6 +13,11 @@ import { startTask } from '../core/progress.js';
 import { skeletonRows, emptyState, errorState } from '../core/states.js';
 import { logError, logInfo } from '../core/logger.js';
 import { mountShell } from '../core/ui-shell.js';
+import {
+    fetchIncoming, fetchOutgoing, incomingTableHtml, outgoingTableHtml,
+    wireSharingActions, openGrantApp,
+} from '../core/sharing-ui.js';
+import { openShareDialog } from '../core/share-dialog.js';
 import { openLogs } from './logs.js';
 import {
     WALLPAPER_IDS, CUSTOM_ID, DEFAULT_WALLPAPER,
@@ -27,6 +32,7 @@ const SECTIONS = [
     { id: 'system', label: 'System', title: 'System', subtitle: 'Ubuntu release, package updates and reboot state.' },
     { id: 'maintenance', label: 'Maintenance', title: 'Maintenance', subtitle: 'Caches, health thresholds and the danger zone.' },
     { id: 'users', label: 'Users', title: 'User Accounts', subtitle: 'Create accounts, roles and passwords. Each account is a Linux user.' },
+    { id: 'sharing', label: 'Sharing', title: 'Sharing', subtitle: 'Resources you share, and resources other accounts share with you.' },
     { id: 'security', label: 'Security', title: 'Security', subtitle: 'Your session, API key and hardening notes.' },
     { id: 'appearance', label: 'Appearance', title: 'Appearance', subtitle: 'Desktop wallpaper for this account.' },
     { id: 'about', label: 'About', title: 'About', subtitle: 'Build identity and environment self-check.' },
@@ -1680,6 +1686,76 @@ async function renderAbout(isCurrent) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Sharing
+// ════════════════════════════════════════════════════════════════════════════
+
+async function renderSharing(isCurrent) {
+    const [incoming, outgoing] = await Promise.all([fetchIncoming(), fetchOutgoing()]);
+    if (!isCurrent()) return;
+
+    shell.view.innerHTML = `
+        <section class="ui-panel" data-testid="settings-sharing-card">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>Shared with me</h2>
+                    <p class="ui-muted">Read-only resources other accounts made available to you.</p>
+                </div>
+                <button class="ui-btn small" data-action="open-sharing" data-testid="settings-sharing-open">Open Sharing app</button>
+            </div>
+            <div data-sharing-incoming>${incomingTableHtml(incoming)}</div>
+        </section>
+
+        <section class="ui-panel" data-testid="settings-sharing-outgoing">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>Shared by me</h2>
+                    <p class="ui-muted">Recipients can view and stream — never edit, delete or re-share.</p>
+                </div>
+                <button class="ui-btn small" data-refresh data-testid="settings-sharing-refresh">Refresh</button>
+            </div>
+            <div data-sharing-outgoing>${outgoingTableHtml(outgoing)}</div>
+        </section>`;
+
+    wireSharingActions(shell.view.querySelector('[data-sharing-incoming]'), {
+        grants: incoming,
+        onOpen: (grant) => openGrantApp(grant),
+    });
+    wireSharingActions(shell.view.querySelector('[data-sharing-outgoing]'), {
+        grants: outgoing,
+        onEdit: async (grant) => {
+            if (!grant) return;
+            await openShareDialog({ kind: grant.kind, resource: grant.resource, label: grant.label });
+            await renderSection('sharing');
+        },
+        onRevoke: async (grant) => {
+            if (!grant) return;
+            const ok = await showConfirm(
+                'Revoke sharing?',
+                `“${grant.label || grant.resource}” will stop being available to its recipients.`,
+                { danger: true, confirmLabel: 'Revoke' },
+            );
+            if (!ok) return;
+            try {
+                await apiRequest(`/api/sharing/grants/${encodeURIComponent(grant.id)}`, { method: 'DELETE' });
+                notify({ kind: 'success', title: 'Sharing revoked', message: grant.label || grant.resource });
+                await renderSection('sharing');
+            } catch (err) {
+                notify({
+                    kind: 'error', title: 'Could not revoke sharing',
+                    message: err?.detail || err?.message || 'Unknown error',
+                });
+            }
+        },
+    });
+
+    shell.view.querySelector('[data-action="open-sharing"]')?.addEventListener('click', () => {
+        window.openApp?.('sharing');
+    });
+    shell.view.querySelector('[data-refresh]')?.addEventListener('click', () => renderSection('sharing'));
+    shell.setStatus(`${incoming.length} received · ${outgoing.length} shared`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // Shared helpers
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -1689,6 +1765,7 @@ const RENDERERS = {
     system: renderSystem,
     maintenance: renderMaintenance,
     users: renderUsers,
+    sharing: renderSharing,
     security: renderSecurity,
     appearance: renderAppearance,
     about: renderAbout,

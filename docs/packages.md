@@ -127,7 +127,9 @@ repo/
     `ctx.pkg`, `ctx.apiFetch`, `ctx.apiJsonFetch`, `ctx.notify`, `ctx.notifications`,
     `ctx.log(level, message, detail)` / `ctx.logger.{debug,info,warn,error}`, `ctx.proxy(path, options)`,
     `ctx.pickFile(opts)`, `ctx.pickFolder(opts)`, `ctx.reload()`, plus the shared UI helpers
-    `ctx.progress.startTask`, `ctx.modal.{confirm,alert,form}` and `ctx.escape.{html,attr,js}`.
+    `ctx.progress.startTask`, `ctx.modal.{confirm,alert,form}`, `ctx.escape.{html,attr,js}` and
+    `ctx.share.open({kind, resource, label})` — the one “Share with other users” dialog
+    (`kind` is `path`, `album` or `playlist`; spec `docs/sharing.md`).
     Using those keeps native packages on the same progress panel / accessible modals as core apps.
     `ctx.notifications` is the **only** allowed notification surface — `toast(message, kind)`,
     `emit({kind, title, message, action})` (persisted, `source="pkg:<id>"`) and `open(filter)`.

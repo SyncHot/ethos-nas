@@ -73,6 +73,7 @@ from backend.routers.notifications_ws import (
 from backend.routers.health import router as health_router
 from backend.routers.surveillance import router as surveillance_router
 from backend.routers.share_links import router as share_links_router
+from backend.routers.sharing import router as sharing_router
 from backend.routers.editor import router as editor_router
 from backend.routers.appearance import router as appearance_router
 from backend.services.qb_compat import router as qb_compat_router, v2_router as qb_compat_v2_router
@@ -391,6 +392,12 @@ async def auth_middleware(request: Request, call_next):
         # anything (a static JSON manifest and the worker script).
         "/manifest.webmanifest",
         "/sw.js",
+        # Sticky Notes PWA (the notes package's mobile capture surface). The
+        # page and its manifest are fetched before sign-in; the page then uses
+        # the normal JWT login and calls the package proxy with a token.
+        "/notes",
+        "/notes/",
+        "/manifest-notes.webmanifest",
     }
     if path in public_paths:
         return await call_next(request)
@@ -515,6 +522,7 @@ app.include_router(notifications_router,  prefix="/api/notifications",   tags=["
 app.include_router(health_router,         prefix="/api/health",          tags=["Health"])
 app.include_router(surveillance_router,   prefix="/api/surveillance",    tags=["Cameras"])
 app.include_router(share_links_router,    prefix="/api/share-links",      tags=["Share Links"])
+app.include_router(sharing_router,        prefix="/api/sharing",          tags=["Sharing"])
 app.include_router(editor_router,         prefix="/api/editor",           tags=["Code Editor"])
 app.include_router(appearance_router,     prefix="/api/appearance",       tags=["Appearance"])
 
@@ -564,6 +572,26 @@ async def service_worker() -> FileResponse:
             "Cache-Control": "no-cache, max-age=0",
         },
     )
+
+
+# Sticky Notes PWA. `/notes` is a standalone capture surface for the
+# `ethos-sticky-notes` package (installable on phones, offline queue, Web Push).
+# It is deliberately a separate HTML entry: the desktop shell is too heavy for
+# a phone and the page must load before the user has a token.
+@app.get("/notes", include_in_schema=False)
+async def serve_notes() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "notes.html"), media_type="text/html")
+
+
+@app.get("/notes/", include_in_schema=False)
+async def serve_notes_slash() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "notes.html"), media_type="text/html")
+
+
+@app.get("/manifest-notes.webmanifest", include_in_schema=False)
+async def notes_manifest() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "manifest-notes.webmanifest"),
+                        media_type="application/manifest+json")
 
 
 @app.get("/{full_path:path}", include_in_schema=False)

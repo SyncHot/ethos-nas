@@ -50,6 +50,7 @@ const GLYPHS = {
     // Disk Cleaner — sparkles
     // Universal Search — magnifier
     search: '<circle cx="11" cy="11" r="6.5"/><path d="M20.5 20.5L15.6 15.6"/>',
+    sharing: '<circle cx="9" cy="8" r="3"/><path d="M3.5 20c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><circle cx="17.5" cy="9" r="2.5"/><path d="M14.8 14.6c2.9-.4 5.2 1.6 5.2 4.4"/>',
 };
 
 // Cohesive muted palette — every tile uses the same 135deg angle and a
@@ -74,6 +75,7 @@ export const APP_ICON_GRADIENTS = {
     systemd:    'linear-gradient(135deg,#7c8ba1,#3e4c63)',
     cron:       'linear-gradient(135deg,#fbbf24,#b45309)',
     search:     'linear-gradient(135deg,#fbbf24,#d97706)',
+    sharing:    'linear-gradient(135deg,#2dd4bf,#0f766e)',
 };
 
 export const FALLBACK_GRADIENT = 'linear-gradient(135deg,#64748b,#475569)';

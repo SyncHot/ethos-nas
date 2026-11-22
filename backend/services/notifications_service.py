@@ -5,17 +5,18 @@ disk warnings, package installs, firewall changes, …). It backs the bell +
 right-edge Notification Center sheet in `core/notification-center.js` and is the
 only notification history in the product — apps must not build their own.
 
-Store file: <DATA_DIR>/notifications.json   {"version": 2, "events": [...]}
+Store file: <DATA_DIR>/notifications.json   {"version": 3, "events": [...]}
 
-Event shape (v2):
+Event shape (v3):
     id          "evt_<12 hex>"
     kind        "success" | "error" | "warning" | "info"
     title       str (<=200)
     message     str (<=1000)
     source      str (<=60, e.g. "downloads", "pkg:<package-id>")
     created_at  ISO-8601 UTC
-    read        bool            — global flag, shared by every account
-    read_by     list[str]       — reserved for per-user read state
+    users       list[str]       — audience; empty = every account (broadcast)
+    read        bool            — legacy global flag (broadcast events)
+    read_by     list[str]       — per-user read state
     action      {"label", "appId"?, "arg"?, "href"?} | None — row/action button
     dedupe_key  str | None      — repeats inside DEDUPE_WINDOW_SECONDS collapse
     count       int             — occurrences the row represents
@@ -44,11 +45,12 @@ from backend.services import json_store
 logger = logging.getLogger("ethos-nas.services.notifications_service")
 
 DATA_FILE = Path(settings.DATA_DIR) / "notifications.json"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_EVENTS = 500                 # hard cap — oldest events are trimmed first
 MAX_TITLE = 200
 MAX_MESSAGE = 1000
 MAX_SOURCE = 60
+MAX_USERS = 200                  # per-event audience cap
 DEDUPE_WINDOW_SECONDS = 300      # repeats of one dedupe_key collapse into one row
 VALID_KINDS = ("success", "error", "warning", "info")
 
@@ -82,7 +84,7 @@ def _parse_ts(value: Any) -> datetime | None:
 
 
 def _migrate(from_version: int, to_version: int, data: Any) -> Any:
-    """v1 → v2: additive fields only (action, dedupe_key, count, read_by).
+    """v1 → v3: additive fields only (action, dedupe_key, count, read_by, users).
 
     Malformed entries are dropped instead of failing the whole upgrade — losing
     one notification is better than an empty Notification Center.
@@ -101,6 +103,7 @@ def _migrate(from_version: int, to_version: int, data: Any) -> Any:
         event.setdefault("created_at", _now_iso())
         event["read"] = bool(event.get("read", False))
         event.setdefault("read_by", [])
+        event["users"] = _clean_users(event.get("users"))
         event.setdefault("action", None)
         event.setdefault("dedupe_key", None)
         event.setdefault("count", 1)
@@ -181,6 +184,37 @@ def _clean_source(source: Any) -> str:
     return str(source or "").strip()[:MAX_SOURCE] or "system"
 
 
+def _clean_users(users: Any) -> list[str]:
+    """Sanitise an event audience; empty means “every account”."""
+    if not isinstance(users, (list, tuple)):
+        return []
+    out: list[str] = []
+    for raw in users:
+        name = str(raw or "").strip()
+        if name and len(name) <= 64 and name not in out:
+            out.append(name)
+        if len(out) >= MAX_USERS:
+            break
+    return out
+
+
+def _visible(event: dict, user: str = "") -> bool:
+    """True when `user` may see this event (empty user = no filtering)."""
+    audience = event.get("users") or []
+    if not user or not audience:
+        return True
+    return user in audience
+
+
+def _read_for(event: dict, user: str = "") -> bool:
+    """Per-user read state; falls back to the legacy global flag."""
+    if event.get("read"):
+        return True
+    if not user:
+        return False
+    return user in (event.get("read_by") or [])
+
+
 # ── Public API (all thread-safe; emit_event never raises) ────────────────────
 
 def emit_event(
@@ -191,13 +225,15 @@ def emit_event(
     *,
     action: dict | None = None,
     dedupe_key: str | None = None,
+    users: list[str] | None = None,
 ) -> dict | None:
     """Append a system event and persist it. Returns the event dict, or None on failure.
 
     Positional arguments are unchanged from v1, so every existing call site keeps
     working. Pass `dedupe_key` for repeating conditions (a hot disk, one failing
     mount) so the panel shows a single row with `count` instead of a wall of
-    duplicates.
+    duplicates. Pass `users` to target an audience; omit it (or pass an empty
+    list) for a broadcast event.
     """
     try:
         safe_kind = kind if kind in VALID_KINDS else "info"
@@ -205,6 +241,7 @@ def emit_event(
         safe_message = str(message).strip()[:MAX_MESSAGE]
         safe_source = _clean_source(source)
         safe_action = _clean_action(action)
+        safe_users = _clean_users(users)
         key = str(dedupe_key or "").strip()[:120] or None
         created = _now()
         created_iso = created.isoformat(timespec="seconds")
@@ -218,6 +255,8 @@ def emit_event(
                         continue
                     if existing.get("source") != safe_source:
                         continue
+                    if (existing.get("users") or []) != safe_users:
+                        continue
                     seen = _parse_ts(existing.get("created_at"))
                     if seen is None or seen < cutoff:
                         break
@@ -226,6 +265,7 @@ def emit_event(
                     existing["title"] = safe_title
                     existing["message"] = safe_message
                     existing["kind"] = safe_kind
+                    existing["users"] = safe_users
                     existing["read"] = False
                     existing["read_by"] = []
                     if safe_action:
@@ -239,6 +279,7 @@ def emit_event(
                 "message": safe_message,
                 "source": safe_source,
                 "created_at": created_iso,
+                "users": safe_users,
                 "read": False,
                 "read_by": [],
                 "action": safe_action,
@@ -258,34 +299,48 @@ def emit_event(
         return None
 
 
-def list_events(limit: int = 100, kind: str | None = None) -> tuple[list[dict], int]:
-    """Return (events newest-first, total unread count across the whole store).
+def list_events(limit: int = 100, kind: str | None = None,
+                user: str = "") -> tuple[list[dict], int]:
+    """Return (events newest-first, unread count for `user`).
 
     `kind` optionally filters to a single kind (the panel's "Errors" chip).
+    `user` filters by audience and computes the per-user read flag; an empty
+    user keeps the legacy “whole store” behaviour used by workers and tests.
     """
     store = _STORE.load()
     events = store.get("events") or []
+    visible = [e for e in events if _visible(e, user)]
     # Reversed first: timestamps are second-granular, so this keeps
     # newest-inserted-first ordering for events emitted within the same second
     # (the sort is stable).
-    ordered = sorted(reversed(events), key=lambda e: e.get("created_at", ""), reverse=True)
+    ordered = sorted(reversed(visible), key=lambda e: e.get("created_at", ""), reverse=True)
     if kind:
         ordered = [e for e in ordered if e.get("kind") == kind]
-    unread = sum(1 for e in events if not e.get("read"))
-    return [dict(e) for e in ordered[:limit]], unread
+    unread = sum(1 for e in visible if not _read_for(e, user))
+    out = []
+    for event in ordered[:limit]:
+        item = dict(event)
+        item["read"] = _read_for(event, user)
+        out.append(item)
+    return out, unread
 
 
-def unread_count() -> int:
-    return sum(1 for e in (_STORE.load().get("events") or []) if not e.get("read"))
+def unread_count(user: str = "") -> int:
+    return sum(1 for e in (_STORE.load().get("events") or [])
+               if _visible(e, user) and not _read_for(e, user))
 
 
 def mark_read(event_id: str, user: str = "") -> bool:
-    """Mark one event read. Returns False when the id is unknown."""
+    """Mark one event read for `user`. Returns False when the id is unknown
+    or the event is not addressed to that user (no existence leak)."""
     def _mutate(store: dict) -> bool:
         for event in store["events"]:
             if event.get("id") != event_id:
                 continue
-            event["read"] = True
+            if not _visible(event, user):
+                return False
+            if not event.get("users"):
+                event["read"] = True
             if user and user not in (event.get("read_by") or []):
                 event.setdefault("read_by", []).append(user)
             return True
@@ -298,13 +353,17 @@ def mark_read(event_id: str, user: str = "") -> bool:
 
 
 def mark_all_read(user: str = "") -> int:
-    """Mark every stored event read. Returns how many were newly marked."""
+    """Mark every event visible to `user` read. Returns how many were newly
+    marked for that user; the legacy global flag follows broadcast events."""
     def _mutate(store: dict) -> int:
         count = 0
         for event in store["events"]:
-            if not event.get("read"):
-                event["read"] = True
+            if not _visible(event, user):
+                continue
+            if not _read_for(event, user):
                 count += 1
+            if not event.get("users"):
+                event["read"] = True
             if user and user not in (event.get("read_by") or []):
                 event.setdefault("read_by", []).append(user)
         return count

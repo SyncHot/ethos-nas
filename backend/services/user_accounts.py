@@ -23,7 +23,9 @@ import subprocess
 from datetime import datetime, timezone
 
 from backend.config import settings
-from backend.services import json_store, share_links_service, shares_service, user_data, users_store
+from backend.services import (
+    json_store, share_links_service, sharing_service, shares_service, user_data, users_store,
+)
 
 logger = logging.getLogger("ethos-nas.services.user_accounts")
 
@@ -416,6 +418,11 @@ def purge_user_state(username: str) -> list[str]:
                 removed.append(f"share-link:{link.get('id')}")
     except Exception:  # noqa: BLE001
         logger.error("Could not revoke share links for %s", safe, exc_info=True)
+
+    try:
+        removed.extend(sharing_service.purge_user(safe))
+    except Exception:  # noqa: BLE001
+        logger.error("Could not purge sharing grants for %s", safe, exc_info=True)
 
     logger.info("Purged EthOS state for %s (%s)", username, ", ".join(removed) or "nothing to remove")
     return removed

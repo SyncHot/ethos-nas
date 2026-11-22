@@ -40,7 +40,7 @@ APP_REGISTRY_KEYS = [
     "terminal", "network", "security", "services", "settings",
     "processes", "logs", "packages", "smart",
     "systemd", "cron",
-    "search", "shared-links",
+    "search", "shared-links", "sharing",
 ]
 
 # Built-in apps that moved to Packages. Existing per-user layouts keep the

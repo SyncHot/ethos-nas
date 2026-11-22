@@ -69,11 +69,19 @@ installed package needs it and EthOS installed it. Never add a broad `apt` sudoe
 
 **Notifications.** One global system (spec: `docs/notifications.md`; rules:
 `.github/instructions/notifications.instructions.md`). Backend publishes with
-`emit_event(kind, title, message, source=..., action=..., dedupe_key=...)`; the frontend calls
+`emit_event(kind, title, message, source=..., action=..., dedupe_key=...)`; pass `users=[…]` to
+notify named accounts, omit it for a broadcast. The frontend calls
 `notify({kind, title, message, action})` (legacy `addNotification(msg, type)` still works).
 `core/notification-center.js` owns the toasts, the right-edge sheet and the bell badge —
 **apps and packages must not build their own toast, panel, badge or event history**
 (`tests/test_notification_ui.py`). Native packages use `ctx.notifications.{toast,emit,open}`.
+
+**Sharing.** Cross-account access exists only as an explicit view-only grant in
+`<DATA_DIR>/sharing.json`, managed by `services/sharing_service.py` and exposed at `/api/sharing`.
+Read-only endpoints use `path_scope.sanitize_read`; every write uses `sanitize`, so a received
+share can never become write access. Never add a per-app share store, never share `<DATA_DIR>`, and
+never expose Photos Private/encrypted items. Spec `docs/sharing.md`; guard
+`tests/test_sharing_api.py` + `tests/test_path_scope_sharing.py`.
 
 **Progress.** Long-running actions (uploads, copy/move, delete/trash, package/engine installs) report
 through `core/progress.js` — `startTask` → `update`/`finish`. No bespoke progress cards or panels in

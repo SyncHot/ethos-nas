@@ -17,6 +17,7 @@ import { fetchLogs as _fetchLogs } from './core/log-stream.js';
 // ── Unified Components (Task 3) ───────────────────────────────────────────────
 import { showConfirm } from './core/unified-confirm.js';
 import { showAlert, showConfirm as showModalConfirm, showPrompt, showFormModal } from './core/modal.js';
+import { openShareDialog } from './core/share-dialog.js';
 import { startTask } from './core/progress.js';
 import { escapeHtml, escapeAttr, jsAttr } from './core/utils.js';
 import { log as _logDiagnostic } from './core/logger.js';
@@ -52,6 +53,7 @@ import { renderServicesPage } from './apps/services.js';
 import { renderCronPage } from './apps/cron.js';
 import { renderSearchPage } from './apps/search.js';
 import { renderShareLinksPage } from './apps/share-links.js';
+import { renderSharingPage } from './apps/sharing.js';
 import { renderAccessControlPage } from './apps/access-control.js';
 
 window._rawOpenApp = _openApp;
@@ -84,6 +86,7 @@ const RENDERERS = {
     security: renderAccessControlPage,
     search: renderSearchPage,
     'shared-links': renderShareLinksPage,
+    sharing: renderSharingPage,
 };
 
 function _openAppWrapper(appId) {
@@ -205,6 +208,8 @@ async function _renderNativePackage(pkg, container) {
             // Shared UI so native packages do not hand-roll progress bars or modals.
             progress: { startTask },
             modal: { confirm: showConfirm, alert: showAlert, form: showFormModal },
+            // User-to-user sharing (docs/sharing.md): one dialog for every app.
+            share: { open: openShareDialog },
             escape: { html: escapeHtml, attr: escapeAttr, js: jsAttr },
             // Shell services a packaged app may need (window bookkeeping, a
             // terminal/WS target, the unified log reader). Pass-throughs only —

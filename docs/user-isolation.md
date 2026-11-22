@@ -47,6 +47,10 @@ work for "an installed app can never reach more than the signed-in user".
   Tasks carry `owner`; every task endpoint and the qBittorrent API filter by it.
 - Share links carry `owner` + `owner_role`; the public route re-validates every
   stored path on each request.
+- User-to-user shares are a separate, view-only layer (`docs/sharing.md`): a grant in
+  `sharing.json` lets a named recipient (or every active account) **read** the resource
+  through `path_scope.sanitize_read`. Writes still use `sanitize` and are never
+  share-aware; public share links use `sanitize_for` and do not inherit grants.
 - qBittorrent SID sessions store the caller identity; `_require_auth` publishes
   it for `path_scope`, so a personal API key keeps its own scope.
 - Config export/import (`config_archive.py`) includes `users/**/*.json` and each

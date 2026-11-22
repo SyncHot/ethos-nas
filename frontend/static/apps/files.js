@@ -8,6 +8,8 @@ import { startTask } from '../core/progress.js';
 import { addNotification, toggleNotificationDrawer } from '../core/notification-center.js';
 import { pickFolder } from '../core/file-picker.js';
 import { showAlert, showConfirm as showModalConfirm, showFormModal, showPrompt } from '../core/modal.js';
+import { openShareDialog } from '../core/share-dialog.js';
+import { fetchIncoming } from '../core/sharing-ui.js';
 
 export const fmWindowStates = new Map();
 
@@ -100,6 +102,8 @@ let _fmFavorites = [];        // [{ path, name, exists }]
 let _fmFavSet = new Set();    // set of bookmarked paths for O(1) lookup
 let _fmFavsLoaded = false;
 let _pendingFmPath = null;    // path to open in a newly created FM window
+let _fmShared = [];           // received path grants [{id, owner, resource, label}]
+let _fmSharedLoaded = false;
 
 // ── Shared clipboard (all Files windows) ──────────────────────────
 // Standard desktop semantics: Ctrl+C / Ctrl+X in one window can be pasted into
@@ -175,6 +179,29 @@ function _fmFavoritesHtml(activePath) {
         const missing = f.exists === false ? 'fm-fav-missing' : '';
         return `<div class="fm-sidebar-item ${active} ${missing}" data-path="${escapeAttr(f.path)}" onclick="fmNavigateTo('${safeJsStr(f.path)}')" title="${escapeAttr(f.path)}${f.exists === false ? ' (missing)' : ''}"><span class="fm-sidebar-icon" style="background:rgba(245,181,63,0.14);color:#f5b53f;">${svgIcon(FM_STAR_PATH, 16)}</span><span>${escapeHtml(f.name)}</span></div>`;
     }).join('');
+}
+
+function _fmSharedHtml(activePath) {
+    if (!_fmSharedLoaded) return '<div class="fm-sidebar-item fm-empty">Loading…</div>';
+    if (!_fmShared.length) return '<div class="fm-sidebar-item fm-empty">Nothing shared with you</div>';
+    const rows = _fmShared.slice(0, 20).map((grant) => {
+        const path = grant.resource || '';
+        const active = activePath === path || (activePath || '').startsWith(path + '/') ? 'active' : '';
+        const label = grant.label || path.split('/').filter(Boolean).pop() || path;
+        return `<div class="fm-sidebar-item ${active}" data-path="${escapeAttr(path)}" onclick="fmNavigateTo('${jsAttr(path)}')" title="${escapeAttr(grant.owner + ' · ' + path)}"><span class="fm-sidebar-icon" style="background:rgba(45,212,191,0.14);color:#2dd4bf;">${svgIcon('<circle cx="9" cy="8" r="3"/><path d="M3.5 20c0-3 2.5-5 5.5-5s5.5 2 5.5 5"/><circle cx="17.5" cy="9" r="2.5"/><path d="M14.8 14.6c2.9-.4 5.2 1.6 5.2 4.4"/>', 16)}</span><span>${escapeHtml(label)}</span></div>`;
+    }).join('');
+    return rows;
+}
+
+async function fmLoadShared() {
+    try {
+        _fmShared = await fetchIncoming('path');
+    } catch (err) {
+        _fmShared = [];
+    } finally {
+        _fmSharedLoaded = true;
+        document.querySelectorAll('[data-fm-win]').forEach((root) => { fmRenderSidebar(root); });
+    }
 }
 
 function _renderAllFmFavorites() {
@@ -267,6 +294,8 @@ export function initFileManager(body) {
                     <div class="fm-section-header">Quick Access</div><div class="fm-sidebar-favorites"></div>
                     <div class="fm-section-divider"></div>
                     <div class="fm-section-header">Favorites</div><div class="fm-sidebar-favs" data-testid="fm-sidebar-favorites"></div>
+                    <div class="fm-section-divider"></div>
+                    <div class="fm-section-header">Shared with me</div><div class="fm-sidebar-shared" data-testid="fm-sidebar-shared"></div>
                     <div class="fm-section-divider"></div>
                     <div class="fm-section-header fm-trash-drop" data-fm-trash="1" style="cursor:pointer;" onclick="fmOpenTrash()" title="Open Trash — drag files here to move them to Trash">🗑 Trash</div><div class="fm-sidebar-trash" style="min-height:4px;"></div>
                     <div class="fm-section-divider"></div>
@@ -388,6 +417,7 @@ export function initFileManager(body) {
     // Open a specific path if requested (e.g. "Open in New Window"), otherwise
     // reopen the folder this browser last looked at — a file manager that forgets
     // where you were is a daily papercut.
+    if (window.__fmPendingPath) { _pendingFmPath = window.__fmPendingPath; delete window.__fmPendingPath; }
     if (_pendingFmPath) { const p = _pendingFmPath; _pendingFmPath = null; state.path = p; state.history = [p]; state.historyIndex = 0; }
     else if (!state._openedOnce) {
         const last = _fmPref('ethos-fm-last-path', null);
@@ -403,6 +433,7 @@ export function initFileManager(body) {
     _initFmItemDnd(container);
     _initFmMarquee(container);
     fmLoadFavorites();
+    fmLoadShared();
     // Load into THIS window explicitly. A bare fmLoad() resolves the "active"
     // window by z-index, and a freshly opened second window was not always the
     // topmost one yet — the listing (and its state) then landed in the other
@@ -747,6 +778,10 @@ async function fmRenderSidebar(root) {
     // Dynamic bookmarks (persisted per-user via /api/files/favorites)
     const bookmarksEl = activeRoot.querySelector('.fm-sidebar-favs');
     if (bookmarksEl) bookmarksEl.innerHTML = _fmFavoritesHtml(state.path);
+
+    // Received shares (view-only) — click navigates into the granted path.
+    const sharedEl = activeRoot.querySelector('.fm-sidebar-shared');
+    if (sharedEl) sharedEl.innerHTML = _fmSharedHtml(state.path);
 
     favsEl.innerHTML = SIDEBAR_FAVORITES.map(f => {
         const act = f.path === state.path ? 'active' : '';
@@ -2341,6 +2376,7 @@ export function fmShowItemContextMenu(e, path, name, isDir) {
     items.push({ testid: 'fm-ctx-favorite', label: _fmIsFavorite(path) ? 'Remove from Favorites' : 'Add to Favorites', icon: '<path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>', action: () => fmToggleFavorite(path) });
     items.push({ testid: 'fm-ctx-copy-path', label: 'Copy Path', icon: '<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>', action: () => _copyPathToClipboard(path) });
     items.push({ testid: 'fm-ctx-share-link', label: 'Share link…', icon: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>', action: () => { window.__fmShareCtx = { path }; openApp('shared-links'); } });
+    items.push({ testid: 'fm-ctx-share-users', label: 'Share with users…', icon: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>', action: () => { openShareDialog({ kind: 'path', resource: path }); } });
     items.push({ testid: 'fm-ctx-properties', label: 'Properties', icon: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>', action: () => _showProperties(path, isDir) });
     sep();
     // Single-item actions use the exact path the menu was opened on — resolving

@@ -31,28 +31,41 @@ router = APIRouter()
 
 
 class _NotificationsHub:
-    """Fan-out to every connected notification client."""
+    """Fan-out to connected notification clients, filtered by event audience."""
 
     def __init__(self) -> None:
-        self._connections: list[WebSocket] = []
+        self._connections: dict[WebSocket, str] = {}
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def connect(self, websocket: WebSocket, username: str = "") -> None:
         await websocket.accept()
-        self._connections.append(websocket)
+        self._connections[websocket] = username
         logger.info("Notifications WS client connected (total: %d)", len(self._connections))
 
     def disconnect(self, websocket: WebSocket) -> None:
-        if websocket in self._connections:
-            self._connections.remove(websocket)
-        logger.info("Notifications WS client disconnected (remaining: %d)", len(self._connections))
+        if self._connections.pop(websocket, None) is not None:
+            logger.info("Notifications WS client disconnected (remaining: %d)",
+                        len(self._connections))
+
+    def _frame_for(self, payload: dict, username: str) -> dict | None:
+        """Return the payload personalised for `username`, or None to skip it."""
+        if payload.get("type") == "event":
+            audience = (payload.get("event") or {}).get("users") or []
+            if username and audience and username not in audience:
+                return None
+        frame = dict(payload)
+        # The service payload carries a global count; each socket needs its own.
+        frame["unread"] = notifications_service.unread_count(username)
+        return frame
 
     async def broadcast(self, payload: dict) -> None:
-        """Send one payload to every client; drop dead connections."""
-        message = _json.dumps(payload, ensure_ascii=False)
+        """Send one payload to every matching client; drop dead connections."""
         dead: list[WebSocket] = []
-        for websocket in list(self._connections):
+        for websocket, username in list(self._connections.items()):
+            frame = self._frame_for(payload, username)
+            if frame is None:
+                continue
             try:
-                await websocket.send_text(message)
+                await websocket.send_text(_json.dumps(frame, ensure_ascii=False))
             except Exception as exc:  # noqa: BLE001 — a dead client is not an error
                 logger.debug("Failed to send notification to WS client: %s", exc)
                 dead.append(websocket)
@@ -79,14 +92,15 @@ async def websocket_notifications(websocket: WebSocket) -> None:
         await websocket.close(code=4001, reason="Authentication required")
         return
 
-    await _hub.connect(websocket)
+    username = str(payload.get("username") or "")
+    await _hub.connect(websocket, username)
     try:
         # Initial snapshot so a freshly opened tab shows the right badge even if
         # it connected between two broadcasts.
         try:
             await websocket.send_text(_json.dumps({
                 "type": "sync",
-                "unread": notifications_service.unread_count(),
+                "unread": notifications_service.unread_count(username),
             }))
         except Exception:
             logger.debug("Could not send notification sync frame", exc_info=True)

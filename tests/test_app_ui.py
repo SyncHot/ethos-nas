@@ -49,6 +49,7 @@ SHELL_APPS = {
     "cron.js": "single",
     "search.js": "single",
     "share-links.js": "single",
+    "sharing.js": "rail",
 }
 
 # Migration allowlist (TODO.md P3-15). Empty as of 2026-11-15: every core app
@@ -58,7 +59,7 @@ PENDING: set[str] = set()
 # Documented layout exceptions — tokens only, never the rail.
 LAYOUT_EXCEPTIONS = {"files.js", "terminal.js", "login.js", "app-drawer.js", "fm-controls.js"}
 
-SETTINGS_SECTIONS = ("overview", "updates", "system", "maintenance", "users", "security", "appearance", "about")
+SETTINGS_SECTIONS = ("overview", "updates", "system", "maintenance", "users", "sharing", "security", "appearance", "about")
 SETTINGS_TESTIDS = (
     "settings-caches-card",
     "core-update-card",

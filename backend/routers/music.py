@@ -42,7 +42,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from backend.config import settings
-from backend.services import music_search, package_client, path_scope, user_data
+from backend.services import (
+    music_search, package_client, path_scope, sharing_resources, sharing_service, user_data,
+)
 
 logger = logging.getLogger("ethos-nas.routers.music")
 
@@ -1297,6 +1299,46 @@ async def liked_remove(payload: dict, request: Request):
             states[uid] = cur
             _save_states(states)
     return {"removed": removed, "count": len(cur.get("liked") or [])}
+
+
+@router.get("/playlists/shared")
+async def shared_playlist(owner: str = Query(...), id: str = Query(...)) -> dict:
+    """Read-only view of another account's playlist (requires a grant).
+
+    Local tracks are rewritten to ``/api/files/raw?path=…`` so the recipient
+    streams them through the normal read scope; remote/engine tracks keep their
+    existing URL. Playlist mutation endpoints stay owner-only.
+    """
+    caller = user_data.current_username()
+    if not owner or owner == caller:
+        raise HTTPException(status_code=400, detail="Owner must be another user")
+    if not sharing_service.allows_resource(caller, owner, "playlist", id):
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    state = user_data.user_store("music_library.json", dict, username=owner).load()
+    playlist = next((p for p in (state.get("playlists") or [])
+                     if isinstance(p, dict) and str(p.get("id") or "") == id), None)
+    if playlist is None:
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    allowed_paths = sharing_resources.shareable_paths(owner, "playlist", id)
+    tracks = []
+    for raw in playlist.get("tracks") or []:
+        if not isinstance(raw, dict):
+            continue
+        track = dict(raw)
+        local = sharing_resources.local_track_path(owner, track.get("file_url") or "")
+        if local:
+            if local not in allowed_paths:
+                continue  # not shareable (e.g. path outside the owner's scope)
+            track["file_url"] = "/api/files/raw?path=" + urllib.parse.quote(local)
+            track["shared_local"] = True
+        tracks.append(track)
+    return {
+        "id": id,
+        "name": str(playlist.get("name") or ""),
+        "owner": owner,
+        "tracks": tracks,
+        "count": len(tracks),
+    }
 
 
 @router.post("/playlists")

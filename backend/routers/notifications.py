@@ -58,11 +58,13 @@ def _caller(request: Request) -> dict:
 
 @router.get("")
 def get_notifications(
+    request: Request,
     limit: int = Query(default=100, ge=1, le=500),
     kind: Optional[str] = Query(default=None, pattern="^(success|error|warning|info)$"),
 ) -> dict:
-    """List stored events (newest first) plus the total unread count."""
-    events, unread = list_events(limit, kind)
+    """List events visible to the caller (newest first) plus their unread count."""
+    username = str(_caller(request).get("username") or "")
+    events, unread = list_events(limit, kind, username)
     return {"events": events, "unread": unread}
 
 
@@ -95,9 +97,10 @@ def create_notification(payload: NotificationIn, request: Request) -> dict:
 
 
 @router.get("/unread-count")
-def get_unread_count() -> dict:
+def get_unread_count(request: Request) -> dict:
     """Lightweight poll target for the bell badge (fallback when the WS is down)."""
-    return {"unread": unread_count()}
+    username = str(_caller(request).get("username") or "")
+    return {"unread": unread_count(username)}
 
 
 @router.post("/read-all")
