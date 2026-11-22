@@ -4,6 +4,9 @@ Web player must match the Android app 1:1 (see `AGENTS.md` → *Web ⇄ Android 
 The Android app had a **Radio** tab (`ethos-music/ui/screens/RadioScreen.kt`, catalog in
 `RadioModels.kt`); the web Music app did not. This feature closes that gap.
 
+The phone client is now the `/music` PWA (`docs/music-pwa.md`) — it fetches the same catalog and
+shares favourites/recents through `/api/music/radio/state`. The Android APK is retired.
+
 ## Plan / status
 
 - [x] Shared station catalog: `backend/radio_stations.json` v2 — **150 Polish streams**

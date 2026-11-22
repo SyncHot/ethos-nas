@@ -28,7 +28,7 @@ const SECTION_KEY = 'ethos-settings-section';
 
 const SECTIONS = [
     { id: 'overview', label: 'Health', title: 'System Health', subtitle: 'Health checks and system alerts at a glance.' },
-    { id: 'updates', label: 'Updates', title: 'Updates', subtitle: 'Core releases and the Android apps.' },
+    { id: 'updates', label: 'Updates', title: 'Updates', subtitle: 'Core releases and the phone apps.' },
     { id: 'system', label: 'System', title: 'System', subtitle: 'Ubuntu release, package updates and reboot state.' },
     { id: 'maintenance', label: 'Maintenance', title: 'Maintenance', subtitle: 'Caches, health thresholds and the danger zone.' },
     { id: 'users', label: 'Users', title: 'User Accounts', subtitle: 'Create accounts, roles and passwords. Each account is a Linux user.' },
@@ -42,7 +42,6 @@ const SECTIONS = [
 // app-scoped URL (`/api/app/download?app=…`), so no host path is baked in.
 const APK_APPS = [
     { id: 'moments', label: 'EthOS Photos', icon: 'phone', linkTestId: 'apk-link-moments' },
-    { id: 'music', label: 'EthOS Music', icon: 'music', linkTestId: 'apk-link-music' },
     { id: 'video', label: 'EthOS Video', icon: 'video', linkTestId: 'apk-link-video' },
 ];
 
@@ -260,6 +259,23 @@ async function renderUpdates(isCurrent) {
                     <thead><tr><th>App</th><th>Version</th><th class="actions">Download</th></tr></thead>
                     <tbody id="settings-apk-rows"><tr><td colspan="3" class="ui-muted">Loading…</td></tr></tbody>
                 </table>
+            </div>
+        </section>
+
+        <section class="ui-panel">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('music', 13)} Music on your phone</h2>
+                    <p class="ui-muted">Music has no APK any more — the phone player is an installable web app
+                        with the same account, playlists and offline downloads.</p>
+                </div>
+                <span class="ui-tag is-ok">PWA</span>
+            </div>
+            <div class="ui-panel-body ui-row">
+                <a class="ui-btn small primary" data-testid="music-pwa-link" href="/music"
+                   target="_blank" rel="noopener">${uiIcon('music', 12)} Open /music</a>
+                <span class="ui-muted">Install it from the browser menu (“Add to Home screen”).
+                    Every track in a playlist downloads to the device (needs HTTPS).</span>
             </div>
         </section>`;
 
@@ -1474,8 +1490,9 @@ async function _fillApiKey(isCurrent) {
     if (!isCurrent()) return;
 
     card.innerHTML = `
-        <p class="ui-muted">Use this key in the EthOS Photos or EthOS Music Android app
-            (Settings → Server → API key). It belongs to your account.</p>
+        <p class="ui-muted">Use this key in the EthOS Photos Android app
+            (Settings → Server → API key). The Music phone app at <code class="ui-code">/music</code>
+            signs in with your normal NAS login, so it needs no key.</p>
         <div class="ui-row ui-panel-body">
             <input class="ui-input mono" readonly aria-label="API key" value="${escapeAttr(data.api_key || '')}">
         </div>

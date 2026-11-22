@@ -14,7 +14,8 @@ both clients.
 |---|---|---|
 | Normalisation + ranking | `backend/services/music_search.py` | Polish folding, `Artist - Title` parsing, noise stripping, scoring, de-duplication, catalog matching, fuzzy suggestions |
 | HTTP | `backend/routers/music.py` (`_search_cached`, `_search_tracks`, `_search_all`, `search_suggest`) | yt-dlp cache (10 min, LRU 200, single-flight), pagination, one response with all sections |
-| Web | `frontend/static/apps/music.js` (`viewSearch`) | debounce 300 ms, history, suggestions, filter chips, “Więcej wyników” |
+| Web (desktop) | `ethos-packages/ethos-music/frontend/app.js` (`viewSearch`) | debounce 300 ms, history, suggestions, filter chips, “Więcej wyników” |
+| Phone | `frontend/static/music/music.js` (`/music` PWA) | the same unified response, local history (12) |
 | Android | `data/SearchRepository.kt`, `data/SearchNormalizer.kt`, `ui/screens/SearchScreen.kt` | 300 ms debounce, cancellable HTTP, local suggestions, LRU cache, history |
 
 `SearchNormalizer.fold()` (Kotlin) and `music_search.fold()` (Python) must stay

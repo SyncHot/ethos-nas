@@ -1535,21 +1535,22 @@ def _parse_feed(xml: str, max_episodes: int) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-def _validate_feed_url(url: str) -> str:
-    """Validate a user-supplied feed URL before the NAS fetches it.
+def _validate_public_url(url: str, *, kind: str = "RSS") -> str:
+    """Validate a user-supplied URL before the NAS fetches it.
 
-    ``/podcast-feed?url=`` makes the server perform an HTTP GET, so an
-    authenticated client could otherwise probe the LAN or localhost (SSRF).
-    Only http(s) URLs whose host resolves exclusively to public addresses pass.
+    ``/podcast-feed?url=`` and ``/episode-audio?url=`` make the server perform
+    an HTTP GET, so an authenticated client could otherwise probe the LAN or
+    localhost (SSRF). Only http(s) URLs whose host resolves exclusively to
+    public addresses pass.
     """
     raw = (url or "").strip()
     if not raw.startswith(("http://", "https://")):
-        raise HTTPException(status_code=422, detail="Nieprawidłowy adres RSS")
+        raise HTTPException(status_code=422, detail=f"Nieprawidłowy adres {kind}")
 
     parsed = urllib.parse.urlparse(raw)
     host = parsed.hostname
     if not host:
-        raise HTTPException(status_code=422, detail="Adres RSS bez nazwy hosta")
+        raise HTTPException(status_code=422, detail=f"Adres {kind} bez nazwy hosta")
     try:
         infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80),
                                    proto=socket.IPPROTO_TCP)
@@ -1559,12 +1560,17 @@ def _validate_feed_url(url: str) -> str:
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if not ip.is_global:
-            logger.warning("music: podcast-feed blocked non-public target %s (%s)", host, ip)
+            logger.warning("music: blocked non-public %s target %s (%s)", kind, host, ip)
             raise HTTPException(
                 status_code=422,
-                detail="Feed nie może wskazywać adresu w sieci lokalnej",
+                detail=f"{kind} nie może wskazywać adresu w sieci lokalnej",
             )
     return raw
+
+
+def _validate_feed_url(url: str) -> str:
+    """Backwards-compatible wrapper used by ``/podcast-feed``."""
+    return _validate_public_url(url, kind="Feed")
 
 
 def _fetch_feed_sync(url: str, max_episodes: int) -> dict:
@@ -1603,3 +1609,105 @@ async def podcast_feed(url: str, limit: int = 25):
         raise HTTPException(status_code=502, detail=f"Nie udało się pobrać feeda: {e}")
     _feed_cache[url] = (now, result)
     return {**result, "cached": False}
+
+
+# ── Podcast episode audio (offline downloads) ────────────────────────
+# Episode enclosures live on third-party CDNs, usually without CORS headers, so
+# a browser cannot read them into a Blob and store them for offline playback.
+# This proxy lets the /music PWA download an episode the same way it downloads
+# a track from /stream. Nothing is written to disk: the bytes are relayed.
+#
+# The URL comes from the client, so the SSRF guard is mandatory — every URL and
+# every redirect hop must resolve to a public address. Redirects are followed
+# manually for exactly this reason (urllib would follow them blindly).
+
+EPISODE_AUDIO_MAX_BYTES = 400 * 1024 * 1024  # hard stop, ~400 MiB
+EPISODE_AUDIO_TIMEOUT = 60
+EPISODE_REDIRECTS = 4
+_AUDIO_TYPES = ("audio/", "video/", "application/octet-stream", "binary/octet-stream")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Turn a redirect into an HTTPError so the caller can validate the target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+def _open_public_media(url: str, range_spec: Optional[str]):
+    """Open an external media URL, validating the host of every redirect hop."""
+    current = _validate_public_url(url, kind="Adres odcinka")
+    opener = urllib.request.build_opener(_NoRedirect)
+    for _ in range(EPISODE_REDIRECTS):
+        headers = {"User-Agent": "Mozilla/5.0 (EthOS NAS episode proxy)"}
+        if range_spec:
+            headers["Range"] = range_spec
+        request = urllib.request.Request(current, headers=headers)
+        try:
+            return opener.open(request, timeout=EPISODE_AUDIO_TIMEOUT)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (301, 302, 303, 307, 308):
+                raise
+            target = urllib.parse.urljoin(current, exc.headers.get("Location") or "")
+            exc.close()
+            if not target:
+                raise HTTPException(status_code=502, detail="Przekierowanie bez adresu docelowego")
+            current = _validate_public_url(target, kind="Adres odcinka")
+    raise HTTPException(status_code=502, detail="Zbyt wiele przekierowań odcinka")
+
+
+@router.get("/episode-audio")
+async def episode_audio(request: Request, url: str = Query(...)):
+    """Relay a podcast enclosure so the PWA can store it for offline playback.
+
+    Range requests are forwarded unchanged (``<audio>`` and the downloader use
+    them), the payload size is capped and only audio-ish content types pass —
+    an HTML error page from a CDN must not be cached as an episode.
+    """
+    range_header = request.headers.get("range", "")
+    try:
+        upstream = await asyncio.to_thread(_open_public_media, url, range_header or None)
+    except HTTPException:
+        raise
+    except urllib.error.HTTPError as exc:
+        logger.warning("music: episode audio rejected (HTTP %s): %s", exc.code, url[:200])
+        raise HTTPException(status_code=502, detail=f"Nie udało się pobrać odcinka (HTTP {exc.code})") from exc
+    except Exception as exc:
+        logger.warning("music: episode audio failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"Nie udało się pobrać odcinka: {exc}") from exc
+
+    ctype = (upstream.headers.get("Content-Type") or "application/octet-stream").split(";")[0].strip().lower()
+    if not ctype.startswith(_AUDIO_TYPES):
+        upstream.close()
+        logger.warning("music: episode audio has non-audio type %r: %s", ctype, url[:200])
+        raise HTTPException(status_code=502, detail="Adres nie zwrócił pliku audio")
+
+    status = getattr(upstream, "status", 200)
+    headers = {"Content-Type": ctype, "Accept-Ranges": "bytes", "Cache-Control": "no-store"}
+    for header in ("Content-Length", "Content-Range"):
+        value = upstream.headers.get(header)
+        if value:
+            headers[header] = value
+
+    async def _pipe():
+        sent = 0
+        try:
+            while True:
+                chunk = await asyncio.to_thread(upstream.read, 65536)
+                if not chunk:
+                    break
+                sent += len(chunk)
+                if sent > EPISODE_AUDIO_MAX_BYTES:
+                    logger.warning("music: episode audio truncated at %d bytes: %s",
+                                   sent, url[:200])
+                    break
+                yield chunk
+        except Exception as exc:  # noqa: BLE001 — a dropped CDN connection ends the body
+            logger.warning("music: episode audio interrupted after %d bytes: %s", sent, exc)
+        finally:
+            try:
+                upstream.close()
+            except Exception:
+                pass  # best-effort cleanup
+
+    return StreamingResponse(_pipe(), status_code=status, headers=headers)

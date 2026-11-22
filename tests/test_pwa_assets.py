@@ -12,6 +12,7 @@ serve stale modules cache-first).
 """
 
 import json
+import re
 import struct
 import sys
 from pathlib import Path
@@ -196,7 +197,76 @@ def main() -> int:
           "MEDIA_CACHE" in sw and "new Set([CACHE_VERSION, MEDIA_CACHE])" in sw)
     check("worker serves offline media with Range",
           "'/__media/'" in sw and "Partial Content" in sw and "Content-Range" in sw)
-    check("videos shell cache version was bumped", "ethos-shell-v6" in sw)
+    shell_versions = [int(n) for n in re.findall(r"ethos-shell-v(\d+)", sw)]
+    check("videos shell cache version was bumped",
+          bool(shell_versions) and max(shell_versions) >= 6, str(shell_versions))
+
+    # ── Music PWA (`/music`) — the phone client that replaced the APK ───────
+    music_manifest_path = FRONTEND / "manifest-music.webmanifest"
+    check("music manifest exists", music_manifest_path.is_file())
+    try:
+        music_manifest = json.loads(music_manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        check("music manifest is valid JSON", False, str(exc))
+        music_manifest = {}
+    for key in ("name", "short_name", "id", "start_url", "scope", "display",
+                "theme_color", "background_color"):
+        check(f"music manifest has {key}", bool(music_manifest.get(key)),
+              str(music_manifest.get(key)))
+    check("music manifest is scoped to /music",
+          music_manifest.get("id") == "/music"
+          and music_manifest.get("start_url") == "/music"
+          and music_manifest.get("scope") == "/music", str(music_manifest.get("scope")))
+    check("music manifest ships Search / Downloads shortcuts",
+          {s.get("url") for s in music_manifest.get("shortcuts") or []}
+          >= {"/music?view=search", "/music?view=downloads"})
+    music_icons = music_manifest.get("icons") or []
+    check("music manifest ships 192 and 512 icons",
+          {"192x192", "512x512"} <= {i.get("sizes") for i in music_icons},
+          str({i.get("sizes") for i in music_icons}))
+    check("music manifest ships a maskable icon",
+          any(i.get("purpose") == "maskable" for i in music_icons), str(music_icons))
+    for icon in music_icons:
+        src = icon.get("src") or ""
+        dims = png_size(FRONTEND / src.lstrip("/"))
+        check(f"music icon {src} is a PNG of the declared size",
+              dims is not None and f"{dims[0]}x{dims[1]}" == icon.get("sizes"),
+              f"{dims} vs {icon.get('sizes')}")
+    music_touch = FRONTEND / "static" / "icons" / "music-apple-touch-icon.png"
+    check("music apple-touch-icon is 180×180", png_size(music_touch) == (180, 180),
+          str(png_size(music_touch)))
+
+    music_html = (FRONTEND / "music.html").read_text()
+    check("music page links its manifest",
+          'rel="manifest" href="/manifest-music.webmanifest"' in music_html)
+    check("music page loads the shared tokens + music styles",
+          "/static/css/tokens.css" in music_html and "/static/css/music.css" in music_html)
+    check("music page loads its module", "/static/music/music.js" in music_html)
+    check("music page has a toast host, mini player and full player",
+          'id="toastContainer"' in music_html and 'id="mu-mini"' in music_html
+          and 'id="mu-player"' in music_html)
+    check("music page loads hls.js for live radio",
+          "/static/vendor/hls.min.js" in music_html)
+
+    check("core serves the music shell", "serve_music" in main_py and "music.html" in main_py)
+    check("music shell + manifest are public paths",
+          '"/music",' in main_py and '"/music/",' in main_py
+          and '"/manifest-music.webmanifest",' in main_py)
+    check("worker precaches the music shell",
+          "'/music'," in sw and "/static/music/music.js" in sw
+          and "/static/css/music.css" in sw and "/static/music/offline.js" in sw)
+    check("worker falls back to the music shell when offline",
+          "(path === '/music' || path === '/music/')" in sw)
+    check("music shell cache version was bumped", max(shell_versions or [0]) >= 7, str(shell_versions))
+
+    updates_py = (ROOT / "backend" / "routers" / "updates.py").read_text()
+    check("the Music APK channel is retired",
+          "RETIRED_APPS" in updates_py and 'music' in updates_py
+          and "_retired(app)" in updates_py)
+    settings_js = (FRONTEND / "static" / "apps" / "settings.js").read_text()
+    check("Settings no longer offers a Music APK",
+          "apk-link-music" not in settings_js and "music-pwa-link" in settings_js)
+    check("Settings links the /music phone app", 'href="/music"' in settings_js)
 
     failed = [r for r in _results if not r[1]]
     print(f"\n{len(_results) - len(failed)}/{len(_results)} checks passed")

@@ -1,0 +1,48 @@
+{
+  "name": "EthOS Music",
+  "short_name": "Music",
+  "description": "Your NAS music on the phone: search, playlists, podcasts, radio and offline downloads.",
+  "id": "/music",
+  "start_url": "/music",
+  "scope": "/music",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#121212",
+  "theme_color": "#121212",
+  "categories": ["music", "entertainment"],
+  "icons": [
+    {
+      "src": "/static/icons/music-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/music-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/music-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Search",
+      "short_name": "Search",
+      "url": "/music?view=search",
+      "icons": [{ "src": "/static/icons/music-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Downloads",
+      "short_name": "Downloads",
+      "url": "/music?view=downloads",
+      "icons": [{ "src": "/static/icons/music-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

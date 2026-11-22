@@ -11,6 +11,34 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.17.0] - 2026-11-22
+
+### Added
+
+- **Music on your phone (`/music`).** The EthOS Music app is now an installable web app:
+  one search for tracks, podcasts, radio, the NAS library and playlists; the full
+  player with queue, shuffle, repeat, sleep timer and lock-screen controls; radio with
+  HLS; podcasts with resume; likes, playlists and shared playlists. Pin it from the
+  browser and it opens like a native app.
+- **Offline music.** Every track in a playlist is downloaded to the phone automatically
+  and deleted from it when you remove the track from all playlists; podcast episodes
+  download on demand. The Downloads view shows storage use and can pause, retry or
+  delete a download.
+- **Podcast audio proxy** (`/api/music/episode-audio`) so episodes hosted outside the
+  NAS can be stored on the phone. Only public hosts pass, every redirect is re-checked,
+  the payload is capped and nothing is written to disk.
+
+### Changed
+
+- The EthOS Music Android APK is **retired**. Settings → Updates now links to `/music`
+  instead of offering the APK, and the phone app signs in with the normal NAS account
+  (no API key).
+
+### Removed
+
+- The Music APK download row and its self-update channel; `/api/app/version?app=music`
+  answers 404 with a pointer at the web app. Photos and Video APKs are unchanged.
+
 ## [2.16.0] - 2026-11-22
 
 ### Added

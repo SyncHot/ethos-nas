@@ -1,8 +1,9 @@
 """EthOS NAS — App auto-update endpoint (self-hosted, no Play Store)
 
-Serves version info for the Android apps (Photos, Music and Video). Each APK is
-built on this machine and a sidecar manifest (``<apk>.update.json``) is
-written next to it by the Gradle build:
+Serves version info for the Android apps (Photos and Video; **Music is
+retired** — its phone client is the core ``/music`` PWA, see ``RETIRED_APPS``).
+Each APK is built on this machine and a sidecar manifest
+(``<apk>.update.json``) is written next to it by the Gradle build:
 
     {
       "app": "moments",
@@ -37,6 +38,21 @@ logger = logging.getLogger("ethos-nas.routers.updates")
 router = APIRouter()
 
 APK_DEFAULTS = settings.APK_DEFAULTS
+
+# Retired APK channels. ``music`` now ships as the installable ``/music`` PWA,
+# so the build pipeline stops publishing it: old installs still poll the public
+# endpoint and must be told *why* instead of silently receiving nothing, and a
+# stale APK found in a developer checkout must never be served again.
+RETIRED_APPS = {
+    "music": "Music now runs as the /music web app — open it in the phone browser and install it",
+}
+
+
+def _retired(app: str) -> None:
+    """404 for a retired channel, with a pointer at its replacement."""
+    detail = RETIRED_APPS.get(app)
+    if detail:
+        raise HTTPException(status_code=404, detail=detail)
 
 
 def _manifest_version_code(apk: Path) -> int:
@@ -80,6 +96,7 @@ async def get_app_version(
     app: str = Query(default="moments", pattern="^(moments|music|video)$"),
 ) -> dict:
     """Return the latest APK version info for ``app`` (public endpoint)."""
+    _retired(app)
     apk = _apk_path(app)
     if not apk.is_file():
         # Never leak the deploy layout to an unauthenticated caller.
@@ -120,6 +137,7 @@ async def download_apk(
     app: str = Query(default="moments", pattern="^(moments|music|video)$"),
 ) -> FileResponse:
     """Serve the current APK for ``app`` (authenticated, no path exposure)."""
+    _retired(app)
     apk = _apk_path(app)
     if not apk.is_file():
         logger.warning("APK for %r not found at %s", app, apk)

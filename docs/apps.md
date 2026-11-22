@@ -11,6 +11,9 @@ Status: written 2026-11-11 (TODO.md P6-04).
 > Docker Manager, Cleaner, Samba Shares, Kanban, Download Manager and Books. Their UI lives in the
 > package; the routers and services described below stay in the core. The Editor stylesheet is still
 > part of `frontend/index.html` until TODO.md P3-10 lands.
+>
+> The Music **phone** client is the core `/music` PWA (`docs/music-pwa.md`); the EthOS Music Android
+> APK is retired and `/api/app/version?app=music` answers 404.
 
 The core windows share one shell (`docs/app-ui.md`) — 218 px rail, panels, summary tiles, 11 px tables
 and one status line — matching the native package windows.

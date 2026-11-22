@@ -23,7 +23,7 @@
  * activate.
  */
 
-const CACHE_VERSION = 'ethos-shell-v6';
+const CACHE_VERSION = 'ethos-shell-v7';
 const MEDIA_CACHE = 'ethos-media-v1';
 const MEDIA_PREFIX = '/__media/';
 const SHELL_URLS = [
@@ -56,6 +56,36 @@ const SHELL_URLS = [
     '/static/icons/videos-512.png',
     '/static/icons/videos-maskable-512.png',
     '/static/icons/videos-apple-touch-icon.png',
+    // Music PWA (the phone player; the APK channel is retired). Its own module
+    // graph below /static/music/ is cached on first visit by the fetch handler.
+    '/music',
+    '/music/',
+    '/manifest-music.webmanifest',
+    '/static/css/music.css',
+    '/static/music/api.js',
+    '/static/music/offline.js',
+    '/static/music/player.js',
+    '/static/music/music.js',
+    // Core modules the standalone music page imports. The desktop shell is
+    // never loaded there, so without these an offline start serves the page but
+    // no script runs (the module graph would only be cached after a controlled
+    // visit, and the first visit happens before the worker takes over).
+    '/static/core/api.js',
+    '/static/core/logger.js',
+    '/static/core/error-reporter.js',
+    '/static/core/notification-center.js',
+    '/static/core/progress.js',
+    '/static/core/utils.js',
+    '/static/core/icons.js',
+    '/static/core/poller.js',
+    '/static/core/ws.js',
+    '/static/core/window-manager.js',
+    '/static/core/modal.js',
+    '/static/core/app-icons.js',
+    '/static/icons/music-192.png',
+    '/static/icons/music-512.png',
+    '/static/icons/music-maskable-512.png',
+    '/static/icons/music-apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -118,7 +148,8 @@ self.addEventListener('fetch', (event) => {
                 const path = url.pathname;
                 const fallback = (path === '/notes' || path === '/notes/') ? path
                     : (path === '/videos' || path === '/videos/') ? path
-                        : '/';
+                        : (path === '/music' || path === '/music/') ? path
+                            : '/';
                 const shell = await caches.match(fallback, { ignoreSearch: true });
                 if (shell) return shell;
             }

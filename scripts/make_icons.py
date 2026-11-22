@@ -38,6 +38,11 @@ VIDEO_BOTTOM = (11, 13, 18)   # near-black
 VIDEO_PLAY = (242, 178, 62)   # gold
 VIDEO_RING = (242, 178, 62)
 
+# Music PWA palette (matches frontend/manifest-music.webmanifest).
+MUSIC_TOP = (20, 61, 46)      # deep green
+MUSIC_BOTTOM = (8, 13, 11)    # near-black
+MUSIC_NOTE = (29, 185, 84)    # the player's green accent
+
 
 def _blend(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
     return (round(a[0] + (b[0] - a[0]) * t),
@@ -208,6 +213,42 @@ def render_video(size: int, *, rounded_ratio: float = 0.22,
     return bytes(rows)
 
 
+def render_music(size: int, *, rounded_ratio: float = 0.22,
+                 padding_ratio: float = 0.0) -> bytes:
+    """Return RGBA pixel rows for the Music PWA icon (green eighth notes)."""
+    radius = size * rounded_ratio
+    inset = size * padding_ratio
+    inner = size - 2 * inset
+    head_r = inner * 0.078
+    stem_w = inner * 0.032
+    beam_w = inner * 0.085
+    h1 = (inset + inner * 0.35, inset + inner * 0.74)
+    h2 = (inset + inner * 0.66, inset + inner * 0.66)
+    top1 = inset + inner * 0.27
+    top2 = inset + inner * 0.19
+    x1 = h1[0] + head_r * 0.72
+    x2 = h2[0] + head_r * 0.72
+    rows = bytearray()
+    for y in range(size):
+        rows.append(0)  # PNG filter type 0
+        for x in range(size):
+            px, py = x + 0.5, y + 0.5
+            if not _rounded(px, py, size, radius):
+                rows.extend((0, 0, 0, 0))
+                continue
+            t = y / max(1, size - 1)
+            r, g, b = _blend(MUSIC_TOP, MUSIC_BOTTOM, t)
+            in_head = (((px - h1[0]) ** 2 + (py - h1[1]) ** 2 <= head_r ** 2)
+                       or ((px - h2[0]) ** 2 + (py - h2[1]) ** 2 <= head_r ** 2))
+            in_stem1 = abs(px - x1) <= stem_w / 2 and top1 <= py <= h1[1]
+            in_stem2 = abs(px - x2) <= stem_w / 2 and top2 <= py <= h2[1]
+            in_beam = (_segment_distance(px, py, x1, top1, x2, top2) <= beam_w / 2)
+            if in_head or in_stem1 or in_stem2 or in_beam:
+                r, g, b = MUSIC_NOTE
+            rows.extend((r, g, b, 255))
+    return bytes(rows)
+
+
 def write_png(path: Path, size: int, pixels: bytes) -> None:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (struct.pack(">I", len(data)) + kind + data
@@ -253,6 +294,16 @@ def main() -> None:
     # Maskable: keep the glyph inside the 80 % safe zone.
     write_png(OUT / "videos-maskable-512.png", 512,
               render_video(512, rounded_ratio=0.0, padding_ratio=0.10))
+
+    print("Writing Music PWA icons to", OUT)
+    for size in (192, 512):
+        write_png(OUT / f"music-{size}.png", size, render_music(size))
+    # iOS home screen: no transparency, corners are added by the OS.
+    write_png(OUT / "music-apple-touch-icon.png", 180,
+              render_music(180, rounded_ratio=0.0))
+    # Maskable: keep the note inside the 80 % safe zone.
+    write_png(OUT / "music-maskable-512.png", 512,
+              render_music(512, rounded_ratio=0.0, padding_ratio=0.10))
 
 
 if __name__ == "__main__":

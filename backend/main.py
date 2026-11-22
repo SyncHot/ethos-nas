@@ -405,6 +405,12 @@ async def auth_middleware(request: Request, call_next):
         "/videos",
         "/videos/",
         "/manifest-videos.webmanifest",
+        # Music PWA (the phone player; replaces the retired Music APK). Same
+        # rules: the page and manifest are fetched before sign-in, while every
+        # /api/music/* call still requires the JWT.
+        "/music",
+        "/music/",
+        "/manifest-music.webmanifest",
     }
     if path in public_paths:
         return await call_next(request)
@@ -617,6 +623,26 @@ async def serve_videos_slash() -> FileResponse:
 @app.get("/manifest-videos.webmanifest", include_in_schema=False)
 async def videos_manifest() -> FileResponse:
     return FileResponse(str(FRONTEND_DIR / "manifest-videos.webmanifest"),
+                        media_type="application/manifest+json")
+
+
+# Music PWA: the phone counterpart of the Music app package and the replacement
+# for the EthOS Music Android APK. A separate HTML entry (like /notes and
+# /videos) because the desktop shell is unusable on a phone and the page has to
+# load before the user has a token.
+@app.get("/music", include_in_schema=False)
+async def serve_music() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "music.html"), media_type="text/html")
+
+
+@app.get("/music/", include_in_schema=False)
+async def serve_music_slash() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "music.html"), media_type="text/html")
+
+
+@app.get("/manifest-music.webmanifest", include_in_schema=False)
+async def music_manifest() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "manifest-music.webmanifest"),
                         media_type="application/manifest+json")
 
 

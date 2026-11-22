@@ -25,9 +25,10 @@ serves the API (`/api/*`), WebSockets and the SPA.
 - State: JSON under `settings.DATA_DIR` via `services/json_store.py`.
 - Frontend: `index.html` (Tailwind CDN + CSS variables) · `static/app.js` (bootstrap/wiring) ·
   `static/apps/<app>.js` (app code) · `static/core/` (`window-manager`, `api`, `ws`, `registry`,
-  `upload-engine`, `modal`, `notification-center`, `package-ribbon`, `utils`) · `static/notes/` is
-  the standalone `/notes` PWA module · `static/css/{tokens,ribbon-host}.css` hold shared tokens and
-  the right-edge ribbon layer. New app code never goes in `app.js`.
+  `upload-engine`, `modal`, `notification-center`, `package-ribbon`, `utils`) ·
+  `static/{notes,videos,music}/` are the standalone PWA modules (`/notes`, `/videos`, `/music`) ·
+  `static/css/{tokens,ribbon-host}.css` hold shared tokens and the right-edge ribbon layer. New app
+  code never goes in `app.js`.
 - Auth: PAM → JWT → `Authorization: Bearer` (also cookie, `?token=` for media and WebSockets).
 - API changes follow `docs/api-conventions.md`.
 - Docker compose projects must be named `ethos-<name>` so labels in `.env` match.
@@ -108,11 +109,13 @@ build its own fixed right-edge host. `ctx.setDesktopGutter(44)` shifts the deskt
 (`--desktop-right-gutter`). Spec `docs/sticky-notes.md`, `docs/packages.md`; guard
 `tests/test_package_ribbon.py`.
 
-**PWA.** The desktop shell and the Sticky Notes `/notes` app share `frontend/sw.js`.
-`/manifest.webmanifest`, `/manifest-notes.webmanifest`, `/sw.js`, `/notes` and `/notes/` are
-**exact** public paths; the worker is network-first, never caches `/api/*`, and owns
-`push`/`notificationclick` for package reminders. Notes API calls still require a JWT. Spec
-`docs/notes-pwa.md`; guard `tests/test_pwa_assets.py`, `tests/test_notes_pwa.py`.
+**PWA.** The desktop shell and the three standalone phone apps — `/notes`, `/videos`, `/music` —
+share `frontend/sw.js`. `/manifest*.webmanifest`, `/sw.js`, `/notes`, `/videos`, `/music` (each also
+with a trailing slash) are **exact** public paths; the worker is network-first, never caches `/api/*`,
+owns `push`/`notificationclick` for package reminders and precaches each standalone page's whole
+module graph (core modules included) so an installed app can open offline. API calls still require a
+JWT. Specs `docs/notes-pwa.md`, `docs/videos-pwa.md`, `docs/music-pwa.md`; guard
+`tests/test_pwa_assets.py`, `tests/test_notes_pwa.py`, `tests/test_music_pwa.py`.
 
 **Updates.** Core releases ship a **signed** `releases/index.json` + `.sig`, produced only by
 `scripts/ethos-release publish` (offline Ed25519 key at `~/.ethos-pack/ethos-packages/repo.key`, public
@@ -156,10 +159,13 @@ the index, never commit the key, never let the API pass the helper a URL/ref/com
 - **Backlog:** `TODO.md` is the only backlog. Read only the section you need; full text of completed
   items is in the private archive repo (`git log private-archive/master`), not in this checkout.
 - **Features:** create `docs/<feature>.md` with plan + file map + status checkboxes, update as work lands.
-- **Android:** any change in `ethos-moments` / `ethos-music` / `ethos-video` requires bumping
+- **Android:** any change in `ethos-moments` / `ethos-video` requires bumping
   `versionCode`, running `./build.sh`, verifying `/api/app/version?app=<app>` and mirroring the feature
-  on the web — use `release-android-apk`.
-- **Parity:** every user-facing Android feature must exist in the matching `frontend/static/apps/*.js`;
+  on the web — use `release-android-apk`. `ethos-music` is **retired**: the phone client is the
+  `/music` PWA, and `backend/routers/updates.py` answers 404 for `app=music` (spec
+  `docs/music-pwa.md`). Never resurrect the Music APK.
+- **Parity:** every user-facing feature of a phone client must exist in its counterpart — the
+  Android APKs (`ethos-moments`, `ethos-video`) and the core PWAs (`/notes`, `/videos`, `/music`);
   report the parity check.
 - **Done:** `verify-changes` green, server up on :9000 (401 health check), report changed files.
 - **Scope:** small focused changes; no unrelated refactors; ask when ambiguous.
