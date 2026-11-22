@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T07:27:19+00:00",
+  "generated_at": "2026-11-22T08:15:52+00:00",
   "latest": {
-    "version": "2.11.0",
-    "git_sha": "f441c3c",
-    "git_sha_full": "f441c3cfeb305fc6fdcb1b0d4aaa06c5f0c74a97",
-    "build": 90,
-    "released_at": "2026-11-22T07:27:19+00:00",
-    "notes": "EthOS OS: A/B image updates — check, download, install to the standby slot, reboot or automatic rollback"
+    "version": "2.12.0",
+    "git_sha": "6d0e8eb",
+    "git_sha_full": "6d0e8eb443031108d61adbc33461a2c6fc4b686c",
+    "build": 92,
+    "released_at": "2026-11-22T08:15:52+00:00",
+    "notes": "Video Station: HLS playback with VA-API hardware decode/encode, cinema UI 2.0 and mobile parity."
   },
   "releases": [
+    {
+      "version": "2.12.0",
+      "git_sha": "6d0e8eb",
+      "git_sha_full": "6d0e8eb443031108d61adbc33461a2c6fc4b686c",
+      "build": 92,
+      "released_at": "2026-11-22T08:15:52+00:00",
+      "notes": "Video Station: HLS playback with VA-API hardware decode/encode, cinema UI 2.0 and mobile parity."
+    },
     {
       "version": "2.11.0",
       "git_sha": "f441c3c",
@@ -201,14 +209,6 @@
       "build": 36,
       "released_at": "2026-11-17T18:48:44+00:00",
       "notes": "Downloads: auto-extract finished archives, manual Extract for a task or package, delete-after-extract setting; updater survives its own restart"
-    },
-    {
-      "version": "2.3.8",
-      "git_sha": "2fe828e",
-      "git_sha_full": "2fe828e485e88cf3ac300268513de7b0f808e90f",
-      "build": 34,
-      "released_at": "2026-11-17T18:37:34+00:00",
-      "notes": "Download Manager: transient failures retry with exponential backoff (permanent errors do not), Retry failed bulk action, and duplicate/skip/overwrite handling for re-added URLs and existing files."
     }
   ]
 }
