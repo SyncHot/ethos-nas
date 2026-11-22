@@ -118,8 +118,10 @@ Polish, while `ethos-books`, the shell and the other 23 packages are English. A 
 ### ☑ P1-04 · Stable test hooks on the native windows
 The rule in `package-ui/SKILL.md` accepts a `data-testid` **or** a stable action attribute — the
 first version of this sweep only counted `data-testid` and over-reported. Measuring properly:
-`backup-manager` 8/8, `ethos-antivirus` 19/22, `vmm` 13/13 and `domains`/`download-manager`/… all
-hooked, while **`ethos-music` had 0/6** (plain `class` only).
+`backup-manager` 8/8, `ethos-antivirus` 19/22 rendered (all 19 source buttons carry a `data-*` —
+several are valueless attributes such as `data-scan-custom`, which the checker initially missed),
+`vmm` 13/13 and `domains`/`download-manager`/… all hooked, while **`ethos-music` had 0/6** (plain
+`class` only).
 - **Fix.** `ethos-music` 1.0.3 adds `em-nav-N`, `em-mini-*` and `em-fp-*` hooks; the sweep and
   `ethos-qa` now share the same "hook" definition and both report zero findings. AntiVirus's three
   unhooked buttons are covered by its `data-scan`/`data-tab` attributes.

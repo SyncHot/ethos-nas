@@ -261,10 +261,11 @@ def check_package(pkg_dir: Path, manifest: dict, base_url: str, version: tuple[i
         row["onclick"] = len(re.findall(r"""\sonclick\s*=\s*["']""", source))
         row["data_testids"] = source.count("data-testid")
         # The checklist accepts "a data-testid **or** a stable action attribute";
-        # count interactive elements that carry any data-* hook at all.
+        # count interactive elements that carry any data-* hook at all. A bare
+        # valueless attribute (`<button data-browse-path>`) is a hook too.
         buttons = re.findall(r"<(?:button|a)\b[^>]*>", source)
         hooked = [markup for markup in buttons
-                  if re.search(r"\sdata-(?:testid|[a-z][a-z0-9-]*)=", markup)]
+                  if re.search(r"\sdata-(?:testid|[a-z][a-z0-9-]*)(?:\s*=|\s|/?>)", markup)]
         row["hooks"] = f"{len(hooked)}/{len(buttons)}"
         if buttons and not hooked:
             report.add("S15", "warn", pkg_id,
