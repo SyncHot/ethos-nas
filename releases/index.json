@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T08:30:15+00:00",
+  "generated_at": "2026-11-22T08:43:47+00:00",
   "latest": {
-    "version": "2.12.1",
-    "git_sha": "3ff0647",
-    "git_sha_full": "3ff0647ff14dddd71de25fde7c01858c1e43b31d",
-    "build": 95,
-    "released_at": "2026-11-22T08:30:15+00:00",
-    "notes": "Download Manager: Resume repairs tasks queued under an old, unwritable download folder"
+    "version": "2.12.2",
+    "git_sha": "4825854",
+    "git_sha_full": "4825854a093057197cadc62d06c31c319ceff48e",
+    "build": 97,
+    "released_at": "2026-11-22T08:43:47+00:00",
+    "notes": "Packages: cleaner catalog cards, pill filters and working action buttons; uninstall now completes cleanly."
   },
   "releases": [
+    {
+      "version": "2.12.2",
+      "git_sha": "4825854",
+      "git_sha_full": "4825854a093057197cadc62d06c31c319ceff48e",
+      "build": 97,
+      "released_at": "2026-11-22T08:43:47+00:00",
+      "notes": "Packages: cleaner catalog cards, pill filters and working action buttons; uninstall now completes cleanly."
+    },
     {
       "version": "2.12.1",
       "git_sha": "3ff0647",
@@ -201,14 +209,6 @@
       "build": 40,
       "released_at": "2026-11-17T20:22:06+00:00",
       "notes": "Downloads: per-part Skip/Unskip so a broken volume no longer blocks a package, skipped parts are excluded from extraction and reported as pausedDL to Radarr/Sonarr"
-    },
-    {
-      "version": "2.3.10",
-      "git_sha": "8e391a2",
-      "git_sha_full": "8e391a28f999a262d973293b90d76cb6bf260c95",
-      "build": 38,
-      "released_at": "2026-11-17T20:16:26+00:00",
-      "notes": "Downloads: mirror/hoster failover — extra source URLs, per-source retry budget, cross-host resume reset, mirror indicator in the row"
     }
   ]
 }
