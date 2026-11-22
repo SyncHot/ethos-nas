@@ -157,6 +157,11 @@ the pump, the scanner thread + per-user path scope, and the task-state side of a
 inline: the `_pump` loop itself (it owns the worker pool and provider preflight), the RSS loop
 and the qBittorrent shim.
 
+**Progress (2.29.8).** `services/download_urls.py` extracted: premium-hoster detection, default
+file name, scheme validation, `is_blocked_ip` (SSRF guard) and `safe_join` (torrent-metadata
+escape + symlink guard), `unique_dest`; `tests/test_download_urls.py` (28 checks). Router keeps the
+HTTP error mapping and the admin exemption for private targets.
+
 ### ☐ P2-02 · Split `gallery.py` (~2.1k lines) — `XL`
 **Problem.** SQLite indexing, EXIF extraction, the AES-GCM private vault + PIN sessions, albums, facets,
 thumbnails and rescan logic share one file.

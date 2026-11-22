@@ -93,6 +93,7 @@ from backend.services import download_providers as _providers
 from backend.services import download_engine
 from backend.services import download_retry as _retry_policy
 from backend.services import download_schedule as _schedule_policy
+from backend.services import download_urls
 from backend.services import watch_folders
 
 DATA_DIR = settings.DATA_DIR
@@ -187,7 +188,9 @@ class SaveConfigRequest(BaseModel):
 
     model_config = {"extra": "allow"}
 
-    max_concurrent: int | None = None
+    # Typed loosely on purpose: the handler clamps numbers and answers 400 for a
+    # non-numeric value, so a string must reach it instead of failing at 422.
+    max_concurrent: int | str | None = None
     download_dir: str | None = Field(default=None, max_length=4096)
     auto_download_debrid: bool | None = None
     auto_retry: bool | None = None
@@ -205,31 +208,12 @@ class SaveConfigRequest(BaseModel):
     debrid: dict | None = None
 
 
-ALLOWED_SCHEMES = {"http", "https"}
-# File-hosting domains that need a premium account (or debrid) to download.
-# Links from these hosts are routed through the configured debrid provider;
-# any other http(s) URL is downloaded directly by the built-in engine.
-FILE_HOSTERS = {
-    "rapidgator.net", "mega.nz", "mediafire.com", "1fichier.com", "uptobox.com",
-    "uploadever.com", "filefactory.com", "depositfiles.com", "filer.net",
-    "gigapeta.com", "krakenfiles.com", "pixeldrain.com", "1024terabytes.com",
-    "turbobit.net", "nowvideo.sx", "doodstream.com", "vidhide.com", "ok.ru",
-    "dropbox.com", "we.tl", "sendgb.com", "filemoon.in", "files.to",
-}
+ALLOWED_SCHEMES = download_urls.ALLOWED_SCHEMES
 
 
 def _is_file_host(url: str) -> bool:
     """True when the URL's host is a known premium file hoster."""
-    try:
-        host = urllib.parse.urlparse(url).netloc.lower().split(":")[0]
-    except Exception:
-        return False
-    if not host:
-        return False
-    for h in FILE_HOSTERS:
-        if host == h or host.endswith("." + h):
-            return True
-    return False
+    return download_urls.is_file_host(url)
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -295,13 +279,7 @@ def _uid() -> str:
 
 
 def _name_from_url(url: str) -> str:
-    try:
-        path = urllib.parse.urlparse(url).path
-    except Exception:
-        path = url
-    base = os.path.basename(path.split("?")[0].split("#")[0])
-    base = (base or "").strip()
-    return base if base and base != "/" else "download.bin"
+    return download_urls.name_from_url(url)
 
 
 # Part-file helpers and the transfer engine live in
@@ -309,26 +287,14 @@ def _name_from_url(url: str) -> str:
 
 
 def _unique_dest(download_dir: str, name: str) -> str:
-    target = os.path.join(download_dir, name)
-    if not os.path.exists(target):
-        return target
-    stem, ext = os.path.splitext(name)
-    i = 1
-    while os.path.exists(os.path.join(download_dir, f"{stem} ({i}){ext}")):
-        i += 1
-    return os.path.join(download_dir, f"{stem} ({i}){ext}")
+    return download_urls.unique_dest(download_dir, name)
 
 
 def _validate_url(url: str) -> str:
-    url = (url or "").strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="URL is required")
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme.lower() not in ALLOWED_SCHEMES:
-        raise HTTPException(status_code=400, detail="Only http:// and https:// URLs are allowed")
-    if not parsed.netloc:
-        raise HTTPException(status_code=400, detail="URL must include a host")
-    return url
+    try:
+        return download_urls.validate_url(url, ALLOWED_SCHEMES)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _is_admin(request: Request | None = None) -> bool:
@@ -356,12 +322,7 @@ def _reject_private_url(url: str) -> None:
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"Cannot resolve download host: {exc}") from exc
     for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            continue
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+        if download_urls.is_blocked_ip(info[4][0]):
             raise HTTPException(
                 status_code=403,
                 detail="Downloads from private, loopback or link-local addresses require an admin account",
@@ -375,15 +336,7 @@ def _safe_join(base: str, *parts: str) -> str:
     attacker-controlled. `os.path.join(base, "../../etc/cron.d/x")` must never
     leave the task's content directory.
     """
-    base_abs = os.path.abspath(base)
-    dest = os.path.abspath(os.path.join(base_abs, *parts))
-    if dest != base_abs and not dest.startswith(base_abs + os.sep):
-        raise ValueError("unsafe path in torrent metadata")
-    real_base = os.path.realpath(base_abs)
-    real_parent = os.path.realpath(os.path.dirname(dest))
-    if real_parent != real_base and not real_parent.startswith(real_base + os.sep):
-        raise ValueError("unsafe path in torrent metadata (symlink escape)")
-    return dest
+    return download_urls.safe_join(base, *parts)
 
 
 # ── Debrid provider API layer (Real-Debrid / AllDebrid / TorBox) ─────────────

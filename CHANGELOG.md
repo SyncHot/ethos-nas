@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.29.9] - 2026-11-22
+
+### Changed
+
+- **Download URL/path guards moved into `services/download_urls.py`**: premium-hoster
+  detection, the default file name, scheme validation, the private-IP block list (SSRF guard),
+  `safe_join` (torrent-metadata and symlink escapes) and `unique_dest` are now pure,
+  unit-tested helpers (`tests/test_download_urls.py`). No behaviour or API change.
+
 ## [2.29.8] - 2026-11-22
 
 ### Fixed
