@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T11:09:47+00:00",
+  "generated_at": "2026-11-22T12:46:11+00:00",
   "latest": {
-    "version": "2.15.1",
-    "git_sha": "48f958d",
-    "git_sha_full": "48f958d767b7555bb7c7e79ea29470a4036f2100",
-    "build": 129,
-    "released_at": "2026-11-22T11:09:47+00:00",
-    "notes": "Videos: a clear HTTPS notice when a phone tries to download over a plain-http address"
+    "version": "2.16.0",
+    "git_sha": "d607b82",
+    "git_sha_full": "d607b821201b1e51e719fcaa3699563a9d9ce20d",
+    "build": 131,
+    "released_at": "2026-11-22T12:46:11+00:00",
+    "notes": "Videos: queue many downloads, choose Original/1080p/720p (default in Settings) and the NAS prepares them one by one — the queue survives a reload and Original copies the video instead of re-encoding it."
   },
   "releases": [
+    {
+      "version": "2.16.0",
+      "git_sha": "d607b82",
+      "git_sha_full": "d607b821201b1e51e719fcaa3699563a9d9ce20d",
+      "build": 131,
+      "released_at": "2026-11-22T12:46:11+00:00",
+      "notes": "Videos: queue many downloads, choose Original/1080p/720p (default in Settings) and the NAS prepares them one by one — the queue survives a reload and Original copies the video instead of re-encoding it."
+    },
     {
       "version": "2.15.1",
       "git_sha": "48f958d",
@@ -201,14 +209,6 @@
       "build": 71,
       "released_at": "2026-11-20T15:29:36+00:00",
       "notes": "Security: per-user filesystem scope — non-admins are limited to their own home, /mnt and /media"
-    },
-    {
-      "version": "2.6.3",
-      "git_sha": "d3fcfae",
-      "git_sha_full": "d3fcfae885165207565805dcebc0e1c78265a57d",
-      "build": 69,
-      "released_at": "2026-11-20T15:21:34+00:00",
-      "notes": "Update card: no more phantom update on appliances built from an OS image"
     }
   ]
 }
