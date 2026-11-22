@@ -20,8 +20,8 @@ palettes.
 ## When to use which shell
 
 - **Multi-section window (≥ 2 views)** — rail + main: Settings, Packages, Storage,
-  Network, Security, Logs, Kanban-style tools. `mountShell(..., { sections })`.
-- **Single-section window** — header + panels only, no rail: Overview, Processes,
+  Security, Logs, Kanban-style tools. `mountShell(..., { sections })`.
+- **Single-section window** — header + panels only, no rail: Overview, Network, Processes,
   Services, SMART, System Services, Cron, Search, Shared Links.
   `mountShell(..., { sections: [{ id: 'main', label: 'Overview' }], rail: false })`.
 - **Dense tools keep their own panes** — File Manager (explorer) and Terminal

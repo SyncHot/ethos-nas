@@ -116,11 +116,13 @@ function _rowHtml(item) {
         detail = enabled === 'enabled'
             ? '<span class="ui-tag is-ok">enabled at boot</span>'
             : enabled ? `<span class="ui-tag">${escapeHtml(enabled)}</span>` : '<span class="ui-muted">—</span>';
-        actions = running
+        actions = item.protected
+            ? '<span class="ui-tag is-info">Protected</span>'
+            : running
             ? `<button class="ui-btn small" data-service-action="stop" data-kind="systemd" data-name="${safe}" data-testid="services-action-${safe}-stop">⏹ Stop</button>
                <button class="ui-btn small" data-service-action="restart" data-kind="systemd" data-name="${safe}" data-testid="services-action-${safe}-restart">↻ Restart</button>`
             : `<button class="ui-btn small" data-service-action="start" data-kind="systemd" data-name="${safe}" data-testid="services-action-${safe}-start">▶ Start</button>`;
-        if (enabled === 'enabled' || enabled === 'disabled') {
+        if (!item.protected && (enabled === 'enabled' || enabled === 'disabled')) {
             actions += enabled === 'enabled'
                 ? `<button class="ui-btn small" data-service-action="disable" data-kind="systemd" data-name="${safe}" data-testid="services-action-${safe}-disable" title="Disable at boot">Disable</button>`
                 : `<button class="ui-btn small" data-service-action="enable" data-kind="systemd" data-name="${safe}" data-testid="services-action-${safe}-enable" title="Enable at boot">Enable</button>`;

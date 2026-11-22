@@ -417,7 +417,7 @@ def part_b(token) -> int:
                          page.locator('[data-testid="net-interfaces-table"]').count() == 1):
                 browser.close()
                 return failures + 1
-            body_text = page.locator("#netContent").inner_text()
+            body_text = page.locator('[data-testid="network-view"]').inner_text()
             if not check("'No network interfaces found' no longer shown",
                          "No network interfaces found" not in body_text, body_text[:200]):
                 failures += 1

@@ -19,7 +19,7 @@ import sys
 
 from playwright.sync_api import sync_playwright
 
-BASE = "http://localhost:9000"
+BASE = os.environ.get("ETHOS_TEST_BASE", "http://localhost:9000")
 USER = os.environ.get("ETHOS_TEST_USER") or os.environ.get("USER") or "user"
 PASS = _require_test_password()
 
@@ -126,9 +126,9 @@ def main() -> int:
         # ── 6. Action buttons present + confirm dialog wiring ──────────────
         print("Step 6: actions")
         check("start/stop/restart buttons rendered",
-              page.locator("#servicesTable .svc-btn").count() > 0)
-        first_btn = page.locator("#servicesTable .svc-btn").first
-        label = (first_btn.get_attribute("title") or "").lower()
+              page.locator("#servicesTable [data-service-action]").count() > 0)
+        first_btn = page.locator("#servicesTable [data-service-action]").first
+        label = (first_btn.inner_text() or "").lower()
         if "stop" in label:
             first_btn.click()
             modal_ok = page.locator('[data-testid="ethos-modal-ok"]')

@@ -27,6 +27,17 @@ _SERVICE_RE = re.compile(r'^[a-zA-Z0-9_\-\.]+(\.service)?$')
 # Whitelist of allowed actions
 _ALLOWED_ACTIONS = {"start", "stop", "restart", "enable", "disable", "status"}
 
+# Units owned by another feature: inspectable, but their lifecycle must not be
+# changed through this generic router. `systemctl stop ufw.service` unloads the
+# firewall without baseline rules, notifications or an audit trail — UFW changes
+# go through /api/security (Firewall & Access Control) only.
+_PROTECTED_UNITS = {"ufw.service"}
+
+
+def _normalize_unit(name: str) -> str:
+    """Return the canonical unit name (``cron`` → ``cron.service``)."""
+    return name if "." in name else f"{name}.service"
+
 
 class ServiceActionRequest(BaseModel):
     action: str
@@ -142,6 +153,7 @@ async def list_services(limit: int = Query(0, ge=0, le=5000),
     enabled_map = await asyncio.to_thread(_list_enabled_states)
     for s in services:
         s["enabled_state"] = enabled_map.get(s["name"], "")
+        s["protected"] = _normalize_unit(str(s.get("name") or "")) in _PROTECTED_UNITS
     total = len(services)
     return {
         "services": services[offset:offset + limit] if limit else services[offset:],
@@ -179,6 +191,15 @@ async def service_action(name: str, body: ServiceActionRequest) -> dict:
         # to_thread: systemctl status can take seconds — never block the event loop.
         out = await asyncio.to_thread(_run_systemctl, ["status", name], 10)
         return {"name": name, "action": action, "output": out[:500] if out else "No output"}
+
+    # Protected units: read-only here. The defining feature owns the lifecycle.
+    if _normalize_unit(name) in _PROTECTED_UNITS:
+        logger.warning("systemd: rejected %s on protected unit %s", action, name)
+        raise HTTPException(
+            status_code=403,
+            detail=(f"{name} is protected — manage the firewall through the "
+                    "Firewall & Access Control app (UFW API), not systemd."),
+        )
 
     # Perform the action
     result = await asyncio.to_thread(_run_systemctl, [action, name])

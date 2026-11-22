@@ -126,6 +126,9 @@ Single script, requires root (`sudo bash setup_scripts/setup_service.sh`), idemp
       **E2E finding (live incident):** under the service user, PAM login failed for *every* user — `pam_unix` reads `/etc/shadow` (root:shadow 640) and `ethos-nas` was not in the shadow group (dev mode worked only because marcin is a shadow member). Fix: installer now adds `${TARGET_USER}` to the shadow group; after re-run + restart, real PAM login verified via API (`marcin` → 200, role admin, server-issued JWT works on /api/system/status). Bad creds still → clean 401.
 - [x] Shares: create share → smb.conf written + samba reloaded — `sudo tee` write + `systemctl reload smbd` both logged in auth.log as user `ethos-nas`; journal shows "Reloaded smbd.service"; delete removes section.
 - [x] Firewall: status, add rule, delete rule — verify in `/var/log/auth.log` sudo entries show user `ethos-nas`
+      **Historical (2026-11-22):** the raw `/api/network/firewall` router, `services/firewall_service.py`
+      and the `iptables`/`iptables-save` NOPASSWD rules were removed; UFW through the Firewall &
+      Access Control app is the only firewall surface. The findings below describe that removed code.
       **E2E findings (all fixed this pass):**
       1. The /api/network/firewall router uses raw `iptables`, not ufw — no sudoers rule existed and there was no sudo fallback (pre-existing gap: broken for any non-root user). Fix: `services/firewall_service.py` prefixes `sudo -n` when euid≠0 (+ SUDO_HINT on auth failure); installer adds `/usr/sbin/iptables` + `/usr/sbin/iptables-save` NOPASSWD rules.
       2. `run_iptables_save()` ignored returncode → silently returned an empty ruleset as non-root (UI showed "no rules" while writes failed). Fix: checks rc, raises with hint.
@@ -155,8 +158,8 @@ Single script, requires root (`sudo bash setup_scripts/setup_service.sh`), idemp
 | 2026-09-27 | auth: no token / bad token / PAM login | ✅ 401 / 401 / 200 — after shadow-group fix, real PAM login (marcin→admin) with server-issued JWT |
 | 2026-09-27 | **incident:** all PAM logins broken under service user | fixed: `usermod -aG shadow ethos-nas` in installer; root cause = pam_unix needs /etc/shadow (root:shadow 640) |
 | 2026-09-27 | shares create→smb.conf→reload→delete | ✅ sudo tee + reload smbd as ethos-nas (auth.log), journal "Reloaded smbd.service" |
-| 2026-09-27 | firewall status/add/list/delete as ethos-nas | ✅ after fixes: sudo -n iptables fallback, rc check in iptables-save, stable md5 rule ids; add→delete-by-id cycle clean, real ruleset visible |
-| 2026-09-27 | power rules effective for ethos-nas | ✅ `sudo -ln` as ethos-nas lists systemctl reboot/shutdown + iptables/iptables-save NOPASSWD |
+| 2026-09-27 | firewall status/add/list/delete as ethos-nas (historical — raw router removed 2026-11-22) | ✅ after fixes: sudo -n iptables fallback, rc check in iptables-save, stable md5 rule ids; add→delete-by-id cycle clean, real ruleset visible |
+| 2026-09-27 | power rules effective for ethos-nas | ✅ `sudo -ln` as ethos-nas lists systemctl reboot/shutdown; the historical iptables NOPASSWD rules were removed 2026-11-22 |
 | 2026-09-27 | docker container list via group | ✅ 200 with live containers, no sudo in code path |
 | 2026-09-27 | USB real-device unmount/remount (sdc3) | ✅ after wrapper PKNAME fix; fstab managed block intact; auth.log shows ethos-nas |
 | 2026-09-27 | power buttons (no actual reboot) | ✅ rule present + exact command match in code; not triggered by design |

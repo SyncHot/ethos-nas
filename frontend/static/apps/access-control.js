@@ -29,6 +29,57 @@ const TILE_ACTIONS = {
     'goto-autoban': 'Configure →',
 };
 
+// ── Shared UFW status fragments ─────────────────────────────────────────────
+// The same badge/callout/action block appears on several tabs; keep one source
+// of truth so wording, tones and testids cannot drift between sections.
+
+function _ufwBadge(ufw = {}) {
+    if (ufw.installed === false) return '<span class="ui-tag is-bad">not installed</span>';
+    if (ufw.error) return '<span class="ui-tag is-warn" title="UFW state could not be read">unknown</span>';
+    return ufw.enabled
+        ? '<span class="ui-tag is-ok">enabled</span>'
+        : '<span class="ui-tag is-bad">disabled</span>';
+}
+
+function _ufwDefaults(defaults = {}) {
+    const value = defaults || {};
+    return `${value.incoming ?? '?'} / ${value.outgoing ?? '?'} / ${value.routed ?? '?'}`;
+}
+
+function _ufwDisabledCallout(text, { testId = '', icon = false } = {}) {
+    const attr = testId ? ` data-testid="${testId}"` : '';
+    return `<div class="ui-callout"${attr}>${icon ? `${uiIcon('alert', 13)} ` : ''}${text}</div>`;
+}
+
+function _ufwLoggingOffCallout({ text, withButton = false }) {
+    const button = withButton
+        ? ' <div class="ui-row ui-panel-body"><button class="ui-btn small primary" data-action="logging-on">Enable logging</button></div>'
+        : '';
+    return `<div class="ui-callout">${uiIcon('alert', 13)} ${text}${button}</div>`;
+}
+
+function _ufwLoggingTag(known, enabled) {
+    if (!known) return '';
+    return enabled
+        ? '<span class="ui-tag is-ok">UFW logging on</span>'
+        : '<button class="ui-btn small primary" data-action="logging-on" data-testid="sec-intr-log-on">Enable UFW logging</button>';
+}
+
+function _ufwActions(enabled, addRuleTestId, className = 'ui-row') {
+    return `<div class="${className}">
+        <button class="ui-btn small" data-action="ufw-enable" data-testid="sec-ufw-enable" ${enabled ? 'disabled' : ''}>${uiIcon('lock', 12)} Enable</button>
+        <button class="ui-btn small" data-action="ufw-disable" data-testid="sec-ufw-disable" ${enabled ? '' : 'disabled'}>${uiIcon('unlock', 12)} Disable</button>
+        <button class="ui-btn small primary" data-action="add-rule" data-testid="${addRuleTestId}">${uiIcon('plus', 12)} Add rule</button>
+    </div>`;
+}
+
+function _wireUfwActions(root) {
+    root.querySelector('[data-action="ufw-enable"]')?.addEventListener('click', () => _setUfw(true));
+    root.querySelector('[data-action="ufw-disable"]')?.addEventListener('click', () => _setUfw(false));
+    root.querySelector('[data-action="add-rule"]')?.addEventListener('click', () => _openRuleForm());
+    root.querySelector('[data-action="logging-on"]')?.addEventListener('click', () => _setLogging(true));
+}
+
 let shell = null;
 let navToken = 0;
 let activeTab = 'overview';
@@ -87,13 +138,7 @@ async function loadOverview(isCurrent) {
         if (!isCurrent()) return;
 
         const ufw = data.ufw || {};
-        const stateTag = ufw.installed === false
-            ? '<span class="ui-tag is-bad">not installed</span>'
-            : ufw.error
-                ? '<span class="ui-tag is-warn" title="UFW state could not be read">unknown</span>'
-                : ufw.enabled
-                    ? '<span class="ui-tag is-ok">enabled</span>'
-                    : '<span class="ui-tag is-bad">disabled</span>';
+        const stateTag = _ufwBadge(ufw);
 
         const autoban = data.autoban || {};
         const autobanValue = autoban.enabled ? (autoban.dry_run ? 'DRY-RUN' : 'ON') : 'OFF';
@@ -117,14 +162,10 @@ async function loadOverview(isCurrent) {
                         ${_kv([
                             ['Logging', ufw.logging ? 'on' : 'off'],
                             ['Rules', String(ufw.rules_count ?? '—')],
-                            ['Defaults', `${ufw.defaults?.incoming ?? '?'} / ${ufw.defaults?.outgoing ?? '?'} / ${ufw.defaults?.routed ?? '?'}`],
+                            ['Defaults', _ufwDefaults(ufw.defaults)],
                         ])}
                         ${ufw.error ? `<p class="ui-callout error">${escapeHtml(ufw.error)}</p>` : ''}
-                        <div class="ui-row ui-panel-body">
-                            <button class="ui-btn small" data-action="ufw-enable" data-testid="sec-ufw-enable" ${ufw.enabled ? 'disabled' : ''}>${uiIcon('lock', 12)} Enable</button>
-                            <button class="ui-btn small" data-action="ufw-disable" data-testid="sec-ufw-disable" ${ufw.enabled ? '' : 'disabled'}>${uiIcon('unlock', 12)} Disable</button>
-                            <button class="ui-btn small primary" data-action="add-rule" data-testid="sec-add-rule">${uiIcon('plus', 12)} Add rule</button>
-                        </div>
+                        ${_ufwActions(ufw.enabled, 'sec-add-rule', 'ui-row ui-panel-body')}
                     </div>
                 </section>
                 ${tile('sec-card-blocked', 'Blocked packets', Number(data.blocked_packets_24h ?? 0), 'last 24h', 'View attempts →', 'goto-intrusions')}
@@ -133,9 +174,10 @@ async function loadOverview(isCurrent) {
                 ${tile('sec-card-autoban', 'Auto-ban', autobanValue, `${Number(autoban.banned_today ?? 0)} blocked today · ${Number(autoban.active_bans ?? 0)} active`, 'Configure →', 'goto-autoban')}
             </div>
             ${ufw.installed !== false && !ufw.error && !ufw.logging
-                ? `<div class="ui-callout">${uiIcon('alert', 13)} UFW packet logging is off — intrusion attempts are not recorded.
-                        <div class="ui-row ui-panel-body"><button class="ui-btn small primary" data-action="logging-on">Enable logging</button></div>
-                    </div>`
+                ? _ufwLoggingOffCallout({
+                    text: 'UFW packet logging is off — intrusion attempts are not recorded.',
+                    withButton: true,
+                })
                 : ''}`;
 
         _wireOverviewActions();
@@ -149,10 +191,7 @@ async function loadOverview(isCurrent) {
 }
 
 function _wireOverviewActions() {
-    shell.view.querySelector('[data-action="ufw-enable"]')?.addEventListener('click', () => _setUfw(true));
-    shell.view.querySelector('[data-action="ufw-disable"]')?.addEventListener('click', () => _setUfw(false));
-    shell.view.querySelector('[data-action="add-rule"]')?.addEventListener('click', () => _openRuleForm());
-    shell.view.querySelector('[data-action="logging-on"]')?.addEventListener('click', () => _setLogging(true));
+    _wireUfwActions(shell.view);
     for (const [action, tab] of [['goto-intrusions', 'intrusions'], ['goto-bans', 'bans'],
         ['goto-logins', 'logins'], ['goto-autoban', 'autoban']]) {
         shell.view.querySelector(`[data-action="${action}"]`)?.addEventListener('click', () => shell.setActive(tab));
@@ -218,17 +257,13 @@ async function loadUfw(isCurrent) {
         shell.view.innerHTML = `
             <div class="ui-toolbar">
                 <div>
-                    <h2 data-testid="sec-ufw-status">${data.enabled ? '<span class="ui-tag is-ok">enabled</span>' : '<span class="ui-tag is-bad">disabled</span>'}
+                    <h2 data-testid="sec-ufw-status">${_ufwBadge({ enabled: data.enabled })}
                         logging ${data.logging ? 'on' : 'off'} · ${rules.length} rule(s)</h2>
-                    <p class="ui-muted">Defaults (in/out/routed): ${escapeHtml(defaults.incoming ?? '?')} / ${escapeHtml(defaults.outgoing ?? '?')} / ${escapeHtml(defaults.routed ?? '?')}</p>
+                    <p class="ui-muted">Defaults (in/out/routed): ${escapeHtml(_ufwDefaults(defaults))}</p>
                 </div>
-                <div class="ui-row">
-                    <button class="ui-btn small" data-action="ufw-enable" data-testid="sec-ufw-enable" ${data.enabled ? 'disabled' : ''}>${uiIcon('lock', 12)} Enable</button>
-                    <button class="ui-btn small" data-action="ufw-disable" data-testid="sec-ufw-disable" ${data.enabled ? '' : 'disabled'}>${uiIcon('unlock', 12)} Disable</button>
-                    <button class="ui-btn small primary" data-action="add-rule" data-testid="sec-add-rule-btn">${uiIcon('plus', 12)} Add rule</button>
-                </div>
+                ${_ufwActions(data.enabled, 'sec-add-rule-btn')}
             </div>
-            ${!data.enabled ? `<div class="ui-callout" data-testid="sec-ufw-inactive-note">UFW is disabled — the ruleset below may be incomplete.</div>` : ''}
+            ${!data.enabled ? _ufwDisabledCallout('UFW is disabled — the ruleset below may be incomplete.', { testId: 'sec-ufw-inactive-note' }) : ''}
             ${rules.length
                 ? `<div class="ui-panel"><div class="ui-table-wrap"><table class="ui-table" data-testid="sec-ufw-table">
                         <thead><tr><th>#</th><th>Action</th><th>Direction</th><th>From</th><th>To</th><th>IPv6</th><th>Comment</th><th class="actions"></th></tr></thead>
@@ -236,9 +271,7 @@ async function loadUfw(isCurrent) {
                     </table></div></div>`
                 : emptyState({ icon: 'shield', title: 'No UFW rules configured', hint: 'Add a rule to allow or deny traffic.' })}`;
 
-        shell.view.querySelector('[data-action="ufw-enable"]')?.addEventListener('click', () => _setUfw(true));
-        shell.view.querySelector('[data-action="ufw-disable"]')?.addEventListener('click', () => _setUfw(false));
-        shell.view.querySelector('[data-action="add-rule"]')?.addEventListener('click', () => _openRuleForm());
+        _wireUfwActions(shell.view);
         shell.view.querySelectorAll('[data-action="delete-rule"]').forEach((button) => {
             button.addEventListener('click', () => _deleteRule(Number(button.dataset.num), button.dataset.comment || ''));
         });
@@ -388,11 +421,7 @@ async function loadIntrusions(isCurrent) {
             <td>${escapeHtml(event.iface || '—')}</td>
         </tr>`).join('');
 
-        const loggingTag = data.logging_known
-            ? (data.logging_enabled
-                ? '<span class="ui-tag is-ok">UFW logging on</span>'
-                : '<button class="ui-btn small primary" data-action="logging-on" data-testid="sec-intr-log-on">Enable UFW logging</button>')
-            : '';
+        const loggingTag = _ufwLoggingTag(data.logging_known, data.logging_enabled);
 
         content.innerHTML = `
             <div class="ui-toolbar">
@@ -411,7 +440,7 @@ async function loadIntrusions(isCurrent) {
                 </div>
             </div>
             ${data.logging_known && !data.logging_enabled
-                ? `<div class="ui-callout">${uiIcon('alert', 13)} UFW packet logging is disabled — blocked packets are not recorded.</div>`
+                ? _ufwLoggingOffCallout({ text: 'UFW packet logging is disabled — blocked packets are not recorded.' })
                 : ''}
             ${top.length || events.length ? `
                 ${top.length ? `
@@ -640,7 +669,7 @@ async function loadBans(isCurrent) {
                 <span class="ui-tag">${bans.length} ban(s)</span>
             </div>
             <p class="ui-muted">Manual bans are permanent UFW deny rules tagged <code class="ui-code">ethos-ban</code>; automatic bans are temporary rules tagged <code class="ui-code">ethos-autoban</code> that expire on their own. Both survive restarts and reboots.</p>
-            ${data.ufw_enabled === false ? '<div class="ui-callout">UFW is disabled — bans are stored as rules but only enforced after the firewall is enabled.</div>' : ''}
+            ${data.ufw_enabled === false ? _ufwDisabledCallout('UFW is disabled — bans are stored as rules but only enforced after the firewall is enabled.') : ''}
             ${bans.length ? `<div class="ui-panel"><div class="ui-table-wrap"><table class="ui-table" data-testid="sec-bans-table">
                     <thead><tr><th>#</th><th>IP</th><th>Type</th><th>Expires</th><th>Reason</th><th class="actions"></th></tr></thead>
                     <tbody>${rows}</tbody>
@@ -837,7 +866,7 @@ function _renderAutoban(data) {
             </div>
         </div>
         ${data.ufw_enabled === false
-            ? '<div class="ui-callout">UFW is disabled — auto-ban can record state, but no rule is enforced until the firewall is enabled.</div>'
+            ? _ufwDisabledCallout('UFW is disabled — auto-ban can record state, but no rule is enforced until the firewall is enabled.')
             : ''}
         ${cfg.enabled && dryRun
             ? '<div class="ui-callout">Dry-run is on: candidates are shown here and in the log, but UFW is not touched.</div>'

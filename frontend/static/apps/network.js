@@ -1,55 +1,38 @@
-// EthOS NAS — Network (rail: Interfaces · Firewall)
+// EthOS NAS — Network (interfaces, connection and throughput; read-only).
+// Firewall state and management live in the Firewall & Access Control app.
 import { escapeHtml, formatBytes, formatSpeed } from '../core/utils.js';
 import { apiRequest } from '../core/api.js';
 import { poll } from '../core/poller.js';
 import { skeletonRows, emptyState, errorState } from '../core/states.js';
 import { logError } from '../core/logger.js';
-import { mountShell } from '../core/ui-shell.js';
-
-const SECTIONS = [
-    { id: 'interfaces', label: 'Interfaces', title: 'Network Interfaces', subtitle: 'Links, addresses and throughput history.', testId: 'net-tab-interfaces' },
-    { id: 'firewall', label: 'Firewall', title: 'Raw Firewall Rules', subtitle: 'Read-only iptables view — UFW rules live in Security.', testId: 'net-tab-firewall' },
-];
+import { mountShell, applyBarWidths } from '../core/ui-shell.js';
 
 let shell = null;
-let navToken = 0;
-let currentSection = 'interfaces';
 let _thruStop = null;
 let _thruMinutes = 60;
 
-function _active() {
-    return Boolean(shell && shell.root.isConnected && currentSection === 'interfaces');
+function _alive() {
+    return Boolean(shell && shell.root.isConnected);
 }
 
 export async function renderNetworkPage(body) {
+    if (_thruStop) { _thruStop(); _thruStop = null; }
     shell?.destroy();
     shell = mountShell(body, {
         idPrefix: 'network',
         title: 'Network',
-        subtitle: 'Interfaces, throughput and the firewall.',
+        subtitle: 'Interfaces, connection and throughput — read-only.',
         icon: '🌐',
-        sections: SECTIONS,
-        note: 'Firewall changes are made in the Security app.',
+        sections: [],
+        rail: false,
     });
-    shell.onSection(_runSection);
-    shell.setActive('interfaces');
-}
-
-function _runSection(id) {
-    currentSection = id;
-    if (id !== 'interfaces' && _thruStop) {
-        _thruStop();
-        _thruStop = null;
-    }
-    const token = ++navToken;
-    const isCurrent = () => token === navToken && shell && shell.root.isConnected;
-    if (id === 'interfaces') loadInterfaces(isCurrent);
-    else if (id === 'firewall') loadFirewall(isCurrent);
+    loadInterfaces();
 }
 
 // ── Interfaces ──────────────────────────────────────────────────────────────
 
-async function loadInterfaces(isCurrent) {
+async function loadInterfaces() {
+    const isCurrent = _alive;
     const content = shell.view;
     content.innerHTML = skeletonRows(6);
     shell.setStatus('Loading interfaces…');
@@ -150,7 +133,7 @@ function _wireThroughputWindow(content) {
             content.querySelectorAll('[data-window]').forEach((other) => {
                 other.classList.toggle('primary', other === button);
             });
-            loadThroughput(_active);
+            loadThroughput();
         });
     });
 }
@@ -217,14 +200,14 @@ function _drawSparkline(canvas, points) {
     context.fillText(fmtTime(points[points.length - 1].ts), width - padR, height - 4);
 }
 
-async function loadThroughput(isCurrent) {
+async function loadThroughput() {
     if (_thruStop) { _thruStop(); _thruStop = null; }
 
     const draw = async () => {
-        if (!_active() || (isCurrent && !isCurrent())) return;
+        if (!_alive()) return;
         try {
             const data = await apiRequest(`/api/network/stats/history?minutes=${_thruMinutes}`);
-            if (!_active()) return;
+            if (!_alive()) return;
             const points = data.samples || [];
             _drawSparkline(document.getElementById('netThruCanvas'), points);
             const now = document.getElementById('netThruNow');
@@ -239,68 +222,6 @@ async function loadThroughput(isCurrent) {
     };
 
     await draw();
-    if (!_active()) return;
+    if (!_alive()) return;
     _thruStop = poll(draw, 30_000, { appId: 'network', immediate: false, name: 'network-draw' });
-}
-
-// ── Firewall ────────────────────────────────────────────────────────────────
-
-async function loadFirewall(isCurrent) {
-    const content = shell.view;
-    content.innerHTML = skeletonRows(5);
-    shell.setStatus('Loading firewall rules…');
-
-    try {
-        const [status, data] = await Promise.all([
-            apiRequest('/api/network/firewall/status').catch((err) => {
-                logError('Network: firewall status unavailable', err?.detail || err?.message);
-                return {};
-            }),
-            apiRequest('/api/network/firewall').catch((err) => {
-                logError('Network: firewall rules unavailable', err?.detail || err?.message);
-                return { rules: [] };
-            }),
-        ]);
-        if (!isCurrent()) return;
-
-        const rules = data.rules || [];
-        const state = status.active === undefined
-            ? '<span class="ui-tag">unknown</span>'
-            : (status.active ? '<span class="ui-tag is-ok">active</span>' : '<span class="ui-tag is-warn">inactive</span>');
-        const backend = status.using_nftables ? 'nftables' : 'iptables';
-
-        const rows = rules.map((rule) => `<tr>
-            <td>${escapeHtml(rule.chain)}</td>
-            <td>${escapeHtml(rule.protocol)}</td>
-            <td class="path">${escapeHtml(rule.source)}</td>
-            <td class="path">${escapeHtml(rule.destination)}</td>
-            <td>${rule.dport || rule.sport ? escapeHtml(rule.dport || rule.sport) : '—'}</td>
-            <td><span class="ui-tag ${rule.action === 'ACCEPT' ? 'is-ok' : 'is-warn'}">${escapeHtml(rule.action)}</span></td>
-            <td class="ui-muted">${escapeHtml(rule.comment || '—')}</td>
-        </tr>`).join('');
-
-        content.innerHTML = `
-            <div class="ui-callout info" data-testid="fw-status">
-                ${state} <strong>${escapeHtml(backend)}</strong> backend · ${rules.length} raw rule(s).
-                This view is read-only — change rules, bans and logging in the Firewall &amp; Access Control app.
-                <div class="ui-row ui-panel-body">
-                    <button class="ui-btn small primary" data-action="open-security" data-testid="fw-open-security">Open Firewall &amp; Access Control →</button>
-                </div>
-            </div>
-            ${rules.length ? `<div class="ui-panel"><div class="ui-table-wrap"><table class="ui-table" data-testid="fw-rules-table">
-                    <thead><tr><th>Chain</th><th>Protocol</th><th>Source</th><th>Dest</th><th>Port</th><th>Action</th><th>Comment</th></tr></thead>
-                    <tbody>${rows}</tbody>
-                </table></div></div>`
-                : emptyState({ icon: 'shield', title: 'No firewall rules found', hint: 'UFW rules are managed in the Security app.' })}`;
-
-        content.querySelector('[data-action="open-security"]')?.addEventListener('click', () => {
-            if (typeof window.openApp === 'function') window.openApp('security');
-        });
-        shell.setStatus(`${rules.length} raw rule(s) · ${backend}`, 'ok');
-    } catch (err) {
-        if (!isCurrent()) return;
-        content.innerHTML = errorState({ detail: err?.detail || err?.message || 'Unknown error' });
-        shell.setStatus('Could not read firewall rules', 'error');
-        logError('Network: firewall view failed', err?.detail || err?.message);
-    }
 }

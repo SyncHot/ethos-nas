@@ -17,7 +17,7 @@ and one status line — matching the native package windows.
 
 | App | File | Router |
 |---|---|---|
-| Overview | `apps/overview.js` | `/api/system/status`, `/api/network/history`, `/api/docker/*` (read) |
+| Overview | `apps/overview.js` | `/ws/stats` (primary), `/api/system/status` (fallback), `/api/containers` (read) |
 | Docker Manager | `ethos-packages/ethos-docker/frontend/app.js` (package) | `/api/docker`, `/api/containers`, `/api/images`, `/api/volumes`, `/api/compose/projects` |
 | Container logs | `apps/logs.js` (unified viewer) | `/api/logs`, `/ws/logs?source=…` |
 | Cleaner | `ethos-packages/ethos-cleaner/frontend/app.js` (package) | `/api/disk-clean` |
@@ -37,10 +37,12 @@ and one status line — matching the native package windows.
 ## Overview
 The system resource dashboard: live gauges for CPU, RAM/swap, disk, network rate, temperature, uptime,
 and container count. Resource monitoring lives here; Settings is reserved for health checks and
-configuration.
-Polls `/api/system/status` every 2 s and the network history every 60 s; charts are drawn from counter
-deltas (no server-side history beyond `net_stats`). Limit: the 2 s poll is the heaviest frontend loop —
-see TODO.md P3-09 (shared poller). Tested indirectly by `tests/test_network.py`.
+configuration. Throughput history lives in the Network app — Overview shows only the instantaneous
+rate and a "Details →" link.
+The primary feed is the `/ws/stats` WebSocket (one snapshot every 2 s, same counters as
+`/api/system/status`); a 10 s HTTP poll covers a socket that cannot connect, and `/api/containers` is
+polled every 15 s. Tested by `tests/test_stats_ws.py` (socket contract) and
+`tests/test_app_shell_ui.py` (window shell).
 
 ## Docker Manager
 Containers (start/stop/restart/remove), images (pull/prune/delete), volumes (prune/delete) and compose
@@ -94,8 +96,10 @@ surface an error. Passdb changes use the root-owned `ethos-samba-accounts` helpe
 `tests/test_shares_accounts_api.py`, `tests/test_shares_package_ui.py`.
 
 ## Network
-Interfaces, addresses, throughput and the RX/TX history sampler (`net_stats.json`, 60 s cadence).
-Read-only. Tested: `tests/test_network.py`.
+Interfaces, addresses, connection details (default gateway, source IP, DNS) and the RX/TX history
+sampler (`net_stats.json`, 60 s cadence) with 30 min / 2 h / 12 h windows. Read-only; firewall state
+and management live in the Firewall & Access Control app (the old "Firewall" tab and
+`/api/network/firewall*` were removed). Tested: `tests/test_network.py`.
 
 ## Logs
 One viewer for every diagnostic source: the unified event store (`core`, `browser`, `pkg:<id>`), host

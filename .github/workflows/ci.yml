@@ -63,6 +63,7 @@ jobs:
                    tests/test_update_helper.py \
                    tests/test_logs_api.py \
                    tests/test_logs_ws.py \
+                   tests/test_stats_ws.py \
                    tests/test_security_invariants.py \
                    tests/test_router_smoke.py \
                    tests/test_config_export.py \

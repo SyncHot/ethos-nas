@@ -40,7 +40,7 @@ FAILURES = []
 APPS = {
     "overview": "single",
     "storage": "rail",
-    "network": "rail",
+    "network": "single",
     "security": "rail",
     "settings": "rail",
     "packages": "rail",
@@ -142,6 +142,35 @@ def main() -> int:
                     check(f"{app_id} has no rail", window.locator('[data-testid$="-rail"]').count() == 0)
 
             check("no page errors", not errors, "; ".join(errors[:5]))
+
+            # Non-admin: the Firewall & Access Control app is admin-only, so it
+            # must not appear in the drawer or open a window (the API still 403s).
+            user_token = _create_token("user", "user", "user")
+            user_context = browser.new_context(viewport={"width": 1440, "height": 900})
+            user_context.add_init_script(f"localStorage.setItem('token', {json.dumps(user_token)});")
+            user_page = user_context.new_page()
+            user_errors = []
+            user_page.on("pageerror", lambda exc: user_errors.append(str(exc)))
+            user_page.goto(base)
+            user_page.wait_for_function("typeof window.openApp === 'function'", timeout=20000)
+            user_page.evaluate("window._openDrawer()")
+            user_page.wait_for_selector('[data-testid="drawer-item-overview"]', timeout=10000)
+            check("non-admin drawer hides security",
+                  user_page.locator('[data-testid="drawer-item-security"]').count() == 0)
+            user_page.evaluate("window.openApp('security')")
+            user_page.wait_for_timeout(600)
+            check("non-admin openApp('security') opens no window",
+                  user_page.locator('[data-testid="window-security"]').count() == 0)
+            user_page.evaluate("window.openApp('overview')")
+            try:
+                user_page.wait_for_selector('[data-testid="window-overview"]', timeout=15000)
+            except Exception:
+                pass
+            check("non-admin can still open overview",
+                  user_page.locator('[data-testid="window-overview"]').count() == 1)
+            check("non-admin page has no errors", not user_errors, "; ".join(user_errors[:5]))
+            user_context.close()
+
             browser.close()
 
         return 1 if FAILURES else 0

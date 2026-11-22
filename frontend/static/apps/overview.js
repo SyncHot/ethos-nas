@@ -1,16 +1,17 @@
 // EthOS NAS — System Overview (desktop shell style).
-// Live CPU / memory / disk / temperature / network gauges + container count.
-// Data: 2 s poll of /api/system/status (rate computed from counter deltas),
-// 60 s poll of the network throughput history for the sparkline, 15 s poll
-// of /api/containers. All timers self-terminate when the window is closed
-// (isConnected guard) — there is no app-close lifecycle hook in this codebase.
+// Live CPU / memory / disk / temperature / network rate + container count.
+// Data: /ws/stats pushes a system snapshot every 2 s (fallback: a slow 10 s
+// /api/system/status poll), /api/containers is polled every 15 s. The socket
+// and the timers self-terminate when the window is closed (isConnected guard)
+// — there is no app-close lifecycle hook in this codebase.
 
-import { escapeHtml } from '../core/utils.js';
 import { apiFetch } from '../core/api.js';
 import { poll } from '../core/poller.js';
+import { connectWs } from '../core/ws.js';
+import { onAppClose } from '../core/window-manager.js';
 import { mountShell, applyBarWidths } from '../core/ui-shell.js';
 
-const _ov = { timer: null, histTimer: null, contTimer: null, lastNet: null };
+const _ov = { ws: null, stops: [], lastNet: null, unsub: null };
 let shell = null;
 
 function fmtBytes(n) {
@@ -93,19 +94,24 @@ export async function renderOverviewPage(body) {
                 </div>
             </section>
             <section class="ui-panel">
-                <h2>Network (live)</h2>
+                <div class="ui-toolbar">
+                    <h2>Network (live)</h2>
+                    <button class="ui-btn small" data-action="open-network" data-testid="overview-net-details">Details →</button>
+                </div>
                 <div class="ui-panel-body">
                     <div class="ui-row">
                         <span data-testid="overview-net-rx" id="ovNetRx" class="ui-tag is-info">↓ —</span>
                         <span data-testid="overview-net-tx" id="ovNetTx" class="ui-tag is-warn">↑ —</span>
                     </div>
-                    <canvas id="ovNetChart" width="560" height="48" class="ui-canvas" style="height:48px;"></canvas>
                 </div>
             </section>
         </div>`;
 
     applyBarWidths(shell.view);
-    shell.setStatus('Live · 2 s refresh', 'ok');
+    shell.view.querySelector('[data-action="open-network"]')?.addEventListener('click', () => {
+        if (typeof window.openApp === 'function') window.openApp('network');
+    });
+    shell.setStatus('Connecting · live WebSocket', 'ok');
     _startOverview();
 }
 
@@ -115,15 +121,23 @@ function _setBar(el, pct) {
 }
 
 async function _tick() {
-    const root = document.getElementById('ovRoot');
-    if (!root || !root.isConnected) return _stopOverview();
+    if (!_rootAlive()) return _stopOverview();
     try {
         const res = await apiFetch('/api/system/status');
         if (!res.ok) return;
-        const s = await res.json();
+        _paintStats(await res.json());
+    } catch (_) { /* transient — next tick retries */ }
+}
 
-        // CPU
-        const cpuEl = document.getElementById('ovCpuPct');
+function _rootAlive() {
+    const root = document.getElementById('ovRoot');
+    return Boolean(root && root.isConnected);
+}
+
+function _paintStats(s) {
+    if (!_rootAlive()) { _stopOverview(); return; }
+    // CPU
+    const cpuEl = document.getElementById('ovCpuPct');
         if (cpuEl) cpuEl.textContent = `${Math.round(s.cpu_percent || 0)}%`;
         const coresEl = document.getElementById('ovCpuCores');
         if (coresEl && Array.isArray(s.cpu_per_core)) {
@@ -168,51 +182,10 @@ async function _tick() {
         if (hn) hn.textContent = s.hostname || '—';
         const up = document.getElementById('ovUptime');
         if (up) up.textContent = fmtUptime(s.uptime_seconds);
-    } catch (_) { /* transient — next tick retries */ }
-}
-
-async function _loadNetHistory() {
-    const root = document.getElementById('ovRoot');
-    if (!root || !root.isConnected) return;
-    try {
-        const res = await apiFetch('/api/network/stats/history?minutes=30');
-        if (!res.ok) return;
-        const d = await res.json();
-        _drawNetChart(d.samples || []);
-    } catch (_) { /* ignore */ }
-}
-
-function _drawNetChart(samples) {
-    const canvas = document.getElementById('ovNetChart');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width, H = canvas.height;
-    ctx.clearRect(0, 0, W, H);
-    if (!samples.length) return;
-
-    let max = 1;
-    for (const s of samples) max = Math.max(max, s.rx_bps || 0, s.tx_bps || 0);
-    const n = samples.length;
-
-    const line = (key, color) => {
-        ctx.beginPath();
-        samples.forEach((s, i) => {
-            const x = (i / Math.max(1, n - 1)) * W;
-            const y = H - ((s[key] || 0) / max) * (H - 4) - 2;
-            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        });
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-    };
-    const token = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    line('rx_bps', token('--ui-accent'));
-    line('tx_bps', token('--ui-warn'));
 }
 
 async function _loadContainers() {
-    const root = document.getElementById('ovRoot');
-    if (!root || !root.isConnected) return;
+    if (!_rootAlive()) return;
     try {
         const res = await apiFetch('/api/containers');
         if (!res.ok) return;
@@ -224,21 +197,57 @@ async function _loadContainers() {
     } catch (_) { /* docker may be down */ }
 }
 
+function _setStatus(text, tone) {
+    if (shell && _rootAlive()) shell.setStatus(text, tone);
+}
+
+function _openStatsWs() {
+    if (_ov.ws || document.hidden || !_rootAlive()) return;
+    _ov.ws = connectWs('/ws/stats', (msg) => {
+        if (!document.hidden) _paintStats(msg);
+    }, {
+        appId: 'overview',
+        name: 'overview-stats',
+        isJson: true,
+        onOpen: () => _setStatus('Live · WebSocket', 'ok'),
+        onClose: () => _setStatus('Polling · 10 s', 'warn'),
+        onAuthFailure: () => _setStatus('Session expired · polling', 'error'),
+    });
+}
+
+function _onVisibility() {
+    if (!_rootAlive()) return _stopOverview();
+    if (document.hidden) {
+        _ov.ws?.close();
+        _ov.ws = null;
+        return;
+    }
+    _tick();
+    _openStatsWs();
+}
+
 function _startOverview() {
     _stopOverview();
+    _ov.unsub = onAppClose('overview', () => _stopOverview());
     _tick();
-    _loadNetHistory();
     _loadContainers();
+    _openStatsWs();
     // Shared visibility-aware pollers (core/poller.js): they pause while the tab
     // is hidden and stop when the window closes, so no timer outlives the app.
+    // The slow HTTP tick is only a fallback for a socket that cannot connect.
     _ov.stops = [
-        poll(_tick, 2000, { appId: 'overview', immediate: false, name: 'overview-stats' }),
-        poll(_loadNetHistory, 60_000, { appId: 'overview', immediate: false, name: 'overview-net' }),
+        poll(_tick, 10_000, { appId: 'overview', immediate: false, name: 'overview-stats-fallback' }),
         poll(_loadContainers, 15_000, { appId: 'overview', immediate: false, name: 'overview-containers' }),
     ];
+    document.addEventListener('visibilitychange', _onVisibility);
 }
 
 function _stopOverview() {
+    _ov.ws?.close();
+    _ov.ws = null;
+    _ov.unsub?.();
+    _ov.unsub = null;
+    document.removeEventListener('visibilitychange', _onVisibility);
     for (const stop of _ov.stops || []) {
         try { stop(); } catch (_) { /* already gone */ }
     }

@@ -57,7 +57,7 @@ API keys (for the Android apps) live in the same store.
 | `packages` | `package_repo`, `package_installer`, `package_jobs`, `package_schema`, `compose_policy`, `packages_store` | `packages/apps/`, `packages/installed.json`, `packages/sources.json`, `packages/cache.json`, `desktop_layouts.json` |
 | `storage` | `usb_mount_service`, `usb_partition_service` | `usb_mounts.json` |
 | `shares` | `shares_service` | `/etc/samba/smb.conf` (via sudo) |
-| `access_control`, `firewall` | `access_control_service`, `firewall_service` | — |
+| `access_control` | `access_control_service` | — |
 | `editor` | — | `editor.json` |
 | `logs` | `log_service` | `logs/events.jsonl` (rotated) |
 | `appearance`, `share_links`, `cron`, `disk_clean`, `smart`, `systemd`, `processes`, `ethos_service`, `updates`, `sync`, `docker_logs`, `file_events_ws` | — | own store or none |
@@ -123,7 +123,8 @@ _CONFIG_STORE = json_store.get(CONFIG_FILE, dict, version=2,
 
 | Loop | Owner | Start/stop |
 |---|---|---|
-| stats WS, health monitor, net-stats sampler, retention sweep | services | `lifespan` start + stop |
+| health monitor, net-stats sampler, retention sweep | services | `lifespan` start + stop |
+| stats WS (`/ws/stats`) | `routers/system.py` | per-connection 2 s push; ends on disconnect |
 | backup cron scheduler | `routers/backup.py` | `start_backup_scheduler` / `stop_backup_scheduler` |
 | download watch folder + engine pump + RSS scanner | `routers/downloads.py`, `services/debrid.py` | thread + task registry |
 | surveillance motion threads | `camera_service` | start/stop all |

@@ -24,8 +24,11 @@ Sudo: `setup_scripts/setup_service.sh` (NOPASSWD for `ufw`, `journalctl`, `cat` 
       bounded to 100 iterations with a warning.
 - [x] **P0 — DELETE /bans/{ip} 404 for CIDR bans.** Path param → `{ip:path}`.
 - [x] **P0 — split firewall control.** The Network app's "Firewall" tab drove raw `iptables`
-      (`-P INPUT DROP/ACCEPT`), bypassing UFW. Tab is now read-only and links to this app; the
-      `POST/DELETE /api/network/firewall*` endpoints answer **409** with a pointer to UFW.
+      (`-P INPUT DROP/ACCEPT`), bypassing UFW. The tab and the `/api/network/firewall*` endpoints
+      (plus `firewall_service.py` and the iptables NOPASSWD rules) were removed entirely — this app
+      is the only firewall surface. `ufw.service` is also protected in `/api/systemd`: start/stop/
+      restart/enable/disable return **403**, so the generic Services windows cannot unload the
+      firewall behind the baseline rules and audit trail.
 - [x] **P1 — UI/backend option mismatch.** UI offered `log` (rejected) and `drop` (not a UFW
       verb), backend rejected `icmp`. Now: `allow|deny|reject|limit` + `tcp|udp|any|icmp`
       (`icmp` → `ufw <action> proto icmp`), legacy `drop` mapped to `deny`.

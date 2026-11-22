@@ -73,10 +73,17 @@ def main() -> int:
         p.name for p in (STATIC / "apps").glob("*.js")
         if "core/ws.js" in p.read_text() or "core/log-stream.js" in p.read_text()
     )
-    # Apps with a socket: files (file events), logs (live tail) and terminal
-    # (PTY). The editor/docker sockets moved into packages; keep the guard so a
-    # new core consumer cannot open a bare WebSocket.
-    check("every socket consumer uses a shared helper", len(adopters) >= 3, ", ".join(adopters))
+    # Apps with a socket: overview (stats), files (file events), logs (live tail)
+    # and terminal (PTY). The editor/docker sockets moved into packages; keep the
+    # guard so a new core consumer cannot open a bare WebSocket.
+    check("every socket consumer uses a shared helper", len(adopters) >= 4, ", ".join(adopters))
+
+    overview = (STATIC / "apps" / "overview.js").read_text()
+    check("overview subscribes to /ws/stats", "connectWs('/ws/stats'" in overview)
+    check("overview uses the shared socket helper", "core/ws.js" in overview)
+    check("overview no longer polls stats every 2 s", "poll(_tick, 2000" not in overview)
+    check("overview no longer duplicates the throughput chart",
+          "ovNetChart" not in overview and "_loadNetHistory" not in overview)
 
     failed = [r for r in _results if not r[1]]
     print(f"\n{len(_results) - len(failed)}/{len(_results)} checks passed")

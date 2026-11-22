@@ -4,6 +4,7 @@ import { getVisibleApps, addToDesktop, removeFromDesktop, resetToDefault, getPos
 import { openWindows as _openWins, focusWindow as _focusWin, restoreWindowWin as _restoreWin, isMultiWindowApp } from './window-manager.js';
 import { getAppIcon, APP_ICON_GRADIENTS, FALLBACK_GRADIENT } from './app-icons.js';
 import { escapeAttr, escapeHtml } from './utils.js';
+import { isAdmin } from './api.js';
 import { openTrashFromDesktop, emptyTrashFromDesktop, refreshTrashBadge } from './desktop-trash.js';
 
 const APP_REGISTRY = {
@@ -26,7 +27,21 @@ const APP_REGISTRY = {
     'shared-links': { id: 'shared-links', title: 'Shared Links', icon: '🔗' },
 };
 
-export function getRegistry() { return APP_REGISTRY; }
+export function getRegistry() {
+    const out = {};
+    for (const [id, app] of Object.entries(APP_REGISTRY)) {
+        if (isAppVisible(id)) out[id] = app;
+    }
+    return out;
+}
+
+// UI-only visibility: these apps are useless to non-admins (every endpoint is
+// admin-only). The backend still answers 403; this just avoids a dead window.
+const APP_MIN_ROLE = { security: 'admin' };
+
+export function isAppVisible(appId) {
+    return APP_MIN_ROLE[appId] !== 'admin' || isAdmin();
+}
 
 function _buildIconHtml(app) {
     const ic = getAppIcon(app.id, 30);
@@ -293,7 +308,7 @@ export function renderDesktopIcons() {
     // Single pass in PIN order — the visible list is authoritative for desktop
     // layout. Rendering from it (not the drawer order) guarantees a pinned app
     // always shows, even if the saved layout predates that app.
-    const visibleApps = getVisibleApps();
+    const visibleApps = getVisibleApps().filter(isAppVisible);
     const pkgsById = new Map(_pkgIconData.map(p => [p.id, p]));
 
     let html = '';

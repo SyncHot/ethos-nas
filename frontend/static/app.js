@@ -1,5 +1,5 @@
 // EthOS NAS — Bootstrap (ES modules entry point)
-import { renderDesktopIcons, refreshDesktopIcons, setPkgIconData, initDesktopCtxMenu, initDesktopDropZone, initDesktopReorder, _showDesktopCtx as _showDc } from './core/registry.js';
+import { renderDesktopIcons, refreshDesktopIcons, setPkgIconData, initDesktopCtxMenu, initDesktopDropZone, initDesktopReorder, _showDesktopCtx as _showDc, isAppVisible } from './core/registry.js';
 import { loadRemoteLayout, ensureTrashPinned } from './core/desktop-layout.js';
 import { loadRemoteWallpaper } from './core/wallpaper.js';
 import { initDesktopTrash, openTrashFromDesktop } from './core/desktop-trash.js';
@@ -428,6 +428,10 @@ window.openApp = function(appId) {
     appId = APP_ID_ALIASES[appId] || appId;
     // Trash is a shortcut into Files, not a window app of its own.
     if (appId === 'trash') { openTrashFromDesktop(); return; }
+    if (!isAppVisible(appId)) {
+        addNotification('This app is available to administrators only.', 'info');
+        return;
+    }
     if (appId.startsWith('pkg-')) {
         // Use raw OpenApp with the generic package renderer
         const fn = (body) => _renderGenericPackage(appId, body);

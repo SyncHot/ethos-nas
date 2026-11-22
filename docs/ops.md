@@ -19,7 +19,7 @@ Status: current as of 2026-11-13. Related: `docs/service-user.md`, `TODO.md` §6
 | Logs | journald (`journalctl -u ethos-nas`) + unified store `<DATA_DIR>/logs/events.jsonl` (Logs app; ring 5000, 5 × 1 MiB) |
 
 The service user has **narrow NOPASSWD sudo rules** for `tee /etc/samba/smb.conf`, `systemctl
-reload smbd`, `ufw`/`iptables`, USB partitioning, power commands and the Docker provisioning helper
+reload smbd`, `ufw`, USB partitioning, power commands and the Docker provisioning helper
 (`/usr/local/bin/ethos-docker-install`, no arguments, fixed package list). That is why the unit must not use
 `NoNewPrivileges=` or `ProtectSystem=strict` — see §8.
 

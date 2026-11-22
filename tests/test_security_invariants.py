@@ -244,6 +244,16 @@ def main() -> int:
         check("GET /api/security/bans -> 200/400", bans_status in (200, 400),
               f"got {bans_status}")
 
+        print("\n[admin role] protected systemd units")
+        for path in ("/api/systemd/ufw.service/action", "/api/systemd/ufw/action"):
+            for action in ("stop", "restart", "disable"):
+                got = _call(base, "POST", path, admin, {"action": action})
+                check(f"POST {path} {action} -> 403", got == 403, f"got {got}")
+        got = _call(base, "POST", "/api/systemd/ufw.service/action", admin, {"action": "status"})
+        check("POST /api/systemd/ufw.service/action status -> 200", got == 200, f"got {got}")
+        got = _call(base, "POST", "/api/systemd/cron.service/action", admin, {"action": "bogus"})
+        check("invalid action on a normal unit -> 400", got == 400, f"got {got}")
+
         print("\n[admin role] auto-ban API")
         status, data = _call_json(base, "PUT", "/api/security/autoban", admin,
                                   {"enabled": False, "dry_run": True, "allowlist": []})

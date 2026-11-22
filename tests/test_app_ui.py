@@ -37,7 +37,7 @@ SKILL = ".github/skills/app-ui/SKILL.md"
 SHELL_APPS = {
     "settings.js": "rail",
     "storage.js": "rail",
-    "network.js": "rail",
+    "network.js": "single",
     "access-control.js": "rail",
     "packages.js": "rail",
     "logs.js": "rail",

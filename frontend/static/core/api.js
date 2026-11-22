@@ -12,6 +12,34 @@ export function getToken() {
 export function setToken(t) { _token = t; }
 
 /**
+ * Claims from the current JWT (decoded, not verified — the server validates
+ * the signature on every request/WebSocket). Returns null when signed out.
+ */
+export function getCurrentClaims() {
+    const token = getToken();
+    if (!token) return null;
+    try {
+        let payload = token.split('.')[1] || '';
+        if (!payload) return null;
+        // JWT uses base64url; atob needs standard base64 + padding.
+        payload = payload.replace(/-/g, '+').replace(/_/g, '/');
+        while (payload.length % 4) payload += '=';
+        return JSON.parse(atob(payload));
+    } catch (_) {
+        return null;
+    }
+}
+
+export function getCurrentRole() {
+    return String(getCurrentClaims()?.role || '');
+}
+
+/** UI-only gate; the backend still enforces admin-only endpoints with 403. */
+export function isAdmin() {
+    return getCurrentRole() === 'admin';
+}
+
+/**
  * Error thrown by every JSON helper. Carries the backend's `detail` so callers
  * can show the real reason (e.g. the 403 permission explanation from the file
  * API) instead of a bare "HTTP 403".

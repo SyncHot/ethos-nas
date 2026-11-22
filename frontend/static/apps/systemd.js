@@ -168,12 +168,14 @@ async function loadUnits() {
                 <td>${escapeHtml(service.description || '—')}</td>
                 <td data-testid="systemd-status-${safe}"><span class="ui-tag ${tone}">${escapeHtml(service.active_state || service.sub_state || 'unknown')}</span></td>
                 <td class="actions"><div class="ui-row" style="justify-content:flex-end;">
-                    ${running
-                        ? `<button class="ui-btn small" data-unit-action="stop" data-name="${safe}" data-testid="systemd-action-${safe}-stop">⏹ Stop</button>
-                           <button class="ui-btn small" data-unit-action="restart" data-name="${safe}" data-testid="systemd-action-${safe}-restart">↻ Restart</button>`
-                        : `<button class="ui-btn small primary" data-unit-action="start" data-name="${safe}" data-testid="systemd-action-${safe}-start">▶ Start</button>`}
-                    <button class="ui-btn small" data-unit-action="enable" data-name="${safe}" title="Enable at boot">Enable</button>
-                    <button class="ui-btn small" data-unit-action="disable" data-name="${safe}" title="Disable at boot">Disable</button>
+                    ${service.protected
+                        ? '<span class="ui-tag is-info">Protected</span>'
+                        : `${running
+                            ? `<button class="ui-btn small" data-unit-action="stop" data-name="${safe}" data-testid="systemd-action-${safe}-stop">⏹ Stop</button>
+                               <button class="ui-btn small" data-unit-action="restart" data-name="${safe}" data-testid="systemd-action-${safe}-restart">↻ Restart</button>`
+                            : `<button class="ui-btn small primary" data-unit-action="start" data-name="${safe}" data-testid="systemd-action-${safe}-start">▶ Start</button>`}
+                        <button class="ui-btn small" data-unit-action="enable" data-name="${safe}" title="Enable at boot">Enable</button>
+                        <button class="ui-btn small" data-unit-action="disable" data-name="${safe}" title="Disable at boot">Disable</button>`}
                 </div></td>
             </tr>`;
         }).join('');
