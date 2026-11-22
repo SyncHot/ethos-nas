@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T14:43:27+00:00",
+  "generated_at": "2026-11-22T15:53:41+00:00",
   "latest": {
-    "version": "2.24.1",
-    "git_sha": "344d855",
-    "git_sha_full": "344d855484c05a663db5fbd57956fccc7e979107",
-    "build": 166,
-    "released_at": "2026-11-22T14:43:27+00:00",
-    "notes": "Host: zram now really uses zstd and the swap tuning is no longer overridden by an older sysctl file"
+    "version": "2.25.0",
+    "git_sha": "5ce6833",
+    "git_sha_full": "5ce68334e96e0ef348c2d12c909a6ed3dfd9a112",
+    "build": 168,
+    "released_at": "2026-11-22T15:53:41+00:00",
+    "notes": "Cameras: continuous recording with retention, timeline playback, motion zones and a live HLS wall"
   },
   "releases": [
+    {
+      "version": "2.25.0",
+      "git_sha": "5ce6833",
+      "git_sha_full": "5ce68334e96e0ef348c2d12c909a6ed3dfd9a112",
+      "build": 168,
+      "released_at": "2026-11-22T15:53:41+00:00",
+      "notes": "Cameras: continuous recording with retention, timeline playback, motion zones and a live HLS wall"
+    },
     {
       "version": "2.24.1",
       "git_sha": "344d855",
@@ -201,14 +209,6 @@
       "build": 106,
       "released_at": "2026-11-22T09:35:35+00:00",
       "notes": "Video Station: keyless metadata via Cinemeta/TVmaze, optional TMDB, provider picker and cache migration; File Manager archive extraction."
-    },
-    {
-      "version": "2.12.5",
-      "git_sha": "a6cf350",
-      "git_sha_full": "a6cf3504d2141953511802125a3f761c56cf5737",
-      "build": 103,
-      "released_at": "2026-11-22T09:07:42+00:00",
-      "notes": "Desktop: right-click menus stay inside the window, with wrapped labels on narrow screens."
     }
   ]
 }
