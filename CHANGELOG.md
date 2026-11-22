@@ -10,7 +10,26 @@ All notable, user-visible changes to EthOS NAS are documented here.
   of runtime changes: skill `release-tag-changelog`.
 
 ## [Unreleased]
+## [2.19.0] - 2026-11-22
 
+### Added
+
+- **Videos: 480p · tiny download version, now the default.** A fourth version
+  next to Original / 1080p / 720p (`ultrafast`, CRF 30, max 480p — roughly
+  0.5 GB/h), so a whole holiday batch fits on the phone. Pick it in
+  **Download settings**; the one-tap and multi-select Download use it.
+
+### Fixed
+
+- **Deleting a download that is still preparing/saving now works.** The trash
+  cancelled only the local row, so the next 2-second sync brought the film back;
+  it now cancels the NAS job too.
+- **The downloading film's poster no longer flickers.** Progress repaints the
+  existing list rows instead of rebuilding them (the poster is fetched once),
+  and an unchanged sync no longer rewrites IndexedDB every 2 s.
+- **No more lingering “Tasks 1”** on the Videos home page: the finished global
+  progress row is dismissed after a few seconds (the Downloads sheet keeps the
+  record).
 ## [2.18.1] - 2026-11-22
 
 ### Changed

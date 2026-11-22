@@ -129,7 +129,8 @@ DEFAULT_CONFIG = {
         "hardware_decode": True,
         # Default version for offline downloads ("Original" copies an H.264
         # stream instead of re-encoding it, so it is usually the fastest).
-        "download_quality": "balanced",
+        # 480p keeps the most films on a phone for a trip.
+        "download_quality": "tiny",
     },
     # Metadata (Phase 6/9) — display-only metadata + locally cached artwork.
     # The section keeps its historical `tmdb` name for API compatibility, but
@@ -1072,6 +1073,7 @@ EXPORT_QUALITY_CHOICES = (
     {"value": "original", "label": "Original · no re-encode"},
     {"value": "balanced", "label": "1080p"},
     {"value": "fast", "label": "720p · small"},
+    {"value": "tiny", "label": "480p · tiny"},
 )
 
 

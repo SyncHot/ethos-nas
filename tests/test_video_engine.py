@@ -240,6 +240,13 @@ def test_download_mode() -> None:
     mode, note = ve.download_mode(H264, "fast", ".mkv")
     check("a preset always encodes", mode == "transcode" and not note, mode)
 
+    check("480p preset exists", ve.QUALITY_PRESETS["tiny"]["max_height"] == 480,
+          str(ve.QUALITY_PRESETS.get("tiny")))
+    check("480p is an export quality", "tiny" in ve.EXPORT_QUALITIES,
+          str(ve.EXPORT_QUALITIES))
+    _pre, _video, filters = ve.build_video_args(H264, "transcode", None, "tiny")
+    check("480p downscales to 480", filters == ["scale=-2:480"], str(filters))
+
     cmd = ve.build_render_cmd(
         "ffmpeg", "/x/movie.mkv", H264_AC3, None, 0, "original", "192k",
         "/tmp/o.mp4", mode="remux")

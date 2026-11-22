@@ -263,7 +263,9 @@ function pendingFor(path) {
 function qualityLabel(value) {
     const hit = (state.downloadQualities || []).find((q) => q.value === value);
     if (hit) return hit.label;
-    return value === 'original' ? 'Original' : value === 'fast' ? '720p' : '1080p';
+    if (value === 'original') return 'Original';
+    if (value === 'tiny') return '480p';
+    return value === 'fast' ? '720p' : '1080p';
 }
 
 async function boot() {
@@ -486,6 +488,7 @@ function openSheet(item) {
                 { value: 'original', label: 'Original · no re-encode' },
                 { value: 'balanced', label: '1080p' },
                 { value: 'fast', label: '720p · small' },
+                { value: 'tiny', label: '480p · tiny' },
             ]).map((q) => `<button class="vd-btn small" type="button" data-action="download-q"
                     data-q="${esc(q.value)}" data-path="${esc(item.path)}">${esc(q.label)}</button>`).join('')}
         </div>`;
@@ -567,22 +570,26 @@ function stageTone(d) {
     return 'busy';
 }
 
-function downloadRowHtml(d) {
-    const item = findItem(d.path) || d.item || { path: d.path, title: d.title };
-    const progress = d.bytesTotal
+function progressOf(d) {
+    return d.bytesTotal
         ? Math.min(100, (d.bytesDone / d.bytesTotal) * 100)
         : (Number(d.percent) || 0);
+}
+
+function downloadRowHtml(d) {
+    const item = findItem(d.path) || d.item || { path: d.path, title: d.title };
+    const progress = progressOf(d);
     const active = ['queued', 'rendering', 'ready', 'downloading'].includes(d.status);
     const version = d.qualityLabel || qualityLabel(d.quality);
     const meta = [version, d.note, d.status === 'queued' && d.queuePosition ? `#${d.queuePosition}` : '']
         .filter(Boolean).join(' · ');
-    return `<div class="vd-dl" data-testid="vd-download-row">
-        <div class="vd-dl-art"><img src="${esc(d.posterUrl || artUrl(item))}" alt="" loading="lazy"></div>
+    return `<div class="vd-dl" data-testid="vd-download-row" data-dl-id="${esc(d.id)}">
+        <div class="vd-dl-art"><img src="${esc(d.posterUrl || artUrl(item))}" alt="" loading="lazy" decoding="async"></div>
         <div class="vd-dl-copy">
             <b>${esc(displayTitle(item))}</b>
-            <span class="vd-dl-stage" data-tone="${esc(stageTone(d))}">${esc(stageText(d))}</span>
-            ${meta ? `<span class="vd-dl-meta">${esc(meta)}</span>` : ''}
-            ${active ? `<div class="vd-dl-bar"><i style="width:${progress.toFixed(1)}%"></i></div>` : ''}
+            <span class="vd-dl-stage" data-role="stage" data-tone="${esc(stageTone(d))}">${esc(stageText(d))}</span>
+            ${meta ? `<span class="vd-dl-meta" data-role="meta">${esc(meta)}</span>` : ''}
+            ${active ? `<div class="vd-dl-bar"><i data-role="bar" style="width:${progress.toFixed(1)}%"></i></div>` : ''}
         </div>
         <div class="vd-dl-actions">
             ${d.status === 'done' ? `<button class="vd-icon-btn" type="button" data-action="play-local" data-path="${esc(d.path)}" aria-label="Play offline">▶</button>` : ''}
@@ -593,39 +600,84 @@ function downloadRowHtml(d) {
     </div>`;
 }
 
-function renderDownloads() {
+function downloadsSignature() {
+    return state.downloads
+        .map((d) => `${d.id}:${d.status}:${d.queuePosition || 0}:${d.error || ''}`)
+        .join('|');
+}
+
+function downloadsSummaryText() {
+    const active = state.downloads.filter((d) => ['queued', 'rendering', 'downloading'].includes(d.status)).length;
+    const ready = state.downloads.filter((d) => d.status === 'ready').length;
+    const done = state.downloads.filter((d) => d.status === 'done').length;
+    return [
+        active ? `${active} downloading` : '',
+        ready ? `${ready} ready to save` : '',
+        done ? `${done} on this device` : '',
+    ].filter(Boolean).join(' · ') || 'Nothing queued';
+}
+
+/**
+ * Refresh only the progress bits of an already rendered list.
+ *
+ * A full re-render every 250 ms recreated the <img> elements and made the
+ * poster of the film being saved visibly flicker.
+ */
+function updateDownloadsProgress() {
+    for (const d of state.downloads) {
+        const row = els.downloadsList.querySelector(`[data-dl-id="${d.id}"]`);
+        if (!row) { renderDownloads(true); return; }
+        const stage = row.querySelector('[data-role="stage"]');
+        if (stage) {
+            const text = stageText(d);
+            if (stage.textContent !== text) stage.textContent = text;
+            const tone = stageTone(d);
+            if (stage.dataset.tone !== tone) stage.dataset.tone = tone;
+        }
+        const bar = row.querySelector('[data-role="bar"]');
+        if (bar) bar.style.width = `${progressOf(d).toFixed(1)}%`;
+        const meta = row.querySelector('[data-role="meta"]');
+        if (meta) {
+            const version = d.qualityLabel || qualityLabel(d.quality);
+            const text = [version, d.note, d.status === 'queued' && d.queuePosition ? `#${d.queuePosition}` : '']
+                .filter(Boolean).join(' · ');
+            if (meta.textContent !== text) meta.textContent = text;
+        }
+    }
+    if (els.downloadsSummary) els.downloadsSummary.textContent = downloadsSummaryText();
+}
+
+function renderDownloads(force = false) {
     const info = storageInfo();
     els.storage.textContent = info
         ? `Device storage: ${fmtBytes(info.usage)} used · ${fmtBytes(info.quota)} available to this app`
         : '';
-    const groups = {
-        active: state.downloads.filter((d) => ['queued', 'rendering', 'downloading'].includes(d.status)),
-        ready: state.downloads.filter((d) => d.status === 'ready'),
-        done: state.downloads.filter((d) => d.status === 'done'),
-        failed: state.downloads.filter((d) => d.status === 'failed'),
-    };
-    if (els.downloadsSummary) {
-        const bits = [
-            groups.active.length ? `${groups.active.length} downloading` : '',
-            groups.ready.length ? `${groups.ready.length} ready to save` : '',
-            groups.done.length ? `${groups.done.length} on this device` : '',
-        ].filter(Boolean);
-        els.downloadsSummary.textContent = bits.join(' · ') || 'Nothing queued';
+    if (els.downloadsSummary) els.downloadsSummary.textContent = downloadsSummaryText();
+    if (!force && els.downloadsList.dataset.signature === downloadsSignature()
+            && els.downloadsList.childElementCount) {
+        updateDownloadsProgress();
+        return;
     }
     if (!state.downloads.length) {
+        els.downloadsList.dataset.signature = '';
         els.downloadsList.innerHTML = '<div class="vd-empty"><b>Nothing downloaded</b>Open a movie and choose Download to keep it on this device. You can queue as many as you like — the NAS prepares them one by one.</div>';
         return;
     }
+    const active = state.downloads.filter((d) => ['queued', 'rendering', 'downloading'].includes(d.status));
+    const ready = state.downloads.filter((d) => d.status === 'ready');
+    const done = state.downloads.filter((d) => d.status === 'done');
+    const failed = state.downloads.filter((d) => d.status === 'failed');
     const section = (title, rows, hint = '') => (rows.length
         ? `<section class="vd-dl-group"><h3>${esc(title)}</h3>${hint ? `<p class="vd-dl-hint">${esc(hint)}</p>` : ''}
            ${rows.map((d) => downloadRowHtml(d)).join('')}</section>`
         : '');
     els.downloadsList.innerHTML = [
-        section('Preparing', groups.active, 'The NAS renders the next film while the previous one saves.'),
-        section('Ready to save', groups.ready),
-        section('On this device', groups.done),
-        section('Failed', groups.failed),
+        section('Preparing', active, 'The NAS renders the next film while the previous one saves.'),
+        section('Ready to save', ready),
+        section('On this device', done),
+        section('Failed', failed),
     ].join('');
+    els.downloadsList.dataset.signature = downloadsSignature();
 }
 
 async function syncDownloadState() {
@@ -668,10 +720,13 @@ async function queueOne(item, quality) {
 async function removeDownload(path, id) {
     const entry = (id && state.downloads.find((d) => d.id === id)) || downloadFor(path);
     if (!entry) return;
-    await deleteDownload(entry.id);
+    if (entry.status === 'done') await deleteDownload(entry.id);
+    // Anything still active/ready also has a NAS job — deleting only the local
+    // row would let the next sync bring it straight back.
+    else await cancelDownload(entry.id);
     state.downloads = downloadsSnapshot();
     updateDownloadsBadge();
-    renderDownloads();
+    renderDownloads(true);
     render();
     toast('Download deleted', 'success');
 }
@@ -717,6 +772,7 @@ function renderSettings() {
         { value: 'original', label: 'Original · no re-encode' },
         { value: 'balanced', label: '1080p' },
         { value: 'fast', label: '720p · small' },
+        { value: 'tiny', label: '480p · tiny' },
     ];
     els.qualityOptions.innerHTML = choices.map((q) => `<label class="vd-choice">
         <input type="radio" name="vd-download-quality" value="${esc(q.value)}"

@@ -61,6 +61,16 @@ def main() -> int:
     check("multi-select queues many films",
           "downloadSelected" in videos and "selectAllVisible" in videos
           and "state.selected" in videos and "is-selecting" in videos)
+    check("480p is offered in the version pickers",
+          "480p · tiny" in videos)
+    check("deleting an active row cancels the NAS job",
+          "cancelDownload(entry.id)" in videos)
+    check("progress updates repaint in place (no poster flicker)",
+          "updateDownloadsProgress" in videos and "downloadsSignature" in videos)
+    check("a finished transfer leaves no global task row",
+          "task.dismiss()" in offline)
+    check("a poster is cached as soon as a film is queued",
+          "storePoster(row, row.item" in offline)
 
     check("markup has the settings entry", 'id="vd-settings-btn"' in page)
     check("markup has the download version group", 'id="vd-quality-options"' in page)

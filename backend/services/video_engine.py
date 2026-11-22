@@ -39,10 +39,10 @@ _AAC_LAYOUT_BY_CHANNELS = {1: "mono", 2: "stereo", 3: "3.0", 4: "4.0", 5: "5.0",
 # still decode Opus in MP4, and ``none`` keeps video playable without sound.
 AUDIO_CODECS = ("aac", "opus", "none")
 
-# Download ("offline export") presets: the two live-playback encoders plus
+# Download ("offline export") presets: the live-playback encoders plus
 # ``original`` — a stream copy when the source is already H.264 4:2:0 (seconds
 # instead of an hour on a Celeron). "high"/"source" stays playback-only.
-EXPORT_QUALITIES = ("fast", "balanced", "original")
+EXPORT_QUALITIES = ("tiny", "fast", "balanced", "original")
 
 # H.264 bitstreams an MP4 can carry unchanged. 10-bit / 4:2:2 / 4:4:4 would
 # play nowhere on phones, so those always re-encode.
@@ -51,6 +51,7 @@ COPY_SAFE_PIX_FMTS = {"yuv420p", "yuvj420p"}
 QUALITY_PRESETS = {
     # Tuned for a 4-core Celeron-class CPU (Intel N150): libx264 veryfast does
     # ~8 fps at 1440p, so downscaling is what keeps live playback watchable.
+    "tiny": {"preset": "ultrafast", "crf": 30, "max_height": 480},
     "fast": {"preset": "ultrafast", "crf": 28, "max_height": 720},
     "balanced": {"preset": "veryfast", "crf": 23, "max_height": 1080},
     "high": {"preset": "veryfast", "crf": 20, "max_height": 0},  # 0 = source res

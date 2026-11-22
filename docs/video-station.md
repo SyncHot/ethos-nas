@@ -565,7 +565,8 @@ export was a full re-encode. The queue, the versions and the speed are now a sha
 - **`original` version** (`video_engine.download_mode()`): H.264 4:2:0 sources are remuxed into
   MP4 (video `-c:v copy`, audio → AAC only when needed) or served as is when they already are a
   phone-playable MP4 (`mode=passthrough`, no disk use). HEVC/10-bit sources fall back to a 1080p
-  encode and the job carries a `note` that says so. Downloads offer `original | balanced | fast`;
+  encode and the job carries a `note` that says so. Downloads offer `original | balanced | fast | tiny`
+  (480p is the default — it keeps the most films on a phone for a trip);
   “Source · high” stays playback-only.
 - **Real queue** (`services/video_render.py`): up to 40 queued jobs per account, rendered one at a
   time with a `queue_position`; a rolling window of 5 prepared files per account (oldest reaped,
@@ -587,6 +588,10 @@ export was a full re-encode. The queue, the versions and the speed are now a sha
   phone `/videos` grid) get a **Select** mode — tap posters or **Select all**, then
   **Download · <default version>**. Each title is queued through the same `POST /exports`; the
   NAS renders them one at a time. The phone app also loads the saved default on start.
+- **480p · tiny** (core 2.19.0): a fourth download version (`ultrafast`, CRF 30, ≤480p, roughly
+  0.5 GB/h) and the new default, so a holiday batch fits on the phone. Trash on an active row now
+  cancels the NAS job (it used to reappear on the next sync), the list repaints progress in place
+  (no poster flicker) and the finished global task row dismisses itself.
 
 ### Measurements (N150, isolated `:9002`)
 - 1080p H.264 + AC3 MKV, `original`: remux in seconds (video copy, audio → AAC).

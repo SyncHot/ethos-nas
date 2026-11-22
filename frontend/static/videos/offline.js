@@ -205,6 +205,9 @@ function rowFromJob(job) {
 }
 
 function applyJob(row, job) {
+    const snapshot = () => [row.status, row.percent, row.size, row.quality, row.qualityLabel,
+        row.mode, row.note, row.queuePosition, row.error, row.bytesTotal].join('|');
+    const before = snapshot();
     const previous = row.status;
     row.quality = job.quality || row.quality;
     row.qualityLabel = job.quality_label || row.qualityLabel;
@@ -231,6 +234,7 @@ function applyJob(row, job) {
         row.percent = Number(job.percent) || 0;
     }
     if (row.status === 'done') row.queuePosition = 0;
+    return snapshot() !== before;
 }
 
 function publicItem(item) {
@@ -264,26 +268,31 @@ export async function syncDownloads() {
     }
     const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
     const byId = new Map(jobs.map((job) => [job.id, job]));
+    const touched = new Set();
     for (const row of _downloads) {
         const job = byId.get(row.id);
         if (!job) {
             if (row.status !== 'done' && row.status !== 'failed') {
                 row.status = 'failed';
                 row.error = 'The NAS no longer has this download — queue it again';
+                touched.add(row.id);
             }
             continue;
         }
-        applyJob(row, job);
+        if (applyJob(row, job)) touched.add(row.id);
     }
     const known = new Set(_downloads.map((row) => row.id));
     for (const job of jobs) {
         if (known.has(job.id)) continue;
         if (job.status === 'failed' || job.status === 'cancelled' || job.status === 'consumed') continue;
         _downloads.push(rowFromJob(job));
+        touched.add(job.id);
     }
     _downloads.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    // A no-op poll must not rewrite IndexedDB or repaint the list every 2 s.
+    if (!touched.size) return _downloads;
     notifyChange();
-    for (const row of _downloads) await persistRow(row.id);
+    for (const id of touched) await persistRow(id);
     return _downloads;
 }
 
@@ -322,6 +331,9 @@ export async function queueDownload(item, quality) {
     applyJob(row, job);
     upsert(row);
     await persistRow(row.id);
+    // Fetch the poster now: rows drawn while the film renders then reuse one
+    // blob URL instead of reloading a thumbnail on every repaint.
+    storePoster(row, row.item || item);
     await refreshStorage();
     pumpDownloads();
     return _downloads.find((entry) => entry.id === job.id) || row;
@@ -356,7 +368,14 @@ async function transferRow(row) {
     });
     try {
         const size = await downloadToCache(row, task);
-        const current = _downloads.find((entry) => entry.id === row.id) || row;
+        const current = _downloads.find((entry) => entry.id === row.id);
+        if (!current) {
+            // The user deleted/cancelled the row while the file was streaming.
+            try { const cache = await caches.open(MEDIA_CACHE); await cache.delete(new Request(`${MEDIA_PREFIX}${row.id}`)); } catch { /* ignore */ }
+            task.finish('cancelled', { detail: 'Cancelled' });
+            setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1000);
+            return;
+        }
         upsert({
             ...current,
             status: 'done',
@@ -371,6 +390,9 @@ async function transferRow(row) {
         await storePoster(row, row.item || {});
         await storeSubtitle(row);
         task.finish('done', { percent: 100, detail: 'Ready offline' });
+        // The Downloads sheet is the lasting record on a phone; one finished
+        // global task row would otherwise linger as “Tasks 1” on the home page.
+        setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 3000);
         logInfo('Download stored', `${row.id} ${formatBytes(size)}`);
         await acknowledgeDownload(row.id);
         await refreshStorage();
@@ -378,7 +400,12 @@ async function transferRow(row) {
         if (!stillBusy) toast(`${title} is ready offline`, 'success');
     } catch (error) {
         const message = error?.detail || error?.message || 'Download failed';
-        const current = _downloads.find((entry) => entry.id === row.id) || row;
+        const current = _downloads.find((entry) => entry.id === row.id);
+        if (!current) {
+            task.finish('cancelled', { detail: 'Cancelled' });
+            setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1000);
+            return;
+        }
         upsert({ ...current, status: 'failed', error: message });
         await persistRow(row.id);
         task.finish('failed', { detail: message });
@@ -407,6 +434,10 @@ export async function cancelDownload(id) {
         notifyChange();
     }
     try { await dbDelete(id); } catch { /* ignore */ }
+    try {
+        const cache = await caches.open(MEDIA_CACHE);
+        await cache.delete(new Request(`${MEDIA_PREFIX}${id}`));
+    } catch { /* cache may be unavailable */ }
     await refreshStorage();
 }
 

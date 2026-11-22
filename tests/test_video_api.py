@@ -279,11 +279,11 @@ def main() -> int:
             code, body = call(base, "GET", "/api/videos/download-settings", admin)
             settings = json.loads(body) if code == 200 else {}
             check("download settings expose the default",
-                  code == 200 and settings.get("quality") == "balanced",
+                  code == 200 and settings.get("quality") == "tiny",
                   f"{code} {body[:200]}")
             check("download settings list the versions",
                   [q["value"] for q in settings.get("qualities", [])]
-                  == ["original", "balanced", "fast"], str(settings.get("qualities")))
+                  == ["original", "balanced", "fast", "tiny"], str(settings.get("qualities")))
             code, _ = call(base, "POST", "/api/videos/download-settings", admin,
                            {"quality": "original"})
             check("download default is saved", code == 200, str(code))
@@ -308,6 +308,15 @@ def main() -> int:
             check("a second job is queued instead of rejected",
                   code == 202 and bool(second.get("id")) and second.get("id") != job_id,
                   f"{code} {body[:300]}")
+
+            code, body = call(base, "POST", "/api/videos/exports", admin,
+                              {"path": str(sample2), "q": "tiny", "a": 0})
+            tiny = json.loads(body) if code == 202 else {}
+            check("480p export is accepted",
+                  code == 202 and tiny.get("quality") == "tiny"
+                  and tiny.get("quality_label") == "480p", f"{code} {body[:200]}")
+            if tiny.get("id"):
+                call(base, "DELETE", f"/api/videos/exports/{tiny['id']}", admin)
 
             code, body = call(base, "GET", "/api/videos/exports", admin)
             listing = json.loads(body) if code == 200 else {}

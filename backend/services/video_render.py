@@ -51,8 +51,8 @@ MAX_TOTAL_BYTES = 50 * 1024 ** 3  # 50 GiB of prepared downloads
 MIN_FREE_BYTES = 5 * 1024 ** 3    # refuse to start below 5 GiB free
 WORKER_TIMEOUT = 6 * 3600
 MAX_JOBS_KEPT = 300
-QUALITY_LABELS = {"fast": "720p", "balanced": "1080p", "high": "source",
-                  "original": "Original"}
+QUALITY_LABELS = {"tiny": "480p", "fast": "720p", "balanced": "1080p",
+                  "high": "source", "original": "Original"}
 
 
 class RenderError(Exception):

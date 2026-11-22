@@ -41,14 +41,15 @@ icon can be pinned.
 ## Offline downloads
 
 1. `POST /api/videos/exports {path, q?, a}` → `202` with a job
-   (`queued → rendering → done`). `q` (`original`, `balanced`, `fast`) is
+   (`queued → rendering → done`). `q` (`original`, `balanced`, `fast`, `tiny`) is
    optional; omitted means the account default from
-   `GET/POST /api/videos/download-settings`. Many jobs may be queued: the NAS
-   renders them **one at a time** and `queue_position` drives the UI.
+   `GET/POST /api/videos/download-settings` (default `tiny` = 480p, so many films
+   fit on a phone). Many jobs may be queued: the NAS renders them **one at a
+   time** and `queue_position` drives the UI.
 2. `original` is the fast path: an H.264 4:2:0 source is copied (MKV → MP4
    remux) or served as is when it already is a phone-playable MP4
    (`mode=passthrough`); HEVC/10-bit sources fall back to a 1080p encode with a
-   visible `note`. `fast`/`balanced` always re-encode (720p/1080p).
+   visible `note`. `fast`/`balanced`/`tiny` always re-encode (720p/1080p/480p).
 3. The page polls `GET /api/videos/exports` (2 s while the sheet is open or a
    job is active) and **reconciles on every start**: a render that continued
    while the app was closed reappears with its stage and position instead of
@@ -63,6 +64,10 @@ icon can be pinned.
    (`ethos-videos-db`) follow.
 5. After storing, the page calls `POST /api/videos/exports/{id}/consumed`, so
    the NAS frees that file immediately (it also expires with the TTL).
+   The list is repainted **in place** while a transfer runs (the poster node is
+   never recreated, so it does not flicker), a no-op sync does not touch
+   IndexedDB, and the finished global progress row is dismissed after 3 s (the
+   Downloads sheet is the lasting record on a phone).
 6. Playback uses `localMediaUrl(id)` → `/__media/<id>`; the service worker
    answers it **with Range support** (synthesised `206`/`416` slices of the
    cached Blob) so seeking works offline.
@@ -72,7 +77,7 @@ Server-side rules (`services/video_render.py`, `services/video_engine.py`):
 | Limit | Value |
 |---|---|
 | queued + rendering jobs per user | 40 (over the cap → `409`) |
-| allowed download versions | `original`, `balanced`, `fast` |
+| allowed download versions | `original`, `balanced`, `fast`, `tiny` |
 | prepared files kept per user | rolling window of 5 (oldest reaped) |
 | total area | 50 GiB, free-space preflight 5 GiB (`507`) |
 | job TTL | 7 days; “saved on device” rows drop after 1 day |
