@@ -86,6 +86,7 @@ from backend.routers.files import _sanitize
 from backend.services.thumbnails import _extract_video_frame, _video_fallback_svg
 # JWT payload decoder (to bind Private sessions to the logged-in user)
 from backend.routers.auth import _verify_token
+from backend.services import gallery_private
 from backend.services import json_store, path_scope, sharing_service, user_data
 from backend.services import trash_service
 
@@ -194,98 +195,27 @@ def _is_allowed_read(abs_path: str) -> bool:
 
 
 # ── Private section: PIN + at-rest encryption ───────────────────────────────
-#
-# A user-chosen PIN (min 6 chars) protects the Private section on top of the
-# normal login. Only a PBKDF2 verification hash is persisted — never the PIN.
-# The AES-256-GCM key for file encryption is derived from the same PIN with a
-# separate salt, so there is no stored key and no recovery path: forgetting
-# the PIN makes encrypted private items unrecoverable (deliberate).
-#
-# Files flagged private are re-encrypted in place to <path>.ethos.enc:
-#   ETHOS-ENC1\x00 || nonce(12) || AESGCM ciphertext+tag
-# Displaying them requires a short-lived Private session (ps_token, 30 min,
-# in-memory only, bound to the logged-in user). Downloads of private items
-# serve the ciphertext blob — a copied file cannot be shown without the PIN.
+# Crypto, the encrypted-file format and the ps-token registry live in
+# services/gallery_private.py (TODO.md P2-02); only the request-bound glue —
+# JWT decoding, the PIN config lookup and the index lookup — stays here.
 
-PIN_MIN_LEN = 6
-PBKDF2_ITERATIONS = 600_000          # OWASP recommendation for PBKDF2-SHA256
-ENC_MAGIC = b"ETHOS-ENC1\x00"
-ENC_SUFFIX = ".ethos.enc"
-MAX_ENCRYPT_SIZE = 512 * 1024 * 1024  # refuse to encrypt files larger than this
-SESSION_TTL = 1800                    # Private session lifetime (seconds)
-
-_priv_sessions: dict[str, dict] = {}  # ps_token → {user, exp, key}
-_PRIV_TMP_DIR = settings.DATA_DIR / ".privtmp"
-_priv_thumb_cache: dict[tuple, tuple] = {}   # (path,size) → (mtime,size,webp bytes)
-
-
-def _pbkdf2(pin: str, salt_hex: str, dklen: int) -> bytes:
-    return hashlib.pbkdf2_hmac(
-        "sha256", pin.encode("utf-8"), bytes.fromhex(salt_hex),
-        PBKDF2_ITERATIONS, dklen=dklen)
-
-
-def _pin_hash(pin: str, salt_hex: str) -> str:
-    return _pbkdf2(pin, salt_hex, 32).hex()
-
-
-def _enc_key(pin: str, enc_salt_hex: str) -> bytes:
-    """AES-256 key for file encryption (separate derivation from the hash)."""
-    return _pbkdf2(pin, enc_salt_hex, 32)
-
-
-def _encrypt_bytes(key: bytes, data: bytes) -> bytes:
-    nonce = os.urandom(12)
-    return ENC_MAGIC + nonce + AESGCM(key).encrypt(nonce, data, None)
-
-
-def _decrypt_bytes(key: bytes, blob: bytes) -> bytes:
-    if not blob.startswith(ENC_MAGIC):
-        raise ValueError("not an EthOS-encrypted file")
-    off = len(ENC_MAGIC)
-    nonce, ct = blob[off:off + 12], blob[off + 12:]
-    return AESGCM(key).decrypt(nonce, ct, None)   # InvalidTag on wrong key/corrupt
-
-
-def _encrypt_file(path: str, key: bytes) -> None:
-    """Encrypt <path> in place → <path>.ethos.enc (atomic; original removed)."""
-    st = os.stat(path)
-    if not stat.S_ISREG(st.st_mode):
-        raise ValueError("not a regular file")
-    if st.st_size > MAX_ENCRYPT_SIZE:
-        raise ValueError(f"file too large to encrypt (> {MAX_ENCRYPT_SIZE // (1024 * 1024)} MiB)")
-    with open(path, "rb") as f:
-        data = f.read()
-    blob = _encrypt_bytes(key, data)
-    tmp = path + ENC_SUFFIX + ".tmp"
-    with open(tmp, "wb") as f:
-        f.write(blob)
-    os.replace(tmp, path + ENC_SUFFIX)
-    os.remove(path)
-
-
-def _decrypt_file(enc_path: str, key: bytes) -> None:
-    """Decrypt <path>.ethos.enc back to the original (atomic)."""
-    path = enc_path[: -len(ENC_SUFFIX)]
-    with open(enc_path, "rb") as f:
-        blob = f.read()
-    data = _decrypt_bytes(key, blob)
-    tmp = path + ".dec.tmp"
-    with open(tmp, "wb") as f:
-        f.write(data)
-    os.replace(tmp, path)
-    os.remove(enc_path)
-
-
-def _reencrypt_file(enc_path: str, old_key: bytes, new_key: bytes) -> None:
-    """Re-key one encrypted file (PIN change)."""
-    with open(enc_path, "rb") as f:
-        blob = f.read()
-    data = _decrypt_bytes(old_key, blob)
-    tmp = enc_path + ".tmp"
-    with open(tmp, "wb") as f:
-        f.write(_encrypt_bytes(new_key, data))
-    os.replace(tmp, enc_path)
+PIN_MIN_LEN = gallery_private.PIN_MIN_LEN
+ENC_SUFFIX = gallery_private.ENC_SUFFIX
+SESSION_TTL = gallery_private.SESSION_TTL
+_priv_sessions = gallery_private.SESSIONS
+_priv_thumb_cache = gallery_private.THUMB_CACHE
+_PRIV_TMP_DIR = gallery_private.PRIV_TMP_DIR
+_pin_hash = gallery_private.pin_hash
+_enc_key = gallery_private.enc_key
+_encrypt_file = gallery_private.encrypt_file
+_decrypt_file = gallery_private.decrypt_file
+_reencrypt_file = gallery_private.reencrypt_file
+_issue_session = gallery_private.issue_session
+_session_for = gallery_private.session_for
+_decrypt_to_tmp = gallery_private.decrypt_to_tmp
+_rm_quiet = gallery_private.rm_quiet
+_private_image_thumb = gallery_private.private_image_thumb
+_private_video_thumb = gallery_private.private_video_thumb
 
 
 def _request_user(request: Request) -> str:
@@ -308,20 +238,6 @@ def _request_user(request: Request) -> str:
     return payload["username"] if payload else ""
 
 
-def _issue_session(username: str, key: bytes) -> str:
-    now = time.time()
-    for t in [t for t, v in _priv_sessions.items() if v["exp"] < now]:
-        del _priv_sessions[t]
-    token = secrets.token_urlsafe(32)
-    _priv_sessions[token] = {"user": username, "exp": now + SESSION_TTL, "key": key}
-    return token
-
-
-def _session_for(token: str, username: str) -> Optional[dict]:
-    v = _priv_sessions.get(token or "")
-    if not v or v["user"] != username or v["exp"] < time.time():
-        return None
-    return v
 
 
 def _resolve_priv_key(request: Request, pin: str, ps_token: str) -> tuple:
@@ -347,12 +263,16 @@ def _resolve_priv_key(request: Request, pin: str, ps_token: str) -> tuple:
     return None, "no_session"
 
 
+
+
 def _require_priv_session(request: Request, ps_token: str) -> tuple[str, bytes]:
     user = _request_user(request)
     sess = _session_for(ps_token, user) if user else None
     if not sess:
         raise HTTPException(status_code=403, detail="pin_required")
     return user, sess["key"]
+
+
 
 
 def _private_item_path(path: str) -> str:
@@ -364,60 +284,7 @@ def _private_item_path(path: str) -> str:
     raise HTTPException(status_code=404, detail="Not a private item")
 
 
-def _decrypt_to_tmp(enc: str, key: bytes, orig: str) -> str:
-    """Decrypt an encrypted file to a 0600 temp file (Range-capable serving)."""
-    _PRIV_TMP_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(_PRIV_TMP_DIR, 0o700)
-    with open(enc, "rb") as f:
-        blob = f.read()
-    data = _decrypt_bytes(key, blob)   # may raise InvalidTag
-    ext = os.path.splitext(orig)[1] or ".bin"
-    tmp = _PRIV_TMP_DIR / (hashlib.sha256(orig.encode()).hexdigest() + ext)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    return str(tmp)
 
-
-def _rm_quiet(path: str) -> None:
-    try:
-        if path and os.path.isfile(path):
-            os.remove(path)
-    except OSError:
-        pass  # best-effort cleanup — nothing to report
-
-
-def _private_image_thumb(enc: str, key: bytes, size: int) -> bytes:
-    """Decrypt an image in memory → square WebP thumbnail (no disk cache)."""
-    import io
-    with open(enc, "rb") as f:
-        blob = f.read()
-    data = _decrypt_bytes(key, blob)
-    with Image.open(io.BytesIO(data)) as img:
-        if img.mode not in ("RGB", "RGBA", "P", "L"):
-            img = img.convert("RGBA")
-        img.thumbnail((size, size), Image.Resampling.LANCZOS)
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        buf = io.BytesIO()
-        img.save(buf, "WEBP", quality=85)
-        return buf.getvalue()
-
-
-def _private_video_thumb(enc: str, key: bytes, orig: str, size: int) -> Optional[bytes]:
-    """Decrypt a video to a temp file, extract one frame via ffmpeg (files.py),
-    read the WebP back into memory, then delete all plaintext artifacts."""
-    tmp = _decrypt_to_tmp(enc, key, orig)
-    out = _PRIV_TMP_DIR / (hashlib.sha256(f"vt:{orig}:{size}".encode()).hexdigest() + ".webp")
-    try:
-        ok = _extract_video_frame(tmp, size, out)
-        if not ok or not out.exists():
-            return None
-        with open(out, "rb") as f:
-            return f.read()
-    finally:
-        _rm_quiet(tmp)
-        _rm_quiet(str(out))
 
 
 # ── Index (in-memory, persist on rescan) ─────────────────────────────────────

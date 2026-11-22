@@ -11,6 +11,24 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.30.1] - 2026-11-22
+
+### Changed
+
+- **Private vault moved out of the Gallery router**: PIN derivation (PBKDF2-SHA256,
+  600k iterations), the AES-256-GCM at-rest format, the 30-minute `ps` session registry,
+  plaintext temp files and the decrypt-in-memory private thumbnails now live in
+  `services/gallery_private.py`. `routers/gallery.py` keeps only the request-bound glue
+  (JWT decode, PIN config lookup, index lookup) plus the endpoints — same paths, same
+  responses, `gallery.py` 2310 → 2176 lines.
+
+### Tests
+
+- New `tests/test_gallery_private.py` (37 checks: PIN derivation, header/wrong-key
+  behaviour, file round-trip, PIN re-key, session TTL and user binding, 0600 temp files,
+  in-memory private thumbnails). PIN set → verify → change verified live on an isolated
+  instance (200/200/200, old PIN 403).
+
 ## [2.30.0] - 2026-11-22
 
 ### Changed
