@@ -271,6 +271,13 @@ async def browse(force: bool = False) -> dict:
     for package in merged.values():
         record = installed.get(package["id"])
         item = {**package}
+        if record:
+            # The record carries the *effective* values: `ui.port` /
+            # `healthcheck.port` are the published ones (a port taken at install
+            # time is re-mapped), plus the runtime and the remap note.
+            for key in ("ui", "healthcheck", "runtime", "port_remap"):
+                if key in record:
+                    item[key] = record[key]
         item["installed"] = bool(record)
         item["installed_version"] = record.get("version", "") if record else ""
         item["update_available"] = bool(

@@ -606,6 +606,20 @@ async def package_action(pkg_id: str, req: ActionRequest) -> dict:
         raise _http_error(exc) from None
 
 
+@router.post("/{pkg_id}/repair-ports", dependencies=[Depends(require_admin)])
+async def repair_package_ports(pkg_id: str) -> dict:
+    """Re-publish a package on a free host port and restart it.
+
+    The port is picked at install time; a later boot order (another compose
+    project grabbing it first) leaves the container unable to bind. This re-plans
+    the mapping, rewrites the generated override and recreates the service.
+    """
+    try:
+        return await package_installer.repair_ports(pkg_id)
+    except PackageError as exc:
+        raise _http_error(exc) from None
+
+
 @router.post("/{pkg_id}/update", dependencies=[Depends(require_admin)])
 async def update_package_endpoint(pkg_id: str) -> dict:
     try:

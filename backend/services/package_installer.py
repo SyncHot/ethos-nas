@@ -457,6 +457,44 @@ async def package_status(pkg_id: str) -> dict:
     }
 
 
+async def repair_ports(pkg_id: str) -> dict:
+    """Re-align a package's published host port with reality.
+
+    The port is chosen at install time, but it can be lost later: a NAS boot may
+    start another compose project first, a user starts a dev server, or someone
+    adds a container by hand. The package container then dies on a port it can no
+    longer bind. This re-plans the mapping (keeping the current remap while it is
+    free, otherwise picking a new one), rewrites the override, updates the record
+    and recreates the service when the published port changed.
+    """
+    check_pkg_id(pkg_id)
+    record = packages_store.get_package(pkg_id)
+    if not record:
+        raise PackageError(f"Package {pkg_id!r} not found", 404)
+    if not compose_file(pkg_id):
+        raise PackageError("Only compose packages publish a host port", 400)
+    target = packages_store.package_dir(pkg_id)
+    previous_port = int((record.get("ui") or {}).get("port") or 0)
+    plan = _port_plan(pkg_id, record, target, previous=record.get("port_remap"))
+    updated = _apply_port_plan({**record}, plan)
+    new_port = int((updated.get("ui") or {}).get("port") or 0)
+    changed = bool(new_port and new_port != previous_port)
+    if changed or plan.get("remap"):
+        packages_store.replace_package(updated)
+    await _compose(pkg_id, compose_file(pkg_id), "up", "-d",
+                   *(["--force-recreate"] if changed else []))
+    logger.info("Package %s: port repair finished (port %s -> %s, recreated=%s)",
+                pkg_id, previous_port, new_port or previous_port, changed)
+    return {
+        "id": pkg_id,
+        "name": updated.get("name") or pkg_id,
+        "port": new_port or previous_port,
+        "previous_port": previous_port,
+        "remapped": bool(plan.get("remap")),
+        "recreated": changed,
+    }
+
+
 async def compose_action(pkg_id: str, action: str) -> dict:
     check_pkg_id(pkg_id)
     if action not in {"start", "stop", "restart"}:

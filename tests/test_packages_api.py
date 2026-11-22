@@ -206,6 +206,11 @@ def main() -> int:
               app_data.get("size_bytes", 0) > 0 and str(app_data.get("path", "")).endswith("demo-pkg"),
               str(app_data))
 
+        status, body = request("POST", "/api/packages/nope/repair-ports")
+        check("repair-ports on an unknown package → 404", status == 404, f"{status} {body}")
+        status, body = request("POST", "/api/packages/demo-pkg/repair-ports")
+        check("repair-ports on a files-only package → 400", status == 400, f"{status} {body}")
+
         status, body = request("DELETE", "/api/packages/orphans/demo-pkg")
         check("installed package data is not an orphan", status == 409, f"{status} {body}")
 

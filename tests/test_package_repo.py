@@ -96,6 +96,23 @@ def main() -> int:
         fetched = asyncio.run(package_repo.fetch_manifest(entry))
         check("manifest verifies", fetched["id"] == "demo")
 
+        # An installed record wins over the catalog manifest for the fields the
+        # window needs: a busy port is re-mapped at install time.
+        packages_store.add_package({
+            "id": "demo", "name": "Demo", "version": "2.0.0", "runtime": "compose",
+            "ui": {"mode": "window", "scheme": "http", "port": 3124, "path": "/"},
+            "healthcheck": {"scheme": "http", "port": 3124, "path": "/"},
+            "port_remap": {"from": 3000, "to": 3124, "reserved": [3124]},
+        })
+        packages_store.save_cache({})
+        row = asyncio.run(package_repo.browse())[ "packages"][0]
+        check("browse row reports the effective (re-mapped) port",
+              (row.get("ui") or {}).get("port") == 3124
+              and (row.get("port_remap") or {}).get("to") == 3124, str(row.get("ui")))
+        check("browse row reports the runtime", row.get("runtime") == "compose", str(row.get("runtime")))
+        packages_store.remove_package("demo")
+        packages_store.save_cache({})
+
         # Tamper the index; force a refresh with no cache.
         index_path.write_text(json.dumps({**index, "name": "Tampered"}), encoding="utf-8")
         packages_store.save_cache({})

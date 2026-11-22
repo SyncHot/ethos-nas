@@ -11,6 +11,19 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.28.6] - 2026-11-22
+
+### Added
+
+- **Package Center shows when a package runs on a re-mapped port** ("port 3000
+  was already in use, so this package listens on 3124") and offers a **Repair
+  ports** action (`POST /api/packages/<id>/repair-ports`). It matters after a
+  boot in which another compose project grabbed the port first: the package
+  container could no longer bind and sat dead. Repair re-plans the mapping,
+  rewrites the generated compose override and recreates the service, and the
+  catalog now reports the effective `ui.port` instead of the manifest's
+  original one.
+
 ## [2.28.5] - 2026-11-22
 
 ### Fixed

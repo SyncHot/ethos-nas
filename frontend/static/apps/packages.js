@@ -140,13 +140,17 @@ function _systemWarning(pkg) {
 function _uiExposure(pkg) {
     const ui = pkg.ui || (pkg.manifest && pkg.manifest.ui) || null;
     if (!ui || ui.mode !== 'window' || !ui.port) return '';
+    // The requested port was taken, so the installer published another one.
+    const remap = pkg.port_remap && pkg.port_remap.from && pkg.port_remap.to !== pkg.port_remap.from
+        ? `<div data-testid="pkg-port-remap" style="font-size:12px;color:var(--text-3);margin-top:6px;">Port ${escapeHtml(String(pkg.port_remap.from))} was already in use, so this package listens on <strong>${escapeHtml(String(pkg.port_remap.to))}</strong>.</div>`
+        : '';
     if (ui.expose === 'lan') {
         const auth = ui.auth === 'package'
             ? 'the app brings its own login'
             : 'no login — anyone who can reach this NAS can open it';
-        return `<div data-testid="pkg-ui-exposure" class="ui-callout"><strong>Port ${escapeHtml(String(ui.port))} is reachable on your network</strong> · ${escapeHtml(auth)}.</div>`;
+        return `<div data-testid="pkg-ui-exposure" class="ui-callout"><strong>Port ${escapeHtml(String(ui.port))} is reachable on your network</strong> · ${escapeHtml(auth)}.</div>${remap}`;
     }
-    return `<div data-testid="pkg-ui-exposure" class="ui-callout">Port ${escapeHtml(String(ui.port))} listens on the NAS loopback only.</div>`;
+    return `<div data-testid="pkg-ui-exposure" class="ui-callout">Port ${escapeHtml(String(ui.port))} listens on the NAS loopback only.</div>${remap}`;
 }
 
 // Dependencies a `runtime: venv` package installs into its own virtualenv
@@ -653,7 +657,7 @@ async function _openDetail(pkgId) {
         </label>` : ''}
         ${_pythonRequires(detail).length ? `<div style="font-size:12px;margin-top:6px;">Package environment: ${_pythonRequires(detail).map(escapeHtml).join(', ')} — installed into a private virtualenv from bundled wheels, offline.</div>` : ''}
         ${(detail.screenshots || []).length ? `<div style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;">${detail.screenshots.map((url) => `<a href="${escapeAttr(url)}" target="_blank" rel="noopener"><img src="${escapeAttr(url)}" alt="" style="height:90px;border-radius:8px;"></a>`).join('')}</div>` : ''}
-        ${detail.installed && _pkg.isAdmin ? `<div style="margin-top:12px;"><button class="btn-ghost" data-testid="pkg-detail-logs" style="font-size:12px;padding:4px 10px;">📋 Open logs for ${escapeHtml(detail.name)}</button></div>` : ''}`;
+        ${detail.installed && _pkg.isAdmin ? `<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn-ghost" data-testid="pkg-detail-logs" style="font-size:12px;padding:4px 10px;">📋 Open logs for ${escapeHtml(detail.name)}</button>${detail.runtime === 'compose' && detail.ui && detail.ui.port ? `<button class="btn-ghost" data-testid="pkg-detail-repair-ports" style="font-size:12px;padding:4px 10px;" title="Re-publish this package on a free port when another service took its port">🔌 Repair ports</button>` : ''}</div>` : ''}`;
     await showFormModal({
         title: detail.name,
         width: '620px',
@@ -663,6 +667,8 @@ async function _openDetail(pkgId) {
         onReady: (modalBody) => {
             const logsBtn = modalBody?.querySelector('[data-testid="pkg-detail-logs"]');
             if (logsBtn) logsBtn.addEventListener('click', () => openLogs({ app: `pkg:${detail.id}` }));
+            const repairBtn = modalBody?.querySelector('[data-testid="pkg-detail-repair-ports"]');
+            if (repairBtn) repairBtn.addEventListener('click', () => _repairPorts(detail.id));
         },
         onSubmit: canUpdate || canInstall || canUninstall
             ? async (values, { setError, close }) => {
@@ -686,6 +692,23 @@ async function _openDetail(pkgId) {
             }
             : null,
     });
+}
+
+async function _repairPorts(pkgId) {
+    const pkg = _pkg.catalog.find((p) => p.id === pkgId);
+    const label = pkg ? pkg.name : pkgId;
+    try {
+        const result = await apiJsonFetch(`/api/packages/${encodeURIComponent(pkgId)}/repair-ports`, { method: 'POST' });
+        if (result.recreated) {
+            addNotification(
+                `${label} moved to port ${result.port} (port ${result.previous_port} was taken)`, 'success');
+        } else {
+            addNotification(`${label} can still use port ${result.port}`, 'success');
+        }
+        await _loadAll(true);
+    } catch (err) {
+        addNotification(err.detail || err.message, 'error');
+    }
 }
 
 async function _install(pkgId) {

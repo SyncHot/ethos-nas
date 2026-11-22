@@ -143,6 +143,11 @@ repo/
       cannot be remapped (EthOS starts the process itself) — those still fail
       with “Port 3000 is already used by <container>”. Implementation:
       `services/package_ports.py` + `_port_plan` in `services/package_installer.py`.
+      If the port is lost later (a boot race with another compose project),
+      Package Center's **Repair ports** action
+      (`POST /api/packages/<id>/repair-ports`, admin) re-plans the mapping,
+      rewrites the override and recreates the service; the detail dialog shows
+      the recorded `port_remap` so the effective port is never a surprise.
     When EthOS itself is served over HTTPS, the browser blocks an `http` frame (mixed content);
     the window then offers the tab-only card instead of a blank pane.
   - `{"mode": "native", "entry": "frontend/app.js"}` — the entry module is loaded
