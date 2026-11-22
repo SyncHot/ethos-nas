@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T16:01:53+00:00",
+  "generated_at": "2026-11-22T16:13:29+00:00",
   "latest": {
-    "version": "2.25.1",
-    "git_sha": "61c806c",
-    "git_sha_full": "61c806c315fed26fca6fed521121db16c677602f",
-    "build": 170,
-    "released_at": "2026-11-22T16:01:53+00:00",
-    "notes": "Cameras: stream passwords are no longer written to ffmpeg logs"
+    "version": "2.26.0",
+    "git_sha": "500f193",
+    "git_sha_full": "500f193f26e2cb61648d5adf12dda82e8889094d",
+    "build": 172,
+    "released_at": "2026-11-22T16:13:29+00:00",
+    "notes": "Cameras: single-stream cameras record continuously over one RTSP session"
   },
   "releases": [
+    {
+      "version": "2.26.0",
+      "git_sha": "500f193",
+      "git_sha_full": "500f193f26e2cb61648d5adf12dda82e8889094d",
+      "build": 172,
+      "released_at": "2026-11-22T16:13:29+00:00",
+      "notes": "Cameras: single-stream cameras record continuously over one RTSP session"
+    },
     {
       "version": "2.25.1",
       "git_sha": "61c806c",
@@ -201,14 +209,6 @@
       "build": 112,
       "released_at": "2026-11-22T09:58:19+00:00",
       "notes": "Movies with Dolby Digital Plus 5.1(side) audio (WEB-DL rips) play again: AAC is normalised to a standard 5.1/7.1 layout so Chrome accepts the stream. The player logs the real error, retries once and shows the reason; a crashed encoder is logged with its ffmpeg stderr."
-    },
-    {
-      "version": "2.13.1",
-      "git_sha": "57c88e0",
-      "git_sha_full": "57c88e0be30c0dd1ffd24452f71bd29689fc447d",
-      "build": 109,
-      "released_at": "2026-11-22T09:48:56+00:00",
-      "notes": "Video Station: 10-bit HEVC playback fix (VA-API nv12) and automatic software HLS fallback."
     }
   ]
 }
