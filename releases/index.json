@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T09:35:35+00:00",
+  "generated_at": "2026-11-22T09:48:56+00:00",
   "latest": {
-    "version": "2.13.0",
-    "git_sha": "110388e",
-    "git_sha_full": "110388e5aa9a28f7a065128750c152324afffc7d",
-    "build": 106,
-    "released_at": "2026-11-22T09:35:35+00:00",
-    "notes": "Video Station: keyless metadata via Cinemeta/TVmaze, optional TMDB, provider picker and cache migration; File Manager archive extraction."
+    "version": "2.13.1",
+    "git_sha": "57c88e0",
+    "git_sha_full": "57c88e0be30c0dd1ffd24452f71bd29689fc447d",
+    "build": 109,
+    "released_at": "2026-11-22T09:48:56+00:00",
+    "notes": "Video Station: 10-bit HEVC playback fix (VA-API nv12) and automatic software HLS fallback."
   },
   "releases": [
+    {
+      "version": "2.13.1",
+      "git_sha": "57c88e0",
+      "git_sha_full": "57c88e0be30c0dd1ffd24452f71bd29689fc447d",
+      "build": 109,
+      "released_at": "2026-11-22T09:48:56+00:00",
+      "notes": "Video Station: 10-bit HEVC playback fix (VA-API nv12) and automatic software HLS fallback."
+    },
     {
       "version": "2.13.0",
       "git_sha": "110388e",
@@ -201,14 +209,6 @@
       "build": 56,
       "released_at": "2026-11-20T13:00:23+00:00",
       "notes": "Setup: a freshly flashed appliance can be claimed in the browser with the code shown on its screen — no HDMI keyboard, no default password"
-    },
-    {
-      "version": "2.3.15",
-      "git_sha": "69288e8",
-      "git_sha_full": "69288e808902086b2e923ac9c30fea004ae46f1e",
-      "build": 54,
-      "released_at": "2026-11-20T11:42:03+00:00",
-      "notes": "Packages: installing a package again works even after a failed start left its directory behind."
     }
   ]
 }
