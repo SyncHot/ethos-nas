@@ -54,7 +54,7 @@ from pydantic import BaseModel, Field
 from backend.config import settings
 from backend.routers.auth import require_admin
 from backend.services import path_scope, pressure_guard, user_data
-from backend.services import rss_service
+from backend.services import download_rss
 from backend.services.bencode import parse_magnet as _parse_magnet
 from backend.services.bencode import parse_torrent as _parse_torrent
 from backend.services.download_transfer import check_disk_space as _check_disk_space
@@ -1582,107 +1582,25 @@ def stop_watch_folder() -> None:
 
 
 # ── RSS feeds + rules ────────────────────────────────────────────────────────
-# A background loop polls each enabled feed at its own interval, matches items
-# against an include/exclude regex and queues the resulting magnet/.torrent as a
-# normal Downloads task. Seen item ids are persisted (bounded) so a
-# restart does not re-queue the same release.
+# The scanner — bounded fetch, rule matching, per-feed intervals, persisted
+# seen set — lives in services/download_rss.py (TODO.md P2-01). The router
+# supplies the per-identity config loader, the enqueue path and the bencode
+# parser, and owns the background loop.
 
-RSS_SEEN_FILE = DATA_DIR / "downloads_rss_seen.json"
-_RSS_SEEN_STORE = json_store.get(RSS_SEEN_FILE, list)
-_RSS_SEEN_CACHE: set = set(_RSS_SEEN_STORE.load() or [])
-_RSS_SEEN_MAX = 5000
-_rss_last_run: dict = {}
-_rss_seen_lock = threading.Lock()
-_rss_scan_lock = asyncio.Lock()
-
-
-def _rss_mark_seen(keys: list) -> None:
-    if not keys:
-        return
-    with _rss_seen_lock:
-        _RSS_SEEN_CACHE.update(keys)
-        if len(_RSS_SEEN_CACHE) > _RSS_SEEN_MAX:
-            for extra in list(_RSS_SEEN_CACHE)[: len(_RSS_SEEN_CACHE) - _RSS_SEEN_MAX]:
-                _RSS_SEEN_CACHE.discard(extra)
-        _RSS_SEEN_STORE.save(sorted(_RSS_SEEN_CACHE))
-
-
-def _fetch_bytes_bounded(url: str, cap: int) -> bytes:
-    """GET an http(s) URL with a hard size cap (feeds, .torrent links)."""
-    if not str(url).lower().startswith(("http://", "https://")):
-        raise ValueError(f"unsupported URL scheme: {str(url)[:32]}")
-    req = urllib.request.Request(url, headers={"User-Agent": "EthOS-NAS-DownloadStation/2.0"})
-    with urllib.request.urlopen(req, timeout=20) as resp:  # nosec B310 — scheme checked above
-        data = resp.read(cap + 1)
-    if len(data) > cap:
-        raise ValueError(f"response is larger than {cap // (1024 * 1024)} MiB")
-    return data
+async def _rss_enqueue(url: str, name: str, folder, category) -> None:
+    await add_task(AddTaskRequest(url=url, name=name, folder=folder, category=category))
 
 
 async def _rss_scan(feed_ids: Optional[set] = None, force: bool = False) -> dict:
     """Poll due feeds and queue matching items. Returns {feeds, queued}."""
     with path_scope.system_scope():
-        return await _rss_scan_scoped(feed_ids, force)
-
-
-async def _rss_scan_scoped(feed_ids: Optional[set] = None, force: bool = False) -> dict:
-    async with _rss_scan_lock:
-        checked = 0
-        queued = 0
-        for username, _slice in list(user_data.iter_user_slices("downloads.json")):
-            role = user_data.user_role(username)
-            with path_scope.identity_scope(username, role):
-                cfg = _load_config()
-                now = _now()
-                for feed in cfg.get("rss_feeds") or []:
-                    if feed_ids is not None and feed.get("id") not in feed_ids:
-                        continue
-                    if not feed.get("enabled") or not feed.get("pattern"):
-                        continue
-                    run_key = (username, feed["id"])
-                    last = _rss_last_run.get(run_key, 0)
-                    if not force and now - last < int(feed.get("interval_minutes") or 15) * 60:
-                        continue
-                    _rss_last_run[run_key] = now
-                    checked += 1
-                    try:
-                        raw = await asyncio.to_thread(_fetch_bytes_bounded, feed["url"], 2 * 1024 * 1024)
-                        items = await asyncio.to_thread(rss_service.parse_feed, raw.decode("utf-8", "replace"))
-                    except Exception as exc:
-                        logger.warning("RSS feed %s failed: %s", feed["url"], exc)
-                        continue
-                    new_keys = []
-                    for item in items:
-                        key = str(item.get("id") or "")[:512]
-                        seen_key = f"{username}:{key}"
-                        if not key or seen_key in _RSS_SEEN_CACHE:
-                            continue
-                        new_keys.append(seen_key)
-                        if not rss_service.matches(item, feed.get("pattern") or "", feed.get("exclude") or ""):
-                            continue
-                        url = item.get("magnet") or item.get("link") or ""
-                        if not url:
-                            continue
-                        name = (item.get("title") or "rss-download")[:255]
-                        try:
-                            if url.lower().startswith("magnet:"):
-                                pass
-                            elif url.lower().split("?")[0].endswith(".torrent"):
-                                data = await asyncio.to_thread(_fetch_bytes_bounded, url, 10 * 1024 * 1024)
-                                info = _parse_torrent(data)
-                                url, name = info["magnet"], (item.get("title") or info["name"])[:255]
-                            await add_task(AddTaskRequest(
-                                url=url,
-                                name=name,
-                                folder=feed.get("destination") or None,
-                                category=feed.get("category") or None,
-                            ))
-                            queued += 1
-                            logger.info("RSS: queued %r from %s for %s", name, feed["id"], username)
-                        except Exception as exc:
-                            logger.warning("RSS item %r could not be queued: %s", key[:80], exc)
-                    _rss_mark_seen(new_keys)
-        return {"feeds": checked, "queued": queued}
+        return await download_rss.scan(
+            load_config=_load_config,
+            enqueue=_rss_enqueue,
+            parse_torrent=_parse_torrent,
+            feed_ids=feed_ids,
+            force=force,
+        )
 
 
 async def _rss_loop() -> None:

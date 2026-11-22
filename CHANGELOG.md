@@ -11,6 +11,22 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.30.2] - 2026-11-22
+
+### Changed
+
+- **Download Station RSS scanner moved into `services/download_rss.py`**: the bounded
+  http(s) fetch, the persisted 5000-entry seen set, the per-feed interval gate and the
+  whole `scan()` (rule matching, `.torrent` → magnet hop, per-user identity scope) left
+  `routers/downloads.py`. The router supplies the config loader, the `AddTaskRequest`
+  enqueue path and the bencode parser, and keeps the one-minute loop; same
+  `/api/downloads/*` behaviour.
+
+### Tests
+
+- New `tests/test_download_rss_service.py` (16 checks: scheme/cap guards, bounded seen
+  set, interval gating, forced rescan dedupe, feed-error isolation, feed filter).
+
 ## [2.30.1] - 2026-11-22
 
 ### Changed

@@ -162,6 +162,13 @@ file name, scheme validation, `is_blocked_ip` (SSRF guard) and `safe_join` (torr
 escape + symlink guard), `unique_dest`; `tests/test_download_urls.py` (28 checks). Router keeps the
 HTTP error mapping and the admin exemption for private targets.
 
+**Progress (2.30.1).** `services/download_rss.py` extracted: the bounded `fetch_bytes_bounded`
+(http/https only, hard size cap), the persisted 5000-entry seen set, the per-feed interval gate and
+the whole `scan()` (rule matching, `.torrent` → magnet hop, per-user identity scope). The router
+supplies `load_config`, the `AddTaskRequest` enqueue path and the bencode parser, and keeps the
+one-minute background loop; `tests/test_download_rss_service.py` (16 checks). Still inline: the
+`_pump` loop (worker pool + provider preflight) and the qBittorrent shim.
+
 ### ☐ P2-02 · Split `gallery.py` (~2.1k lines) — `XL`
 **Problem.** SQLite indexing, EXIF extraction, the AES-GCM private vault + PIN sessions, albums, facets,
 thumbnails and rescan logic share one file.
@@ -170,6 +177,14 @@ thumbnails and rescan logic share one file.
 (crypto + sessions, with the in-memory session dict bounded by TTL), `services/gallery_facets.py`.
 **Done when.** `gallery.py` <500 lines; private vault has its own unit test (encrypt → index → decrypt →
 trash path is `.ethos.enc`).
+
+**Progress (2.30.1).** `services/gallery_private.py` extracted: PBKDF2 PIN derivation (hash salt vs
+encryption salt kept separate), the `ETHOS-ENC1` AES-256-GCM blob format, in-place encrypt/decrypt/
+re-key, the 30-minute `ps` session registry (TTL purge on issue), 0600 plaintext temp files and the
+decrypt-in-memory private thumbnails. The router keeps `_request_user`, `_resolve_priv_key`,
+`_require_priv_session`, `_private_item_path` and the endpoints; `tests/test_gallery_private.py`
+(37 checks) plus a live PIN set → verify → change probe. `gallery.py` 2310 → 2176 lines. Still
+inline: the SQLite index/rescan/EXIF section and the facets (items/months/cameras/calendar).
 
 ### ◐ P2-03 · Split `files.py` (~1.95k lines) — `XL`
 **Problem.** Listing, upload, thumbnails (ffmpeg + Haar face detection), transcode, archive extract,
