@@ -530,7 +530,14 @@ async def package_ui_proxy(pkg_id: str, proxy_path: str, request: Request) -> Re
             return (exc.code, exc.read(1024 * 1024), exc.headers.get(
                 "Content-Type", "application/json"), exc.headers.get("ETag", ""))
         except OSError as exc:
-            raise PackageError(f"Package service is unavailable: {exc}", 503) from exc
+            # The exception text is a urllib/socket message ("<urlopen error [Errno 111]
+            # Connection refused>"); the UI prints `detail` verbatim, so it must stay
+            # a sentence the operator can act on. The real cause goes to the logs.
+            logger.error("Package service for %s is unreachable on 127.0.0.1:%s (%s %s): %s",
+                         pkg_id, port, request.method, path, exc, exc_info=True)
+            raise PackageError(
+                f"The {pkg_id} service is not responding. Start it in Package Center "
+                "and try again.", 503) from None
 
     try:
         status, payload, media_type, etag = await asyncio.to_thread(_call)

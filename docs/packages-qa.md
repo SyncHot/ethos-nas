@@ -1,0 +1,159 @@
+# Packages QA — cross-app audit & loop
+
+How the 25 community packages are checked as **one product**: catalog hygiene, the native window
+contract, port ownership, theme and copy consistency, and what each packaged app actually renders.
+`ethos-pack lint` answers "can this catalog be published?"; this document and `scripts/ethos-qa`
+answer "do the apps agree with each other?".
+
+Verified 2026-11-22 against `ethos-packages` @ `2186e5b` (25 packages) and core `2.28.3`.
+
+## File map
+
+| What | Where |
+|---|---|
+| Static + API sweep | `scripts/ethos-qa` (`static`, `api`) |
+| UI sweep (Playwright, isolated instance) | `tests/test_packages_qa_ui.py` |
+| Proxy 503 contract | `tests/test_package_proxy_error.py` |
+| Publish gate (unchanged) | `scripts/ethos-pack build\|lint\|sign\|verify` |
+| Window contract | `ethos-packages/.github/skills/package-ui/SKILL.md` |
+
+## Run it
+
+```bash
+cd ~/apps/compose/ethos-nas
+# 1. offline: manifest/catalog/JS contract for every package
+.venv/bin/python scripts/ethos-qa static --repo ~/apps/compose/ethos-packages --live
+
+# 2. every native window on a throwaway instance (no Docker, no services)
+ETHOS_QA_SHOTS=/tmp/qa-shots .venv/bin/python tests/test_packages_qa_ui.py
+
+# 3. a live NAS, GETs only (needs a session)
+.venv/bin/python scripts/ethos-qa api --base http://127.0.0.1:9000 \
+  --password-env ETHOS_TEST_PASSWORD
+```
+
+`--live` adds read-only host checks (`ss`, `docker ps`); `ETHOS_QA_THEME=dark` re-runs the UI sweep
+in the dark palette. Neither tool installs, starts, stops or uninstalls anything.
+
+Rules: `S01` identity/icon · `S02` icon artwork · `S03` declared files on disk · `S04` min core
+version · `S05` UI/healthcheck contract · `S06` port ownership · `S07–S11` forbidden JS patterns ·
+`S12` container healthchecks · `S13` module self-containment · `S15` test hooks · `S16` palette
+scheme · `S17` catalog copy · `A01–A06` live API/health/logs.
+
+## Matrix (2026-11-22)
+
+| Package | Version | UI | Port | Theme scheme | data-testid | onclick= |
+|---|---|---|---|---|---|---|
+| `backup-manager` | 1.0.3 | native | — | own tokens (26) + dark | 0 | 0 |
+| `domains` | 1.2.2 | native | 8093 | own tokens (28) + dark | 15 | 0 |
+| `download-manager` | 1.1.0 | native | — | own tokens (26) + dark | 49 | 0 |
+| `ethos-antivirus` | 2.1.6 | native | 8092 | own tokens (28) + dark | 0 | 0 |
+| `ethos-books` | 1.2.0 | native | 8089 | own tokens (21) + dark | 67 | 0 |
+| `ethos-cleaner` | 1.0.1 | native | — | host tokens (46) | 13 | 0 |
+| `ethos-docker` | 1.0.5 | native | — | own tokens (21) + dark | 52 | 0 |
+| `ethos-editor` | 1.0.1 | native | — | literal palette (80 colours) | 226 | 0 |
+| `ethos-git` | 1.0.1 | window | 3005 | — | 0 | 0 |
+| `ethos-git-diff` | 1.0.1 | native | — | host tokens (18) | 34 | 0 |
+| `ethos-kanban` | 1.0.2 | native | 8098 | host tokens (34) | 36 | 12 |
+| `ethos-media-enhance` | 1.0.2 | engine | 8097 | — | 0 | 0 |
+| `ethos-monitor` | 1.0.0 | window | 3001 | — | 0 | 0 |
+| `ethos-music` | 1.0.2 | native | — | own tokens (17) + dark | 0 | 0 |
+| `ethos-music-engine` | 1.0.1 | engine | 8096 | — | 0 | 0 |
+| `ethos-photos` | 1.0.3 | native | — | host tokens (152) | 136 | 61 |
+| `ethos-rss` | 1.0.0 | window | 8080 | — | 0 | 0 |
+| `ethos-shares` | 1.3.0 | native | — | own tokens (23) + dark | 37 | 0 |
+| `ethos-sticky-notes` | 2.0.0 | native | 8099 | own tokens (42) + dark | 38 | 0 |
+| `ethos-surveillance` | 2.0.0 | native | — | own tokens (24) + dark | 28 | 0 |
+| `ethos-sync` | 1.0.1 | window | 8384 | — | 0 | 0 |
+| `ethos-video` | 2.3.1 | native | — | own tokens (16) + dark | 83 | 0 |
+| `ethos-welcome` | 1.0.4 | window | 8090 | — | 0 | 0 |
+| `tic-tac-toe` | 2.1.1 | native | — | own tokens (15) + dark | 0 | 0 |
+| `vmm` | 1.2.0 | native | 8095 | own tokens (16) + dark | 0 | 0 |
+
+UI sweep: **18/18 native windows render**, no uncaught page error, no unexpected console error,
+every window painted in light **and** dark, no iframe for native modules.
+
+## P1 — visible defect, fix next
+
+### ☑ P1-01 · A dead package service leaks Python internals into the window
+- **Evidence.** With the AntiVirus service stopped the window shows in red:
+  `Could not load settings: <urlopen error [Errno 111] Connection refused>`.
+- **Cause.** `package_ui_proxy` raised `PackageError(f"Package service is unavailable: {exc}", 503)`
+  and the native UIs print `detail` verbatim.
+- **Fix.** `backend/routers/packages.py` now logs the real exception and answers
+  `"The <id> service is not responding. Start it in Package Center and try again."`
+  Guard: `tests/test_package_proxy_error.py`.
+
+### ☐ P1-02 · Three packages cannot bind their port on this NAS
+`ethos-qa static --live` compares every declared port with `docker ps`:
+
+| Package | Wants | Already published by |
+|---|---|---|
+| `ethos-monitor` | 3001 | `wawalocal-user-1` |
+| `ethos-rss` | 8080 | `wawalocal-api-1` |
+| `vmm` (console) | 8094 | `ethos-nas-site` |
+
+Install/update fails at the `start` step with "port is already allocated". `ethos-git` had the same
+problem on 3000 and was moved to 3005 (`2186e5b`).
+- **Fix.** Pick ports outside the host's used range and record the rule in the packages `AGENTS.md`
+  ("known in-use ports" list). vmm's console also needs a published range that does not overlap a
+  documented service.
+
+### ☐ P1-03 · `ethos-music` is the only app in Polish
+103 lines of hardcoded Polish copy (`Dobry wieczór`, `Polubione`, `Szukaj`, `0 utworów`) while the
+core shell and the other 24 packages are English — a session shows "Dobry wieczór" next to the core
+"Tasks / Analyzing /home". `ethos-video` has 3 such strings.
+- **Fix.** Switch the module to English (or add a `lang` switch driven by the core locale) before the
+  next Music release.
+
+### ☐ P1-04 · No `data-testid` in four native windows — including both references
+`backup-manager`, `ethos-antivirus`, `ethos-music`, `vmm` render zero `data-testid` hooks, although
+`package-ui/SKILL.md` makes them part of the definition of done and the UI sweep depends on them.
+The two *reference* implementations are the worst offenders.
+- **Fix.** Add `data-testid` to the rail, the status line, tables and primary buttons (start with
+  AntiVirus + Backup Manager so the reference is exemplary).
+
+### ☐ P1-05 · `ethos-editor` is a package that needs the core's stylesheet
+The 200 KB module ships **no CSS**: all 406 `.ed-*` rules live in the core
+`frontend/index.html` (200 KB) and its palette is 80 literal colours with no variables. That breaks
+the "native module must be self-contained" rule, keeps the core's design system from being extracted
+(`TODO` P3-10) and makes the editor invisible to any other host.
+- **Fix.** Move the `.ed-*` block into the module (tokenised, light + dark), then delete it from
+  `index.html`. Related: P3-04 (split the module).
+
+## P2 — inconsistency / polish
+
+- **Catalog copy.** 45 S17 warnings: `vmm` (3298 chars), `download-manager` (3482), `ethos-video`
+  (2708) keep the whole history in one paragraph, so the newest note is buried and `index.json`
+  grows; 21 descriptions exceed the 150 chars the README shows. Cap the newest entry at one line and
+  keep history in the package README.
+- **Theme scheme drift.** `ethos-cleaner`, `ethos-git-diff`, `ethos-kanban`, `ethos-photos` style
+  themselves with the core's `--text-1/--surface-*` variables; `ethos-editor` uses literals. All of
+  them follow light/dark correctly, but a redesign has to touch a different vocabulary in each app.
+- **Inline handlers.** `onclick="…"` strings: `ethos-photos` 61, `ethos-kanban` 12 (`TODO` P3-03).
+- **localStorage in the shared origin.** 7 packages store under `ethos_*`/`em_*` keys; verify every
+  key carries the package prefix so two apps can never collide.
+- **Opening Code Editor spawns a host shell.** Rendering the window immediately starts a host
+  terminal session (`Starting host terminal…` → `marcin@nasos:~$`), before the user asks for one.
+  The QA sweep therefore opens a real shell on the host; keep that in mind when running it.
+- **No screenshots.** Every manifest ships `screenshots: []`, so Package Center cards and the detail
+  dialog have no previews. The UI sweep already produces them — publish a few per package.
+- **Legacy exceptions** stay as documented: `ethos-welcome` (static page), `tic-tac-toe` (single
+  card), `ethos-video` (cinema). They are audited for correctness only, never restyled.
+
+## Waivers
+
+- Engine packages (`ethos-media-enhance`, `ethos-music-engine`) have no window; the JS contract rules
+  do not apply. Their `python.entry` is a service, not a UI.
+- `tic-tac-toe` and `ethos-welcome` may skip the shell checks.
+- A `503` from `ctx.proxy` in the UI sweep is expected: the isolated instance runs no package
+  services. Only uncaught errors and non-proxy console errors fail the sweep.
+
+## Loop
+
+1. Run `ethos-qa static` and `tests/test_packages_qa_ui.py`; both write JSON to `/tmp`.
+2. Fix the P1 findings in `ethos-packages` (patch bump + one-line changelog + `build/sign/verify/readme`)
+   or in the core (test + version bump + signed index + tag).
+3. Re-run both sweeps; a finding only closes when the tool stops reporting it and the manual check in
+   the matrix above still holds.
+4. New P2 rows go to `TODO.md`, not into this list, once the P1 set is empty.

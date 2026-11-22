@@ -11,6 +11,26 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.28.3] - 2026-11-22
+
+### Fixed
+
+- **A stopped package service no longer shows a Python error inside the window.**
+  When the loopback service behind a native package was down, the authenticated proxy
+  answered with the raw exception (`<urlopen error [Errno 111] Connection refused>`) and
+  the app printed it verbatim. It now answers “The <package> service is not responding.
+  Start it in Package Center and try again.”, while the real cause still goes to the Logs
+  app (`tests/test_package_proxy_error.py`).
+
+### Added
+
+- **A cross-package QA sweep.** `scripts/ethos-qa` audits the whole catalog read-only —
+  icons, port ownership (including a live `docker ps` collision check), `min_ethos_version`,
+  native-module self-containment, the notification/logging/window-title rules, palette
+  scheme, test hooks and catalog copy — and `tests/test_packages_qa_ui.py` opens every
+  native package window on a throwaway instance in light and dark, failing on page errors.
+  Findings and the repeatable loop: `docs/packages-qa.md`.
+
 ## [2.28.2] - 2026-11-22
 
 ### Fixed

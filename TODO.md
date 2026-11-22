@@ -515,3 +515,41 @@ and swap code paths (keeping `.venv`, `backend/data`, untracked files). Reuse th
 
 ---
 
+
+# §10 · Package QA follow-ups
+
+Source: `docs/packages-qa.md` (sweep 2026-11-22, 25 packages @ `2186e5b`, core 2.28.1).
+Tools: `scripts/ethos-qa static|api`, `tests/test_packages_qa_ui.py`.
+
+### ☐ Q-01 · Port collisions with host services — `S`
+`ethos-monitor` 3001 (wawalocal-user), `ethos-rss` 8080 (wawalocal-api), `vmm` console 8094
+(ethos-nas-site) cannot bind here; install/update fails at `start`. Move them outside the used
+range and keep the "known in-use ports" list in `ethos-packages/AGENTS.md` current. `ethos-git`
+3000 → 3005 (`2186e5b`).
+
+### ☐ Q-02 · `ethos-music` UI copy is Polish only — `M`
+103 hardcoded Polish strings in an otherwise English product. Switch to English or drive it from a
+`lang` value; mirror in `/music` PWA. `ethos-video` has 3 leftovers.
+
+### ☐ Q-03 · `data-testid` missing in four native windows — `M`
+`backup-manager`, `ethos-antivirus`, `ethos-music`, `vmm` render none, while `package-ui/SKILL.md`
+lists them in the definition of done. Start with the two reference packages.
+
+### ☐ Q-04 · Move the Code Editor stylesheet out of the core — `L`
+`ethos-editor` ships no CSS: 406 `.ed-*` rules live in `frontend/index.html` (206 KB → blocks
+P3-10) and the module uses 80 literal colours. Tokenise into the module, then delete from the core.
+Overlaps P3-04.
+
+### ☐ Q-05 · Package changelog fields grow without bound — `S`
+`vmm` 3.3 KB, `download-manager` 3.5 KB, `ethos-video` 2.7 KB in `index.json`, newest entry buried.
+Cap the newest entry at one line; keep history in each package README. 21 descriptions also exceed
+the 150 chars the catalog table shows (`S17`).
+
+### ☐ Q-06 · Theme vocabulary drift — `M`
+`ethos-cleaner`, `ethos-git-diff`, `ethos-kanban`, `ethos-photos` use the core's `--text-1/--surface-*`
+variables; `ethos-editor` uses literals. All follow light/dark, but a redesign has to learn a new
+vocabulary per app. Fold into the package-ui skill as an explicit "either/or" or migrate to `--pkg-*`.
+
+### ☐ Q-07 · Publish catalog screenshots — `S`
+Every manifest ships `screenshots: []`. The QA sweep already captures every window in both themes;
+host a few per package and fill the field.

@@ -1,0 +1,533 @@
+#!/usr/bin/env python3
+"""ethos-qa — cross-package QA for the EthOS package catalog.
+
+`ethos-pack lint` answers "can this repository be published?" (pins, restart
+policies, README drift, manifest vs index). It does not answer "do the 25
+packages agree with each other and with the window contract?". This tool does,
+and it only ever reads:
+
+    ethos-qa static --repo ~/apps/compose/ethos-packages
+    ethos-qa static --repo ~/apps/compose/ethos-packages --live
+    ethos-qa api    --base http://127.0.0.1:9000 --token "$TOKEN"
+    ethos-qa api    --base http://127.0.0.1:9000 --password-env ETHOS_TEST_PASSWORD
+
+Exit codes: 0 = clean or warnings only, 1 = at least one error, 2 = bad usage.
+Findings are rule-tagged (`S01`, `A03`, …) so a waiver can name the rule.
+
+The UI sweep lives in `tests/test_packages_qa_ui.py` (Playwright, isolated
+instance, no Docker) — it is discovered by `run_tests.py` like every other test.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - the core venv always has PyYAML
+    yaml = None
+
+ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_REPO = Path.home() / "apps/compose/ethos-packages"
+
+# Ports the core itself owns; a package UI or service may never bind them.
+RESERVED_PORTS = {80, 443, 22, 9000, 9001, 9002}
+CORE_APP_VERSION_FILE = ROOT / "backend/config.py"
+
+# Files-only natives have no service; everything else needs a reachable port.
+NO_SERVICE_MODES = {"native"}
+
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$")
+VERSION_HEAD_RE = re.compile(r"(?<![0-9.])(\d+\.\d+\.\d+)\s*:")
+RELATIVE_IMPORT_RE = re.compile(
+    r"""(?m)^\s*(?:import\s[^;]*?from\s*|import\s*|export\s[^;]*?from\s*)['"]\.\.?/"""
+    r"""|(?:\bimport|\brequire)\s*\(\s*['"]\.\.?/"""
+)
+FORBIDDEN_JS = (
+    ("S07", "error", re.compile(r"\bnew\s+Notification\s*\("),
+     "constructs notifications directly — use ctx.notifications (docs/notifications.md)"),
+    ("S08", "error", re.compile(r"\bdocument\.title\s*="),
+     "sets the window title — the host owns it (manifest.name)"),
+    ("S09", "error", re.compile(r"""class\s*=\s*["'][^"']*(?:\btoast\b|notification-(?:panel|list|center))"""),
+     "ships its own toast/notification panel — use ctx.notifications"),
+    ("S10", "warn", re.compile(r"""\sonclick\s*=\s*["']"""),
+     "inline onclick= string handler (CSP-unsafe; tracked as TODO P3-03)"),
+    ("S11", "warn", re.compile(r"\blocalStorage\b"),
+     "touches localStorage in the EthOS origin — prefix keys with the package id"),
+)
+
+
+class Report:
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    def add(self, rule: str, level: str, pkg: str, message: str) -> None:
+        self.rows.append({"rule": rule, "level": level, "package": pkg, "message": message})
+
+    def errors(self) -> list[dict]:
+        return [row for row in self.rows if row["level"] == "error"]
+
+    def warnings(self) -> list[dict]:
+        return [row for row in self.rows if row["level"] == "warn"]
+
+    def dump(self) -> None:
+        for row in sorted(self.rows, key=lambda r: (r["level"] != "error", r["package"], r["rule"])):
+            mark = "ERROR" if row["level"] == "error" else "warn "
+            print(f"  {mark} {row['rule']} {row['package']}: {row['message']}")
+        total_err, total_warn = len(self.errors()), len(self.warnings())
+        print(f"\n{total_err} error(s), {total_warn} warning(s)")
+
+
+# ── static ────────────────────────────────────────────────────────────────────
+
+def core_app_version() -> tuple[int, ...]:
+    try:
+        text = CORE_APP_VERSION_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return ()
+    match = re.search(r'APP_VERSION\s*=\s*"([0-9][0-9.]*)"', text)
+    return tuple(int(part) for part in match.group(1).split(".")) if match else ()
+
+
+def _ports(mapping: list) -> list[int]:
+    """Host ports published by one compose service."""
+    out: list[int] = []
+    for item in mapping or []:
+        text = str(item)
+        host = text.split(":", 1)[0] if ":" in text else text
+        host = host.split("/", 1)[0]
+        if host.isdigit():
+            out.append(int(host))
+    return out
+
+
+def _compose_ports(path: Path) -> list[int]:
+    if yaml is None or not path.is_file():
+        return []
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return []
+    ports: list[int] = []
+    for spec in (doc.get("services") or {}).values():
+        if isinstance(spec, dict):
+            ports += _ports(spec.get("ports"))
+    return ports
+
+
+def _service_port(manifest: dict) -> int:
+    ui = manifest.get("ui") or {}
+    return int(ui.get("port") or (manifest.get("python") or {}).get("port") or 0)
+
+
+def _entry_file(pkg_dir: Path, manifest: dict) -> Path | None:
+    """The native UI module only — a `python.entry` is a service, not a UI."""
+    ui = manifest.get("ui") or {}
+    if str(ui.get("mode") or "") != "native":
+        return None
+    entry = str(ui.get("entry") or "")
+    return (pkg_dir / entry) if entry else None
+
+
+def check_package(pkg_dir: Path, manifest: dict, base_url: str, version: tuple[int, ...],
+                  report: Report) -> dict:
+    pkg_id = str(manifest.get("id") or pkg_dir.name)
+    row = {"id": pkg_id, "version": str(manifest.get("version") or ""),
+           "runtime": str(manifest.get("runtime") or ""),
+           "ui": str((manifest.get("ui") or {}).get("mode") or ""),
+           "port": _service_port(manifest), "data_testids": 0, "onclick": 0, "theme": ""}
+
+    # S01 — identity: dir == id, product name, icon artwork declared and present.
+    if pkg_dir.name != pkg_id:
+        report.add("S01", "error", pkg_id, f"directory {pkg_dir.name!r} does not match manifest id")
+    if not ID_RE.fullmatch(pkg_id):
+        report.add("S01", "error", pkg_id, "id does not match ^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$")
+    icon_url = str(manifest.get("icon_url") or "")
+    files = [str((item or {}).get("path") if isinstance(item, dict) else item)
+             for item in (manifest.get("files") or [])]
+    if not icon_url:
+        report.add("S02", "error", pkg_id, "icon_url is missing (Package Center falls back to an emoji)")
+    elif not icon_url.endswith(f"/{pkg_id}/icon.svg") or "icon.svg" not in files:
+        report.add("S02", "error", pkg_id,
+                   f"icon_url must be <base>/{pkg_id}/icon.svg and icon.svg must be in files[]")
+    if "icon.svg" in files and not (pkg_dir / "icon.svg").is_file():
+        report.add("S02", "error", pkg_id, "files[] declares icon.svg but the file is missing")
+
+    # S03 — declared files exist locally (a build would fail later, after signing).
+    for item in manifest.get("files") or []:
+        rel = str((item or {}).get("path") if isinstance(item, dict) else item)
+        if rel and not (pkg_dir / rel).is_file():
+            report.add("S03", "error", pkg_id, f"files[] declares {rel} but it is not on disk")
+
+    # S04 — minimum core version.
+    minimum = str(manifest.get("min_ethos_version") or "")
+    if not minimum:
+        report.add("S04", "error", pkg_id, "min_ethos_version is missing")
+    elif version:
+        try:
+            parts = tuple(int(p) for p in minimum.split("."))
+        except ValueError:
+            report.add("S04", "error", pkg_id, f"min_ethos_version {minimum!r} is not semver")
+        else:
+            if parts > version:
+                report.add("S04", "error", pkg_id,
+                           f"min_ethos_version {minimum} is newer than the core ("
+                           + ".".join(map(str, version)) + ")")
+
+    ui = manifest.get("ui") or {}
+    hc = manifest.get("healthcheck") or {}
+    port = _service_port(manifest)
+    row["port"] = port
+
+    # Compose stack: a container healthcheck satisfies the liveness contract for
+    # a compose package; the venv runtime instead probes `healthcheck` itself.
+    compose = manifest.get("compose") or {}
+    compose_name = str((compose or {}).get("url") or "").rstrip("/").rsplit("/", 1)[-1]
+    compose_path = pkg_dir / (compose_name or "docker-compose.yml")
+    if compose and not compose_path.is_file():
+        compose_path = pkg_dir / "docker-compose.yml"
+    services: dict = {}
+    if compose and compose_path.is_file() and yaml is not None:
+        try:
+            services = (yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}).get(
+                "services") or {}
+        except (yaml.YAMLError, OSError):
+            services = {}
+    compose_health = any(isinstance(spec, dict) and spec.get("healthcheck")
+                         for spec in services.values())
+
+    # S05 — UI liveness contract and window hygiene.
+    if ui:
+        mode = str(ui.get("mode") or "window")
+        if mode == "window" and not ui.get("port"):
+            report.add("S05", "error", pkg_id, "window UI without ui.port")
+        if mode == "window" and not hc.get("port") and not compose_health:
+            report.add("S05", "error", pkg_id,
+                       "iframe UI has no healthcheck (neither manifest nor compose) — "
+                       "EthOS cannot tell a dead UI from a slow one")
+        if mode == "native" and ui.get("entry") and ui["entry"] not in files:
+            report.add("S05", "error", pkg_id, "native ui.entry is not listed in files[]")
+    if port and hc.get("port") and int(hc["port"]) != port:
+        report.add("S05", "error", pkg_id,
+                   f"ui/python port {port} != healthcheck.port {hc['port']}")
+    if (manifest.get("python") or {}).get("port") and not hc.get("port"):
+        report.add("S05", "error", pkg_id,
+                   "venv service has no manifest healthcheck — the runtime waits on it to "
+                   "decide the service started")
+
+    # S06 — port sanity (packages also checked for collisions by the caller).
+    for value in {port, int(hc.get("port") or 0)} - {0}:
+        if value in RESERVED_PORTS:
+            report.add("S06", "error", pkg_id, f"port {value} belongs to the EthOS core")
+        if not 0 < value < 65536:
+            report.add("S06", "error", pkg_id, f"port {value} is out of range")
+
+    # S12 — every compose service should publish a container healthcheck.
+    for service, spec in services.items():
+        if isinstance(spec, dict) and not spec.get("healthcheck"):
+            report.add("S12", "warn", pkg_id, f"compose service {service} has no healthcheck")
+
+    # S13/S14 — the native module contract.
+    entry = _entry_file(pkg_dir, manifest)
+    if entry is not None:
+        if not entry.is_file():
+            report.add("S13", "error", pkg_id, f"ui.entry {entry.name} does not exist")
+            return row
+        source = entry.read_text(encoding="utf-8", errors="replace")
+        if RELATIVE_IMPORT_RE.search(source):
+            report.add("S13", "error", pkg_id,
+                       "native entry uses a relative import — the module is loaded as a blob")
+        for rule, level, pattern, message in FORBIDDEN_JS:
+            hits = len(pattern.findall(source))
+            if hits:
+                report.add(rule, level, pkg_id, f"{message} ({hits}x)")
+        row["onclick"] = len(re.findall(r"""\sonclick\s*=\s*["']""", source))
+        row["data_testids"] = source.count("data-testid")
+        if row["data_testids"] == 0:
+            report.add("S15", "warn", pkg_id,
+                       "no data-testid in the native UI — the package-ui checklist requires them")
+        own_vars = set(re.findall(r"(--[a-z][a-z0-9-]{2,})\s*:", source))
+        has_dark = bool(re.search(r"(?:\.dark\b|prefers-color-scheme:\s*dark)", source))
+        host_tokens = len(re.findall(r"var\(--(?:text|surface|border|accent|bg)-", source))
+        hexes = len(set(re.findall(r"#[0-9a-fA-F]{3,8}\b", source)))
+        if len(own_vars) >= 8:
+            row["theme"] = f"own tokens ({len(own_vars)})" + (" + dark" if has_dark else "")
+            if not has_dark:
+                report.add("S16", "warn", pkg_id,
+                           f"defines {len(own_vars)} palette variables but no dark palette")
+        elif host_tokens >= 5:
+            row["theme"] = f"host tokens ({host_tokens})"
+            report.add("S16", "warn", pkg_id,
+                       "styles with EthOS host variables instead of its own palette "
+                       "(contract drift; follows the theme, does not match the checklist)")
+        elif hexes >= 20:
+            row["theme"] = f"literal palette ({hexes} colours)"
+            report.add("S16", "warn", pkg_id,
+                       "styles with literal colours instead of palette variables "
+                       "(a redesign or a theme change has to touch every rule)")
+        else:
+            row["theme"] = "none"
+            report.add("S16", "error", pkg_id, "no palette tokens found in the native UI")
+
+    # S17 — catalog copy: the README truncates at 150 chars; the dialog does not.
+    description = str(manifest.get("description") or "")
+    if len(description) > 150:
+        report.add("S17", "warn", pkg_id,
+                   f"description is {len(description)} chars (README truncates at 150)")
+    changelog = str(manifest.get("changelog") or "")
+    if not changelog:
+        report.add("S17", "warn", pkg_id, "changelog is empty — updates show no release note")
+    else:
+        body = VERSION_HEAD_RE.split(changelog, maxsplit=1)
+        newest = (body[-1] if len(body) > 1 else changelog).strip()
+        if len(changelog) > 2500:
+            report.add("S17", "warn", pkg_id,
+                       f"changelog field is {len(changelog)} chars — it grows without bound "
+                       "and inflates index.json")
+        if len(newest) > 220:
+            report.add("S17", "warn", pkg_id,
+                       f"newest changelog entry is {len(newest)} chars — keep it to one line")
+    return row
+
+
+def command_static(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).expanduser().resolve()
+    if not (repo / "index.json").is_file():
+        print(f"error: {repo} is not a package repository (no index.json)", file=sys.stderr)
+        return 2
+    base_url = args.base_url.rstrip("/")
+    version = core_app_version()
+    report = Report()
+    rows: list[dict] = []
+    ports: dict[int, list[str]] = {}
+
+    for pkg_dir in sorted(p for p in repo.iterdir() if p.is_dir() and (p / "manifest.json").is_file()):
+        try:
+            manifest = json.loads((pkg_dir / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            report.add("S01", "error", pkg_dir.name, f"manifest.json is unreadable: {exc}")
+            continue
+        rows.append(check_package(pkg_dir, manifest, base_url, version, report))
+        for value in {_service_port(manifest)} | set(_compose_ports(pkg_dir / "docker-compose.yml")):
+            if value:
+                ports.setdefault(value, []).append(pkg_dir.name)
+
+    for value, owners in sorted(ports.items()):
+        if len(owners) > 1:
+            report.add("S06", "error", ",".join(owners),
+                       f"port {value} is declared by more than one package")
+    if args.live:
+        published = _docker_published_ports()
+        for value, owners in sorted(ports.items()):
+            if not value or not _port_listening(value):
+                continue
+            if any(owner in name for name in published.get(value, []) for owner in owners):
+                continue  # the package is installed here as a container; expected
+            if _package_service_pid(value) in owners:
+                continue  # this NAS runs the package's own venv service on that port
+            report.add("S06", "warn", ",".join(owners),
+                       f"port {value} is in use by {published.get(value) or 'another process'} "
+                       "— installing this package here would fail to bind")
+
+    print(f"ethos-qa static — {len(rows)} package(s) in {repo}")
+    if version:
+        print(f"core APP_VERSION {'.'.join(map(str, version))}")
+    _print_table(rows)
+    report.dump()
+    if args.json:
+        Path(args.json).write_text(json.dumps(
+            {"packages": rows, "findings": report.rows}, indent=2) + "\n", encoding="utf-8")
+        print(f"wrote {args.json}")
+    return 1 if report.errors() else 0
+
+
+def _port_listening(port: int) -> bool:
+    try:
+        out = subprocess.run(["ss", "-ltnH"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(re.search(rf":{port}\s", out))
+
+
+def _docker_published_ports() -> dict[int, list[str]]:
+    """Host port -> container names, from `docker ps` (read-only)."""
+    out: dict[int, list[str]] = {}
+    try:
+        text = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return out
+    for line in text.splitlines():
+        name, _, ports = line.partition("\t")
+        for host in re.findall(r":(\d+)->", ports):
+            out.setdefault(int(host), []).append(name)
+    return out
+
+
+def _package_service_pid(port: int) -> str:
+    """Package id when a `runtime: venv` service of this NAS owns the port."""
+    try:
+        text = subprocess.run(["ss", "-ltnpH"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for line in text.splitlines():
+        if not re.search(rf":{port}\s", line):
+            continue
+        for pid in re.findall(r"pid=(\d+)", line):
+            try:
+                environ = Path(f"/proc/{pid}/environ").read_bytes().decode(errors="replace")
+            except OSError:
+                continue
+            match = re.search(r"ETHOS_PACKAGE_ID=([a-z0-9-]+)", environ)
+            if match:
+                return match.group(1)
+    return ""
+
+
+def _print_table(rows: list[dict]) -> None:
+    print(f"\n{'package':24}{'ver':9}{'ui':8}{'port':6}{'testid':7}{'onclick':8}theme")
+    for row in rows:
+        print(f"{row['id']:24}{row['version'] or '-':9}{row['ui'] or '-':8}"
+              f"{row['port'] or '-':6}{row['data_testids']:<7}{row['onclick']:<8}{row['theme'] or '-'}")
+
+
+# ── api ───────────────────────────────────────────────────────────────────────
+
+def _request(base: str, path: str, token: str = "", method: str = "GET") -> tuple[int, object]:
+    req = urllib.request.Request(base.rstrip("/") + path, method=method)
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            body = resp.read()
+            return resp.status, (json.loads(body) if body else {})
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read() or b"{}")
+        except (ValueError, OSError):
+            return exc.code, {}
+    except OSError as exc:
+        return 0, {"error": str(exc)}
+
+
+def _login(base: str, username: str, password: str) -> str:
+    payload = json.dumps({"username": username, "password": password}).encode()
+    req = urllib.request.Request(base.rstrip("/") + "/api/auth/login", data=payload,
+                                 method="POST", headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return str(json.loads(resp.read()).get("token") or "")
+
+
+def command_api(args: argparse.Namespace) -> int:
+    base = args.base.rstrip("/")
+    token = args.token or ""
+    if not token and args.password_env:
+        password = os.environ.get(args.password_env, "")
+        if not password:
+            print(f"error: ${args.password_env} is empty", file=sys.stderr)
+            return 2
+        try:
+            token = _login(base, args.user, password)
+        except (OSError, ValueError) as exc:
+            print(f"error: login failed: {exc}", file=sys.stderr)
+            return 2
+    if not token:
+        print("error: pass --token or --password-env VAR", file=sys.stderr)
+        return 2
+
+    status, installed = _request(base, "/api/packages", token)
+    if status != 200:
+        print(f"error: GET /api/packages -> {status} {installed}", file=sys.stderr)
+        return 2
+    items = installed.get("items") or []
+    status, updates = _request(base, "/api/packages/updates", token)
+    update_ids = {str(u.get("id")): str(u.get("version")) for u in (updates.get("updates") or [])}
+    print(f"ethos-qa api — {len(items)} installed package(s) at {base}")
+
+    report = Report()
+    print(f"\n{'package':24}{'installed':11}{'runtime':9}{'status':10}{'health':10}ui")
+    for pkg in sorted(items, key=lambda p: str(p.get("id"))):
+        pkg_id = str(pkg.get("id"))
+        code, state = _request(base, f"/api/packages/{pkg_id}/status", token)
+        if code != 200:
+            report.add("A01", "error", pkg_id, f"status endpoint -> {code}")
+            state = {}
+        health = str(state.get("health") or state.get("state") or "-")
+        containers = state.get("containers") or []
+        print(f"{pkg_id:24}{str(pkg.get('version') or '-'):11}"
+              f"{str(pkg.get('runtime') or 'compose'):9}{str(state.get('status') or '-'):10}"
+              f"{health:10}{str((pkg.get('ui') or {}).get('mode') or '-')}")
+        if health == "unhealthy" or any(c.get("health") == "unhealthy" for c in containers
+                                        if isinstance(c, dict)):
+            report.add("A02", "error", pkg_id, "a container is unhealthy")
+        ui = pkg.get("ui") or {}
+        if ui.get("mode") == "native":
+            entry = str(ui.get("entry") or "")
+            if entry:
+                code, _body = _request(base, f"/api/packages/{pkg_id}/ui/{entry}", token)
+                if code != 200:
+                    report.add("A03", "error", pkg_id, f"native asset {entry} -> {code}")
+        target = (ui.get("port") or (pkg.get("python") or {}).get("port"))
+        if target:
+            code, health_body = _request(base, f"/api/packages/{pkg_id}/proxy/api/health", token)
+            if code not in (200, 404):
+                report.add("A04", "error", pkg_id, f"proxy /api/health -> {code} {health_body}")
+        if pkg_id in update_ids:
+            report.add("A05", "warn", pkg_id,
+                       f"update available: installed {pkg.get('version')} -> {update_ids[pkg_id]}")
+
+    code, logs = _request(base, "/api/logs?limit=500", token)
+    if code == 200:
+        rows = logs.get("items") or logs.get("logs") or []
+        for row in rows:
+            app = str(row.get("app") or "")
+            if app.startswith("pkg:") and str(row.get("level") or "").lower() in ("error", "critical"):
+                report.add("A06", "warn", app[4:], f"recent log error: {str(row.get('message'))[:120]}")
+    report.dump()
+    if args.json:
+        Path(args.json).write_text(json.dumps({"findings": report.rows}, indent=2) + "\n",
+                                   encoding="utf-8")
+        print(f"wrote {args.json}")
+    return 1 if report.errors() else 0
+
+
+# ── cli ───────────────────────────────────────────────────────────────────────
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="ethos-qa", description="Cross-package QA for the EthOS package catalog (read-only).")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    static = sub.add_parser("static", help="audit a package repository without a server")
+    static.add_argument("--repo", default=str(DEFAULT_REPO))
+    static.add_argument("--base-url", default="https://raw.githubusercontent.com/SyncHot/ethos-packages/main")
+    static.add_argument("--live", action="store_true", help="also check host port availability")
+    static.add_argument("--json", default="")
+    static.set_defaults(func=command_static)
+
+    api = sub.add_parser("api", help="audit a running EthOS instance (GET only)")
+    api.add_argument("--base", required=True)
+    api.add_argument("--token", default="")
+    api.add_argument("--password-env", default="ETHOS_TEST_PASSWORD")
+    api.add_argument("--user", default=os.environ.get("USER", "marcin"))
+    api.add_argument("--json", default="")
+    api.set_defaults(func=command_api)
+
+    args = parser.parse_args(argv)
+    if args.command == "static" and not shutil.which("ss"):
+        args.live = False
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
