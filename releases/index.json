@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T17:24:38+00:00",
+  "generated_at": "2026-11-22T17:29:26+00:00",
   "latest": {
-    "version": "2.28.2",
-    "git_sha": "5713713",
-    "git_sha_full": "5713713bb6f8e768d2dee8300071a471716af4e7",
-    "build": 183,
-    "released_at": "2026-11-22T17:24:38+00:00",
-    "notes": "Package Center now tells you which service already holds a package port instead of failing with a raw Docker bind error; Forgejo moved to host port 3005."
+    "version": "2.28.3",
+    "git_sha": "795039e",
+    "git_sha_full": "795039ee040bd5d6cf768ac39ce24b0215a00144",
+    "build": 185,
+    "released_at": "2026-11-22T17:29:26+00:00",
+    "notes": "Packages: a stopped package service now says 'start it in Package Center' instead of showing a Python connection error; new cross-package QA sweep (docs/packages-qa.md)."
   },
   "releases": [
+    {
+      "version": "2.28.3",
+      "git_sha": "795039e",
+      "git_sha_full": "795039ee040bd5d6cf768ac39ce24b0215a00144",
+      "build": 185,
+      "released_at": "2026-11-22T17:29:26+00:00",
+      "notes": "Packages: a stopped package service now says 'start it in Package Center' instead of showing a Python connection error; new cross-package QA sweep (docs/packages-qa.md)."
+    },
     {
       "version": "2.28.2",
       "git_sha": "5713713",
@@ -201,14 +209,6 @@
       "build": 131,
       "released_at": "2026-11-22T12:46:11+00:00",
       "notes": "Videos: queue many downloads, choose Original/1080p/720p (default in Settings) and the NAS prepares them one by one — the queue survives a reload and Original copies the video instead of re-encoding it."
-    },
-    {
-      "version": "2.15.1",
-      "git_sha": "48f958d",
-      "git_sha_full": "48f958d767b7555bb7c7e79ea29470a4036f2100",
-      "build": 129,
-      "released_at": "2026-11-22T11:09:47+00:00",
-      "notes": "Videos: a clear HTTPS notice when a phone tries to download over a plain-http address"
     }
   ]
 }
