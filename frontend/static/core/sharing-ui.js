@@ -5,6 +5,7 @@
 // the server already filtered incoming/outgoing grants for the caller.
 
 import { apiRequest } from './api.js';
+import { openPathInFiles } from './app-links.js';
 import { emptyState } from './states.js';
 import { escapeAttr, escapeHtml } from './utils.js';
 
@@ -123,7 +124,9 @@ export function wireSharingActions(root, { grants = [], onOpen, onEdit, onRevoke
 /** Open the owning app for a grant. Paths ask Files to navigate once mounted. */
 export function openGrantApp(grant) {
     if (!grant) return;
-    const meta = kindMeta(grant.kind);
-    if (grant.kind === 'path') window.__fmPendingPath = grant.resource;
-    window.openApp?.(meta.appId);
+    if (grant.kind === 'path') {
+        openPathInFiles(grant.resource);
+        return;
+    }
+    window.openApp?.(kindMeta(grant.kind).appId);
 }

@@ -35,9 +35,10 @@ export async function renderCronPage(body) {
             <div class="ui-table-wrap">
                 <table class="ui-table" data-testid="cron-table">
                     <thead><tr><th data-testid="cron-col-schedule">Schedule</th><th data-testid="cron-col-command">Command</th>
-                        <th data-testid="cron-col-comment">Comment</th><th data-testid="cron-col-status">Status</th>
+                        <th data-testid="cron-col-comment">Comment</th><th data-testid="cron-col-next">Next run</th>
+                        <th data-testid="cron-col-status">Status</th>
                         <th class="actions" data-testid="cron-col-actions">Actions</th></tr></thead>
-                    <tbody id="cronContent" data-testid="cron-content"><tr><td colspan="5">${skeletonRows(5)}</td></tr></tbody>
+                    <tbody id="cronContent" data-testid="cron-content"><tr><td colspan="6">${skeletonRows(5)}</td></tr></tbody>
                 </table>
             </div>
         </section>`;
@@ -69,7 +70,7 @@ async function loadJobs() {
         if (total) total.textContent = `${jobs.length} job(s) configured`;
 
         if (!jobs.length) {
-            content.innerHTML = `<tr><td colspan="5">${emptyState({
+            content.innerHTML = `<tr><td colspan="6">${emptyState({
                 icon: 'activity',
                 title: 'No cron jobs yet',
                 hint: 'Scheduled commands appear here with their schedule and state.',
@@ -84,9 +85,13 @@ async function loadJobs() {
             const safe = escapeAttr(job.id);
             const enabled = Boolean(job.enabled);
             return `<tr data-testid="cron-row-${safe}">
-                <td class="path">${escapeHtml(job.schedule)}</td>
+                <td class="path">
+                    <div>${escapeHtml(job.schedule)}</div>
+                    <p class="ui-muted" style="margin:2px 0 0;">${escapeHtml(job.description || '')}</p>
+                </td>
                 <td>${escapeHtml(job.command || '—')}</td>
                 <td class="ui-muted">${escapeHtml(job.comment || '—')}</td>
+                <td data-testid="cron-next-${safe}">${_nextRunLabel(job)}</td>
                 <td><span class="ui-tag ${enabled ? 'is-ok' : 'is-warn'}" data-testid="cron-status-${safe}">${enabled ? 'Active' : 'Disabled'}</span></td>
                 <td class="actions"><div class="ui-row" style="justify-content:flex-end;">
                     <button class="ui-btn small" data-cron-action="toggle" data-cron-id="${safe}" data-testid="cron-action-${safe}-toggle">${enabled ? '⏸ Disable' : '▶ Enable'}</button>
@@ -99,10 +104,21 @@ async function loadJobs() {
         shell.setStatus(`${jobs.length} job(s) loaded`, 'ok');
     } catch (err) {
         if (!shell.root.isConnected) return;
-        content.innerHTML = `<tr><td colspan="5">${errorState({ detail: err?.detail || err?.message || 'Unknown error' })}</td></tr>`;
+        content.innerHTML = `<tr><td colspan="6">${errorState({ detail: err?.detail || err?.message || 'Unknown error' })}</td></tr>`;
         wireStateActions(content, { retry: () => loadJobs() });
         shell.setStatus('Could not read cron jobs', 'error');
         logError('Cron: job list unavailable', err?.detail || err?.message);
+    }
+}
+
+function _nextRunLabel(job) {
+    if (job.schedule === '@reboot') return 'at boot';
+    if (!job.next_run) return '—';
+    try {
+        return escapeHtml(new Date(job.next_run).toLocaleString());
+    } catch (err) {
+        logError('Cron: could not format the next run', err?.message || String(err));
+        return '—';
     }
 }
 
@@ -115,7 +131,8 @@ async function openJobForm(editId) {
             <div class="ui-fields">
                 <div class="ui-field"><label for="cronFormSchedule">Schedule *</label>
                     <input id="cronFormSchedule" name="schedule" class="ui-input mono" data-testid="cron-form-schedule"
-                           placeholder="0 2 * * *" value="${escapeAttr(existing?.schedule || '')}"></div>
+                           placeholder="0 2 * * *" value="${escapeAttr(existing?.schedule || '')}">
+                    <p class="ui-muted" id="cronSchedulePreview" data-testid="cron-schedule-preview" style="margin:4px 0 0;"></p></div>
                 <div class="ui-field"><label for="cronFormCommand">Command *</label>
                     <input id="cronFormCommand" name="command" class="ui-input mono" data-testid="cron-form-command"
                            placeholder="/usr/bin/backup.sh" value="${escapeAttr(existing?.command || '')}"></div>
@@ -126,6 +143,29 @@ async function openJobForm(editId) {
                     <input type="checkbox" name="enabled" data-testid="cron-form-enabled" ${existing ? (existing.enabled ? 'checked' : '') : 'checked'}> Enabled
                 </label></div>
             </div>`,
+        // Live validation: the API returns the human wording and the next runs,
+        // so a typo is visible before the job is written to the crontab.
+        onReady: (modalBody) => {
+            const input = modalBody.querySelector('#cronFormSchedule');
+            const note = modalBody.querySelector('#cronSchedulePreview');
+            if (!input || !note) return;
+            let timer = null;
+            const update = async () => {
+                const expr = input.value.trim();
+                if (!expr) { note.textContent = ''; return; }
+                try {
+                    const preview = await apiRequest(`/api/cron/preview?schedule=${encodeURIComponent(expr)}&count=3`);
+                    if (!modalBody.isConnected) return;
+                    if (!preview.ok) { note.textContent = `Invalid schedule: ${preview.detail}`; return; }
+                    const when = (preview.next_runs || []).map((iso) => new Date(iso).toLocaleString()).join(' · ');
+                    note.textContent = `${preview.description}${when ? ` · next: ${when}` : ''}`;
+                } catch (err) {
+                    logError('Cron: schedule preview failed', err?.detail || err?.message);
+                }
+            };
+            input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(update, 350); });
+            update();
+        },
     });
     if (!values) return;
 
@@ -167,8 +207,7 @@ async function toggleJob(jobId) {
     }
 }
 
-async function deleteJob(jobId) {
-    const ok = await showConfirm('Delete cron job', 'Delete this cron job?', { danger: true });
+async function deleteJob(jobId) {    const ok = await showConfirm('Delete cron job', 'Delete this cron job?', { danger: true });
     if (!ok) return;
     try {
         await apiRequest(`/api/cron/${encodeURIComponent(jobId)}`, { method: 'DELETE' });

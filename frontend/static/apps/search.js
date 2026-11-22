@@ -7,6 +7,7 @@ import { errorState } from '../core/states.js';
 import { uiIcon } from '../core/icons.js';
 import { logError } from '../core/logger.js';
 import { mountShell } from '../core/ui-shell.js';
+import { openPathInFiles } from '../core/app-links.js';
 import { fmOpenInNewWindow } from './files.js';
 
 const TYPE_CHIPS = [
@@ -25,9 +26,26 @@ const state = {
     type: 'all',
     minSizeMb: 0,
     query: '',
+    sort: 'date',
     results: null,
     elapsedMs: 0,
 };
+
+const RECENT_KEY = 'ethos-us-recent';
+
+function _readRecents() {
+    try {
+        const stored = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]');
+        return Array.isArray(stored) ? stored.filter((item) => typeof item === 'string').slice(0, 8) : [];
+    } catch { return []; }
+}
+
+function _remember(query) {
+    const term = String(query || '').trim();
+    if (!term) return;
+    const next = [term, ..._readRecents().filter((item) => item !== term)].slice(0, 8);
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(next)); } catch { /* storage disabled */ }
+}
 
 let shell = null;
 let searchTimer = null;
@@ -52,12 +70,21 @@ export async function renderSearchPage(body) {
                 <button id="usGoBtn" class="ui-btn primary" data-testid="us-search-btn">${uiIcon('folder', 12)} Search</button>
             </div>
         </div>
+        <div class="ui-toolbar" id="usRecent" data-testid="us-recent"></div>
         <div class="ui-toolbar">
             <div class="ui-row">
                 ${TYPE_CHIPS.map((chip) => `<button class="ui-btn small${state.type === chip.id ? ' primary' : ''}"
                     data-type="${chip.id}" data-testid="us-chip-${chip.id}">${chip.label}</button>`).join('')}
             </div>
             <div class="ui-row">
+                <label class="ui-field" style="flex-direction:row;align-items:center;gap:6px;">
+                    <span class="ui-label">Sort</span>
+                    <select id="usSort" class="ui-select" data-testid="us-sort" aria-label="Sort results" style="width:auto;">
+                        <option value="date"${state.sort === 'date' ? ' selected' : ''}>Newest first</option>
+                        <option value="name"${state.sort === 'name' ? ' selected' : ''}>Name</option>
+                        <option value="size"${state.sort === 'size' ? ' selected' : ''}>Largest first</option>
+                    </select>
+                </label>
                 <label class="ui-field" style="flex-direction:row;align-items:center;gap:6px;">
                     <span class="ui-label">Min size (MB)</span>
                     <input id="usMinSize" class="ui-input" data-testid="us-minsize-input" type="number" min="0" step="1"
@@ -99,8 +126,22 @@ export async function renderSearchPage(body) {
         });
     });
 
+    shell.view.querySelector('#usSort')?.addEventListener('change', (event) => {
+        state.sort = event.target.value || 'date';
+        if (state.results) shell.view.querySelector('#usResults').innerHTML = renderResults();
+    });
+    shell.view.querySelector('#usRecent')?.addEventListener('click', (event) => {
+        const chip = event.target.closest('[data-recent]');
+        if (!chip) return;
+        input.value = chip.dataset.recent;
+        doSearch();
+    });
+    _paintRecent();
+
     shell.view.querySelector('#usResults')?.addEventListener('click', (event) => {
         if (event.target.closest('[data-download]')) return;
+        const filesBtn = event.target.closest('[data-open-files]');
+        if (filesBtn) { openPathInFiles(filesBtn.dataset.openFiles); return; }
         const row = event.target.closest('.ui-result-row[data-open]');
         if (row) openAt(row.dataset.open);
     });
@@ -153,6 +194,8 @@ async function doSearch() {
         state.results = await apiRequest(`/api/files/universal-search?${params.toString()}`);
         state.elapsedMs = Math.round(performance.now() - started);
         if (!shell.root.isConnected) return;
+        _remember(query);
+        _paintRecent();
         shell.view.querySelector('#usResults').innerHTML = renderResults();
         shell.setStatus(`${state.results?.total ?? 0} result(s) in ${(state.elapsedMs / 1000).toFixed(1)}s`, 'ok');
     } catch (err) {
@@ -162,6 +205,25 @@ async function doSearch() {
         shell.setStatus('Search failed', 'error');
         logError('Search: request failed', err?.detail || err?.message);
     }
+}
+
+function _paintRecent() {
+    const host = shell?.view.querySelector('#usRecent');
+    if (!host) return;
+    const recents = _readRecents();
+    host.style.display = recents.length ? '' : 'none';
+    host.innerHTML = recents.length
+        ? `<span class="ui-muted">Recent:</span>${recents.map((term) =>
+            `<button class="ui-btn small" data-recent="${escapeAttr(term)}" data-testid="us-recent-item">${escapeHtml(term)}</button>`).join('')}`
+        : '';
+}
+
+function _sortedResults(items) {
+    const sorted = [...items];
+    if (state.sort === 'name') sorted.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    else if (state.sort === 'size') sorted.sort((a, b) => (Number(b.size) || 0) - (Number(a.size) || 0));
+    else sorted.sort((a, b) => (Number(b.modified) || 0) - (Number(a.modified) || 0));
+    return sorted;
 }
 
 function renderResults() {
@@ -183,7 +245,7 @@ function renderResults() {
     for (const stat of result.roots || []) {
         if (stat.count > 0) groups.set(stat.root, { stat, items: [] });
     }
-    for (const item of result.results || []) {
+    for (const item of _sortedResults(result.results || [])) {
         let group = groups.get(item.root);
         if (!group) { group = { stat: { root: item.root, count: 0, truncated: false }, items: [] }; groups.set(item.root, group); }
         group.items.push(item);
@@ -215,6 +277,8 @@ function renderRow(item) {
         </div>
         ${isDir ? '' : `<span class="ui-tag">${escapeHtml(formatBytes(item.size || 0))}</span>`}
         <span class="ui-muted">${escapeHtml(shortDate(item.modified))}</span>
+        <button class="ui-btn small" data-open-files="${escapeAttr(isDir ? item.path : parent)}"
+                data-testid="us-open-files" title="Open in Files">Open folder</button>
         ${isDir ? '' : `<a href="${escapeAttr(downloadUrl)}" download data-download class="ui-btn small" title="Download">⬇</a>`}
     </div>`;
 }
@@ -232,6 +296,5 @@ function shortDate(ts) {
 function openAt(path) {
     if (!path) return;
     if (typeof fmOpenInNewWindow === 'function') { fmOpenInNewWindow(path); return; }
-    if (typeof window.openApp === 'function') window.openApp('files');
-    setTimeout(() => { if (typeof window.fmNavigateTo === 'function') window.fmNavigateTo(path); }, 350);
+    openPathInFiles(path);
 }

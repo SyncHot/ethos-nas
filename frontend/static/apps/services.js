@@ -1,20 +1,31 @@
 // EthOS NAS — Service Manager (single-pane shell)
-// One view over Docker containers (compose projects) and systemd units.
+// One view over the EthOS NAS service, Docker containers and systemd units.
 import { escapeAttr, escapeHtml } from '../core/utils.js';
 import { apiRequest } from '../core/api.js';
 import { poll } from '../core/poller.js';
-import { skeletonRows, emptyState } from '../core/states.js';
+import { skeletonRows, emptyState, errorState, wireStateActions } from '../core/states.js';
 import { showConfirm } from '../core/modal.js';
 import { notify } from '../core/notification-center.js';
 import { uiIcon } from '../core/icons.js';
 import { logError } from '../core/logger.js';
 import { mountShell } from '../core/ui-shell.js';
+import { consumeContext } from '../core/app-links.js';
+import { openLogs } from './logs.js';
 
 const AUTO_REFRESH_MS = 30_000;
+
+const TABS = [
+    ['all', 'All'],
+    ['docker', 'Containers'],
+    ['systemd', 'Systemd'],
+    ['ethos', 'EthOS NAS'],
+];
 
 const state = {
     containers: [],
     units: [],
+    ethos: null,
+    ethosError: null,
     dockerError: null,
     systemdError: null,
     tab: 'all',
@@ -129,6 +140,10 @@ function _rowHtml(item) {
         }
     }
 
+    // One viewer owns all diagnostics (docs/logs.md): a container streams
+    // `docker logs`, a unit streams the journal for that exact unit.
+    actions += `<button class="ui-btn small" data-service-logs data-kind="${item.kind}" data-name="${safe}" data-testid="services-logs-${safe}" title="Open this service in Logs">Logs</button>`;
+
     return `<tr data-testid="services-row-${safe}">
         <td>
             <div>${icon} <span class="path">${escapeHtml(item.name)}</span></div>
@@ -163,41 +178,126 @@ function _render() {
         button.classList.toggle('primary', button.dataset.tab === state.tab);
     });
 
+    // Search and source banners belong to the service tables, not the EthOS card.
+    // (`hidden` loses to `.ui-toolbar { display:flex }`, so toggle display.)
+    const searchRow = shell.view.querySelector('#servicesSearchRow');
+    if (searchRow) searchRow.style.display = state.tab === 'ethos' ? 'none' : '';
+
     const banners = shell.view.querySelector('#servicesBanners');
     if (banners) {
         const html = [];
-        if (state.tab !== 'systemd' && state.dockerError) {
+        if (state.tab !== 'systemd' && state.tab !== 'ethos' && state.dockerError) {
             html.push(`<div class="ui-callout error" data-testid="services-error-docker">Docker unavailable: ${escapeHtml(state.dockerError)}</div>`);
         }
-        if (state.tab !== 'docker' && state.systemdError) {
+        if (state.tab !== 'docker' && state.tab !== 'ethos' && state.systemdError) {
             html.push(`<div class="ui-callout error" data-testid="services-error-systemd">Systemd unavailable: ${escapeHtml(state.systemdError)}</div>`);
         }
         banners.innerHTML = html.join('');
     }
 
-    const table = shell.view.querySelector('#servicesTable');
-    const items = _visibleItems();
-    if (table) {
-        table.innerHTML = `<tbody>${items.length
-            ? items.map(_rowHtml).join('')
-            : `<tr><td colspan="4">${emptyState({
-                title: state.query ? 'No matching services' : 'No services found',
-                hint: state.query ? `Nothing matches “${state.query}”.` : 'Docker and systemd returned no entries.',
-            })}</td></tr>`}</tbody>`;
+    const body = shell.view.querySelector('#servicesBody');
+    if (body) {
+        if (state.tab === 'ethos') {
+            body.innerHTML = _ethosPanel();
+            if (state.ethosError) wireStateActions(body, { retry: () => _loadEthos() });
+        } else {
+            const items = _visibleItems();
+            body.innerHTML = `<section class="ui-panel"><div class="ui-table-wrap">
+                <table class="ui-table" data-testid="services-table">
+                    <thead><tr><th>Service</th><th>Status</th><th>Details</th><th class="actions">Actions</th></tr></thead>
+                    <tbody>${items.length
+                        ? items.map(_rowHtml).join('')
+                        : `<tr><td colspan="4">${emptyState({
+                            title: state.query ? 'No matching services' : 'No services found',
+                            hint: state.query ? `Nothing matches “${state.query}”.` : 'Docker and systemd returned no entries.',
+                        })}</td></tr>`}</tbody>
+                </table></div></section>`;
+        }
     }
 
     const footer = shell.view.querySelector('#servicesFooter');
     if (footer) {
         const when = state.lastUpdated ? state.lastUpdated.toLocaleTimeString() : '—';
-        footer.textContent = `${counts.total} services · ${state.containers.length} containers + ${state.units.length} units · updated ${when}`;
+        if (state.tab === 'ethos') {
+            footer.textContent = 'EthOS NAS service · systemd unit ethos-nas';
+        } else {
+            const scope = state.tab === 'docker'
+                ? `${state.containers.length} containers`
+                : state.tab === 'systemd'
+                    ? `${state.units.length} units`
+                    : `${state.containers.length} containers + ${state.units.length} units`;
+            footer.textContent = `${counts.total} services · ${scope} · updated ${when}`;
+        }
     }
+}
+
+/** The EthOS NAS service card (was the System Services app). */
+function _ethosPanel() {
+    if (state.ethosError) {
+        return errorState({ detail: state.ethosError });
+    }
+    const data = state.ethos;
+    if (!data) return skeletonRows(3);
+    const running = data.active_state === 'running';
+    const portOpen = data.port_9000_open;
+    const scope = data.scope === 'system' ? 'System' : 'User-level';
+    const bootTone = data.enabled_state === 'enabled' ? 'is-ok'
+        : data.enabled_state === 'disabled' ? 'is-bad' : '';
+    return `<section class="ui-panel" data-testid="ethos-service-card">
+        <div class="ui-toolbar">
+            <div>
+                <h2>EthOS NAS Service</h2>
+                <p class="ui-muted">State, port and boot behaviour. Stopping it ends this web UI.</p>
+            </div>
+            <div class="ui-row">
+                <button class="ui-btn small" data-ethos-action="open-logs" data-testid="ethos-action-logs">${uiIcon('book', 12)} Logs</button>
+                <button class="ui-btn small" data-ethos-refresh data-testid="ethos-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>
+            </div>
+        </div>
+        <div class="ui-panel-body" data-testid="ethos-status-content">
+            <div class="ui-row">
+                <span class="ui-tag ${running ? 'is-ok' : 'is-bad'}" data-testid="ethos-status-badge">${running ? 'Running' : 'Stopped'}</span>
+                <span class="ui-tag">${escapeHtml(scope)}</span>
+                <span class="ui-tag ${portOpen ? 'is-ok' : 'is-warn'}">port 9000 ${portOpen ? 'open' : 'closed'}</span>
+                <span class="ui-tag ${bootTone}">boot: ${escapeHtml(data.enabled_state || 'unknown')}</span>
+            </div>
+            ${data.user_service_file_exists ? '<p class="ui-muted">Unit file: ~/.config/systemd/user/ethos-nas.service</p>' : ''}
+            <div class="ui-row">
+                ${running
+                    ? `<button class="ui-btn small" data-ethos-action="restart" data-testid="ethos-action-restart">${uiIcon('refresh', 12)} Restart</button>
+                       <button class="ui-btn small danger" data-ethos-action="stop" data-testid="ethos-action-stop">⏹ Stop</button>`
+                    : `<button class="ui-btn small primary" data-ethos-action="start" data-testid="ethos-action-start">▶ Start</button>`}
+                <button class="ui-btn small" data-ethos-action="toggle-enable" data-testid="ethos-action-toggle-enable">
+                    ${data.enabled_state === 'enabled' ? 'Disable boot start' : 'Enable boot start'}
+                </button>
+            </div>
+        </div>
+    </section>`;
+}
+
+async function _loadEthos() {
+    if (!shell) return;
+    try {
+        state.ethos = await apiRequest('/api/ethos-nas-service/status');
+        state.ethosError = null;
+    } catch (err) {
+        state.ethosError = err?.detail || err?.message || 'Unknown error';
+        logError('Services: EthOS service status unavailable', state.ethosError);
+    }
+    if (!shell.root.isConnected) return;
+    if (state.tab === 'ethos') _render();
+}
+
+function _openServiceLogs(kind, name) {
+    if (!name) return;
+    openLogs(kind === 'docker' ? { container: name } : { unit: name });
 }
 
 async function _load(silent = false) {
     if (state.loading || !shell) return;
     state.loading = true;
-    const table = shell.view.querySelector('#servicesTable');
-    if (!silent && table) table.innerHTML = `<tbody><tr><td colspan="4">${skeletonRows(8)}</td></tr></tbody>`;
+    const body = shell.view.querySelector('#servicesBody');
+    if (!silent && body && state.tab !== 'ethos') body.innerHTML = skeletonRows(8);
 
     const [containers, units] = await Promise.allSettled([
         apiRequest('/api/containers'),
@@ -232,11 +332,14 @@ async function _load(silent = false) {
 export async function renderServicesPage(body) {
     if (!body) return;
     if (_autoStop) { _autoStop(); _autoStop = null; }
+    // Old links may target the retired System Services window.
+    const ctx = consumeContext('services');
+    if (ctx && TABS.some(([id]) => id === ctx.tab)) state.tab = ctx.tab;
     shell?.destroy();
     shell = mountShell(body, {
         idPrefix: 'services',
         title: 'Service Manager',
-        subtitle: 'Docker containers and systemd units in one table.',
+        subtitle: 'The EthOS NAS service, Docker containers and systemd units.',
         icon: '⚙️',
         sections: [{ id: 'services', label: 'Services' }],
         rail: false,
@@ -251,22 +354,15 @@ export async function renderServicesPage(body) {
                 <span id="services-chip-failed" class="ui-tag is-bad" data-testid="services-chip-failed" hidden>0 failed</span>
             </div>
             <div class="ui-row">
-                ${['all', 'docker', 'systemd'].map((tab) => `<button class="ui-btn small${tab === state.tab ? ' primary' : ''}" data-tab="${tab}" data-testid="services-tab-${tab}">${tab === 'all' ? 'All' : tab === 'docker' ? 'Containers' : 'Systemd'}</button>`).join('')}
+                ${TABS.map(([tab, label]) => `<button class="ui-btn small${tab === state.tab ? ' primary' : ''}" data-tab="${tab}" data-testid="services-tab-${tab}">${label}</button>`).join('')}
             </div>
         </div>
-        <div class="ui-toolbar">
+        <div class="ui-toolbar" id="servicesSearchRow">
             <input id="servicesSearch" class="ui-input" data-testid="services-search" type="search" placeholder="Search by name, image or description…" aria-label="Search services">
             <button class="ui-btn small" data-testid="services-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>
         </div>
         <div id="servicesBanners" data-testid="services-banners"></div>
-        <section class="ui-panel" style="min-height:180px;">
-            <div class="ui-table-wrap">
-                <table class="ui-table" id="servicesTable" data-testid="services-table">
-                    <thead><tr><th>Service</th><th>Status</th><th>Details</th><th class="actions">Actions</th></tr></thead>
-                    <tbody><tr><td colspan="4">${skeletonRows(8)}</td></tr></tbody>
-                </table>
-            </div>
-        </section>
+        <div id="servicesBody" data-testid="services-body" style="min-height:180px;">${skeletonRows(8)}</div>
         <p id="servicesFooter" class="ui-muted" data-testid="services-footer">Loading…</p>`;
 
     const search = shell.view.querySelector('#servicesSearch');
@@ -275,25 +371,69 @@ export async function renderServicesPage(body) {
         state.query = search.value || '';
         _render();
     });
-    shell.view.querySelector('[data-testid="services-refresh-btn"]')?.addEventListener('click', () => _load(false));
+    shell.view.querySelector('[data-testid="services-refresh-btn"]')?.addEventListener('click', () => {
+        _load(false);
+        if (state.tab === 'ethos') _loadEthos();
+    });
     shell.view.querySelectorAll('[data-tab]').forEach((button) => {
         button.addEventListener('click', () => {
             state.tab = button.dataset.tab;
             _render();
+            if (state.tab === 'ethos' && !state.ethos) _loadEthos();
         });
     });
-    shell.view.querySelector('#servicesTable')?.addEventListener('click', (event) => {
-        const button = event.target.closest('[data-service-action]');
-        if (!button) return;
-        _action(button.dataset.kind, button.dataset.name, button.dataset.serviceAction);
+    // One delegated handler: the body is re-rendered on every tab switch, so
+    // listeners bound to its children would be lost.
+    shell.view.addEventListener('click', (event) => {
+        if (event.target.closest('[data-ethos-refresh]')) { _loadEthos(); return; }
+        const serviceBtn = event.target.closest('[data-service-action]');
+        if (serviceBtn) {
+            _action(serviceBtn.dataset.kind, serviceBtn.dataset.name, serviceBtn.dataset.serviceAction);
+            return;
+        }
+        const logsBtn = event.target.closest('[data-service-logs]');
+        if (logsBtn) { _openServiceLogs(logsBtn.dataset.kind, logsBtn.dataset.name); return; }
+        const ethosBtn = event.target.closest('[data-ethos-action]');
+        if (ethosBtn) ethosAction(ethosBtn.dataset.ethosAction);
     });
 
     shell.setStatus('Loading services…');
     await _load(false);
+    if (state.tab === 'ethos') await _loadEthos();
 
     if (_autoStop) _autoStop();
     _autoStop = poll(() => _load(true), AUTO_REFRESH_MS,
         { appId: 'services', immediate: false, name: 'services' });
+}
+
+/** Restart/stop/start the EthOS NAS unit itself (admin-only server side). */
+async function ethosAction(action) {
+    if (action === 'open-logs') { openLogs({ unit: 'ethos-nas' }); return; }
+    if (action === 'toggle-enable') {
+        const ok = await showConfirm('EthOS NAS Service', 'Toggle auto-start on boot?');
+        if (!ok) return;
+        try {
+            await apiRequest('/api/ethos-nas-service/toggle-enable', { method: 'POST' });
+            notify({ kind: 'success', message: 'Auto-start preference updated' });
+        } catch (err) {
+            logError('Services: toggling EthOS auto-start failed', err?.detail || err?.message);
+            notify({ kind: 'error', message: err?.detail || err?.message || 'Could not toggle auto-start' });
+        }
+        await _loadEthos();
+        return;
+    }
+    const ok = await showConfirm('EthOS NAS Service',
+        `${action.charAt(0).toUpperCase()}${action.slice(1)} the EthOS NAS service?`,
+        { danger: action === 'stop' });
+    if (!ok) return;
+    try {
+        await apiRequest('/api/ethos-nas-service/action', { method: 'POST', body: { action } });
+        notify({ kind: 'success', message: `EthOS NAS service ${action} — success` });
+    } catch (err) {
+        logError(`Services: EthOS service ${action} failed`, err?.detail || err?.message);
+        notify({ kind: 'error', message: err?.detail || err?.message || `Failed to ${action}` });
+    }
+    await _loadEthos();
 }
 
 async function _action(kind, name, action) {

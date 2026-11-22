@@ -63,6 +63,10 @@ def _get_interfaces() -> list[dict]:
             "bytes_recv_human": _fmt_bytes(nic_io.bytes_recv) if nic_io else "0 B",
             "packets_sent": nic_io.packets_sent if nic_io else 0,
             "packets_recv": nic_io.packets_recv if nic_io else 0,
+            "errors_in": nic_io.errin if nic_io else 0,
+            "errors_out": nic_io.errout if nic_io else 0,
+            "drops_in": nic_io.dropin if nic_io else 0,
+            "drops_out": nic_io.dropout if nic_io else 0,
         })
 
     # Sort: up first, then alphabetical

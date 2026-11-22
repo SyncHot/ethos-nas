@@ -13,6 +13,7 @@ import { startTask } from '../core/progress.js';
 import { skeletonRows, emptyState, errorState } from '../core/states.js';
 import { logError, logInfo } from '../core/logger.js';
 import { mountShell } from '../core/ui-shell.js';
+import { consumeContext } from '../core/app-links.js';
 import {
     fetchIncoming, fetchOutgoing, incomingTableHtml, outgoingTableHtml,
     wireSharingActions, openGrantApp,
@@ -72,8 +73,14 @@ export async function renderSettingsPage(body) {
     });
     shell.setPill('starting', 'Loading…');
     shell.onSection((id) => { renderSection(id); });
+    // The command palette deep-links a section (core/app-links.js); otherwise
+    // open whatever the user last visited.
+    const requested = consumeContext('settings')?.section;
     const remembered = _rememberedSection();
-    shell.setActive(SECTIONS.some((section) => section.id === remembered) ? remembered : 'overview');
+    const target = SECTIONS.some((section) => section.id === requested)
+        ? requested
+        : (SECTIONS.some((section) => section.id === remembered) ? remembered : 'overview');
+    shell.setActive(target);
 }
 
 async function renderSection(id) {

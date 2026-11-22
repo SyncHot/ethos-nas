@@ -10,6 +10,7 @@ import { pickFolder } from '../core/file-picker.js';
 import { showAlert, showConfirm as showModalConfirm, showFormModal, showPrompt } from '../core/modal.js';
 import { openShareDialog } from '../core/share-dialog.js';
 import { fetchIncoming } from '../core/sharing-ui.js';
+import { consumeContext, setContext } from '../core/app-links.js';
 
 export const fmWindowStates = new Map();
 
@@ -419,8 +420,12 @@ export function initFileManager(body) {
 
     // Open a specific path if requested (e.g. "Open in New Window"), otherwise
     // reopen the folder this browser last looked at — a file manager that forgets
-    // where you were is a daily papercut.
-    if (window.__fmPendingPath) { _pendingFmPath = window.__fmPendingPath; delete window.__fmPendingPath; }
+    // where you were is a daily papercut. Core callers use `core/app-links.js`;
+    // the `__fmPendingPath` global stays as the package-facing contract.
+    const appCtx = consumeContext('files');
+    const requestedPath = appCtx?.path || window.__fmPendingPath || null;
+    if (window.__fmPendingPath) delete window.__fmPendingPath;
+    if (requestedPath) { _pendingFmPath = requestedPath; }
     if (_pendingFmPath) { const p = _pendingFmPath; _pendingFmPath = null; state.path = p; state.history = [p]; state.historyIndex = 0; }
     else if (!state._openedOnce) {
         const last = _fmPref('ethos-fm-last-path', null);
@@ -2379,7 +2384,7 @@ export function fmShowItemContextMenu(e, path, name, isDir) {
     sep();
     items.push({ testid: 'fm-ctx-favorite', label: _fmIsFavorite(path) ? 'Remove from Favorites' : 'Add to Favorites', icon: '<path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>', action: () => fmToggleFavorite(path) });
     items.push({ testid: 'fm-ctx-copy-path', label: 'Copy Path', icon: '<path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/>', action: () => _copyPathToClipboard(path) });
-    items.push({ testid: 'fm-ctx-share-link', label: 'Share link…', icon: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>', action: () => { window.__fmShareCtx = { path }; openApp('shared-links'); } });
+    items.push({ testid: 'fm-ctx-share-link', label: 'Share link…', icon: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>', action: () => { setContext('shared-links', { path }); openApp('shared-links'); } });
     items.push({ testid: 'fm-ctx-share-users', label: 'Share with users…', icon: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>', action: () => { openShareDialog({ kind: 'path', resource: path }); } });
     items.push({ testid: 'fm-ctx-properties', label: 'Properties', icon: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>', action: () => _showProperties(path, isDir) });
     sep();

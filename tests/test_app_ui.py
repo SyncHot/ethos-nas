@@ -47,7 +47,6 @@ SHELL_APPS = {
     "processes.js": "single",
     "services.js": "single",
     "smart.js": "single",
-    "systemd.js": "single",
     "cron.js": "single",
     "search.js": "single",
     "share-links.js": "single",
@@ -208,6 +207,40 @@ def main() -> int:
         check(f"app icon gradient exists for {app_id}", app_id in gradient_keys, app_id)
     duplicates = sorted({key for key in glyph_keys if glyph_keys.count(key) > 1})
     check("app icon glyphs have no duplicate keys", not duplicates, ", ".join(duplicates))
+
+    # ── 7. Cross-app integration (2.29.0) ─────────────────────────────────
+    def app_src(name: str) -> str:
+        return (APPS / name).read_text(encoding="utf-8")
+
+    check("System Services merged into Service Manager", not (APPS / "systemd.js").exists())
+    check("Service Manager has the EthOS NAS tab", "['ethos', 'EthOS NAS']" in app_src("services.js"))
+    check("Service Manager opens Logs per row", "openLogs(" in app_src("services.js"))
+    check("Services: EthOS card offers logs", 'data-ethos-action="open-logs"' in app_src("services.js"))
+
+    check("SMART opens the attribute detail", "/api/smart/${encodeURIComponent(name)}" in app_src("smart.js"))
+    check("SMART charts the persisted history", "/api/smart/history" in app_src("smart.js"))
+    check("SMART can run self-tests", "/self-test" in app_src("smart.js"))
+    check("Cron previews schedules", "/api/cron/preview" in app_src("cron.js"))
+    check("Processes can force-kill", "signal=${encodeURIComponent(signal)}" in app_src("processes.js"))
+    check("Processes link to container logs", "openLogs({ container:" in app_src("processes.js"))
+    check("Network shows live interface rates", "data-rx-rate" in app_src("network.js"))
+    check("Network links to the firewall", "data-open-firewall" in app_src("network.js"))
+    check("Search keeps recent queries", "ethos-us-recent" in app_src("search.js"))
+    check("Overview drills down by app", "data-open-app" in app_src("overview.js"))
+    check("Overview surfaces health alerts", "/api/health/status" in app_src("overview.js"))
+    check("Settings accepts a section deep link", "consumeContext('settings')" in app_src("settings.js"))
+
+    check("app-links module exists", (STATIC / "core" / "app-links.js").is_file())
+    links_src = _read("frontend/static/core/app-links.js")
+    check("app-links exports the context API",
+          all(token in links_src for token in ("setContext", "consumeContext", "openPathInFiles")))
+    check("command palette module exists", (STATIC / "core" / "command-palette.js").is_file())
+    palette_src = _read("frontend/static/core/command-palette.js")
+    for section in SETTINGS_SECTIONS:
+        check(f"palette knows the {section} settings section", f"['{section}'" in palette_src)
+    check("palette is wired in app.js", "initCommandPalette" in _read("frontend/static/app.js"))
+    check("no app parks a share context on window",
+          not [name for name in sorted(app_files) if "window.__fmShareCtx" in app_src(name)])
 
     print()
     if failures:

@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from backend.routers.auth import require_admin
+from backend.services import cron_schedule
 
 logger = logging.getLogger("ethos-nas.routers.cron")
 # Cron entries execute arbitrary commands as the service user — admin-only.
@@ -204,18 +205,48 @@ def _serialize_crontab(text: str, jobs: list[dict]) -> str:
 
 @router.get("")
 async def list_cron_jobs() -> list[dict]:
-    """List all EthOS-managed cron jobs from the user crontab."""
+    """List all EthOS-managed cron jobs from the user crontab.
+
+    Each job also carries ``description`` (human wording) and ``next_run``
+    (ISO timestamp, ``None`` for ``@reboot`` or an unparseable legacy entry).
+    """
     text = await asyncio.to_thread(_read_crontab)
     jobs = _parse_crontab(text)
+    for job in jobs:
+        runs = cron_schedule.next_runs(job.get("schedule", ""), 1)
+        job["description"] = cron_schedule.describe(job.get("schedule", ""))
+        job["next_run"] = runs[0].isoformat() if runs else None
     return jobs
+
+
+@router.get("/preview")
+async def preview_schedule(schedule: str = "", count: int = 3) -> dict:
+    """Validate a schedule and return its human wording plus next runs.
+
+    The editor calls this while the user types; an invalid expression returns
+    ``ok: false`` with the reason instead of writing a job that never fires.
+    """
+    try:
+        cron_schedule.validate(schedule)
+    except ValueError as exc:
+        return {"ok": False, "detail": str(exc), "schedule": schedule}
+    runs = cron_schedule.next_runs(schedule, count)
+    return {
+        "ok": True,
+        "schedule": schedule.strip(),
+        "description": cron_schedule.describe(schedule),
+        "next_runs": [run.isoformat() for run in runs],
+        "reboot_only": schedule.strip() == cron_schedule.REBOOT,
+    }
 
 
 @router.post("")
 async def add_cron_job(body: CronJobCreate) -> dict:
     """Add a new cron job to the user crontab."""
-    # Validate schedule format (basic check)
-    if not body.schedule or not body.schedule.strip():
-        raise HTTPException(status_code=400, detail="Schedule is required")
+    try:
+        cron_schedule.validate(body.schedule)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid schedule: {exc}") from exc
     if not body.command or not body.command.strip():
         raise HTTPException(status_code=400, detail="Command is required")
 
@@ -256,6 +287,10 @@ async def update_cron_job(job_id: str, body: CronJobUpdate) -> dict:
             raise HTTPException(status_code=404, detail=f"Cron job {job_id} not found")
 
         if body.schedule is not None:
+            try:
+                cron_schedule.validate(body.schedule)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid schedule: {exc}") from exc
             found["schedule"] = body.schedule.strip()
         if body.command is not None:
             found["command"] = body.command.strip()

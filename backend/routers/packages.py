@@ -41,13 +41,16 @@ APP_REGISTRY_KEYS = [
     "overview", "storage", "files", "trash",
     "terminal", "network", "security", "services", "settings",
     "processes", "logs", "packages", "smart",
-    "systemd", "cron",
+    "cron",
     "search", "shared-links", "sharing",
 ]
 
 # Built-in apps that moved to Packages. Existing per-user layouts keep the
 # icon position after the upgrade.
 LEGACY_LAYOUT_MAP = {
+    # System Services merged into Service Manager (2.29.0); a pinned icon keeps
+    # its position and opens the merged window.
+    "systemd": "services",
     "backup": "pkg-backup-manager",
     "downloads": "pkg-download-manager",
     # Kanban moved to Packages (docs/app-store.md): a pinned icon keeps its

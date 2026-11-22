@@ -44,7 +44,10 @@ and one status line — matching the native package windows.
 The system resource dashboard: live gauges for CPU, RAM/swap, disk, network rate, temperature, uptime,
 and container count. Resource monitoring lives here; Settings is reserved for health checks and
 configuration. Throughput history lives in the Network app — Overview shows only the instantaneous
-rate and a "Details →" link.
+rate and a "Details →" link. A **health alert strip** (from `/api/health/status`, polled every 60 s)
+surfaces failed units, near-full disks, SMART failures and high temperatures with a jump to the app
+that fixes them; every card and summary tile drills into its app (CPU/RAM → Processes, disk → Storage,
+containers → Services, temperature → SMART).
 The primary feed is the `/ws/stats` WebSocket (one snapshot every 2 s, same counters as
 `/api/system/status`); a 10 s HTTP poll covers a socket that cannot connect, and `/api/containers` is
 polled every 15 s. Tested by `tests/test_stats_ws.py` (socket contract) and
@@ -75,22 +78,35 @@ roots. Admin-only. Tested: no dedicated test (P4-05).
 ## Cron
 CRUD for crontab entries tagged `# ETHOS-CRON:{id}:{enabled}` in the service user's crontab. All
 read-modify-writes are serialised by an `asyncio.Lock` and `crontab -l/-` runs off the event loop.
-Admin-only (entries execute arbitrary commands as the service user). Tested: no dedicated test (P4-05).
+Schedules are validated on write by `services/cron_schedule.py` (5 fields, ranges, names and the
+`@` macros), the table shows a human description plus the next run, and the dialog previews the next
+three runs while typing through `GET /api/cron/preview`. Admin-only (entries execute arbitrary
+commands as the service user). Tested: `tests/test_cron_schedule.py` (parser/preview) and the
+security invariants (403 for non-admins).
 
 ## Process manager
-Table of processes with CPU/memory, grouped by name, with cgroup→container attribution and SIGTERM.
-Kill is admin-only. Reads are cheap (single `psutil.process_iter` pass in a thread). Tested: no dedicated
+Table of processes with CPU/memory, grouped by name, with cgroup→container attribution. A row opens a
+detail panel (full command line, PPID, container, start time); the kill action is admin-only and offers
+SIGTERM or SIGKILL (`DELETE /api/processes/{pid}?signal=`). Container rows link straight to that
+container's logs. Reads are cheap (single `psutil.process_iter` pass in a thread). Tested: no dedicated
 test (P4-05).
 
 ## Services
-Two panes: the EthOS unit itself (`/api/ethos-nas-service` — status, start/stop/restart, enable toggle)
-and any systemd unit (`/api/systemd` — list, action). Both admin-only; port state is read from
-`/proc/net/tcp`. Tested via the security invariant suite (403 for non-admins).
+One window with four tabs: **All** (containers + units), **Containers** (`/api/containers`),
+**Systemd** (`/api/systemd` — list, action) and **EthOS NAS** (the unit itself through
+`/api/ethos-nas-service` — status, start/stop/restart, boot toggle). Every row has a **Logs** button that
+opens the one Logs viewer on that container or unit. Mutations are admin-only; port state is read from
+`/proc/net/tcp`. The old **System Services** window was merged here in 2.29.0 (`openApp('systemd')` still
+works and selects the Systemd tab). Tested via the security invariant suite (403 for non-admins) and
+the static guards in `tests/test_app_ui.py`.
 
 ## SMART
-Per-disk SMART attributes and pass/fail, plus the trend rows the health monitor persists
-(`smart_history.json`). Requires `smartctl`; the app hides itself when the binary is missing (see
-`/api/system/doctor`). Tested: `tests/test_health_monitor.py` covers the trend logic.
+Per-disk SMART pass/fail and summary; a disk card opens an inline detail with the full attribute table,
+the change deltas the health monitor records, a 24 h temperature chart, drive self-tests
+(`smartctl -t short|long|abort`, admin-only) and the drive's self-test log. History comes from
+`smart_history.json` (v2 ring, `GET /api/smart/history`) — the request path never probes a disk.
+Requires `smartctl`; the app hides itself when the binary is missing (see `/api/system/doctor`).
+Tested: `tests/test_health_monitor.py` (trend logic) and `tests/test_smart_history.py` (store/history).
 
 ## Samba shares
 Create/update/delete shares with file/directory masks and per-user/group read/write ACLs. Admins can
@@ -103,9 +119,11 @@ surface an error. Passdb changes use the root-owned `ethos-samba-accounts` helpe
 
 ## Network
 Interfaces, addresses, connection details (default gateway, source IP, DNS) and the RX/TX history
-sampler (`net_stats.json`, 60 s cadence) with 30 min / 2 h / 12 h windows. Read-only; firewall state
-and management live in the Firewall & Access Control app (the old "Firewall" tab and
-`/api/network/firewall*` were removed). Tested: `tests/test_network.py`.
+sampler (`net_stats.json`, 60 s cadence) with 30 min / 2 h / 12 h windows. Each interface row shows
+live RX/TX rates (5 s counter deltas), error/drop totals and copy buttons for the IP and MAC; the
+connection card links admins to Firewall & Access Control. Read-only; firewall state and management
+live in the Firewall app (the old "Firewall" tab and `/api/network/firewall*` were removed).
+Tested: `tests/test_network.py`.
 
 ## Logs
 One viewer for every diagnostic source: the unified event store (`core`, `browser`, `pkg:<id>`), host
@@ -116,7 +134,9 @@ Tested: `tests/test_logs_api.py`, `tests/test_logs_ws.py`, `tests/test_logging_u
 
 ## Search
 Unified file search across the sensible roots (`/home`, `/mnt`, `/media`), name/type/size filters,
-streamed results. Uses `/api/files/universal-search`; per-role path scope applies.
+streamed results. Keeps the last eight queries, sorts by newest / name / size, and every result has an
+“Open folder” action that navigates Files through `core/app-links.js`. Uses
+`/api/files/universal-search`; per-role path scope applies.
 Tested: `tests/test_file_manager_fixes.py` (search cases).
 
 ## Settings

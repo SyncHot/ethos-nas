@@ -21,7 +21,6 @@ const APP_REGISTRY = {
     logs:        { id: 'logs', title: 'Log Viewer', icon: '📜' },
     packages:    { id: 'packages', title: 'Packages', icon: '📦' },
     smart:       { id: 'smart',     title: 'SMART Health', icon: '💿' },
-    systemd:     { id: 'systemd',   title: 'System Services', icon: '⚙️' },
     cron:        { id: 'cron',      title: 'Cron Jobs', icon: '⏰' },
     search:      { id: 'search',   title: 'Universal Search', icon: '🔍' },
     'shared-links': { id: 'shared-links', title: 'Shared Links', icon: '🔗' },
@@ -341,7 +340,12 @@ export function renderDesktopIcons() {
     // Single pass in PIN order — the visible list is authoritative for desktop
     // layout. Rendering from it (not the drawer order) guarantees a pinned app
     // always shows, even if the saved layout predates that app.
-    const visibleApps = getVisibleApps().filter(isAppVisible);
+    // Unknown ids (a saved layout from an app we merged away, e.g. systemd)
+    // must not reserve a grid cell — the backend migrates them, this is the
+    // first-paint safety net for the local cache.
+    const visibleApps = getVisibleApps()
+        .filter(isAppVisible)
+        .filter((id) => id.startsWith('pkg-') || Boolean(APP_REGISTRY[id]));
     const pkgsById = new Map(_pkgIconData.map(p => [p.id, p]));
 
     let html = '';

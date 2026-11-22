@@ -25,7 +25,7 @@ const API_PATH = "/api/packages/desktop/layout";
 const DEFAULT_ORDER = [
     "overview", "storage", "files", "trash", "terminal",
     "network", "security", "services", "settings", "processes", "logs", "packages",
-    "smart", "systemd", "cron",
+    "smart", "cron",
     "search", "shared-links", "sharing",
 ];
 

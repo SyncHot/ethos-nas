@@ -165,7 +165,9 @@ def _probe_smart(dev: str) -> dict:
         table = (data.get("ata_smart_attributes") or {}).get("table", [])
         attrs = {a["name"]: a.get("value") for a in table
                  if isinstance(a, dict) and a.get("name") in _KEY_SMART_ATTRS}
+        temp_info = data.get("temperature") or {}
         return {"device": dev, "ok": True, "passed": passed,
+                "temperature": temp_info.get("current") if isinstance(temp_info, dict) else None,
                 "model": data.get("model_name", ""), "attributes": attrs}
     except FileNotFoundError:
         return {"device": dev, "ok": False, "error": "smartctl not installed"}
@@ -221,6 +223,9 @@ _TREND_ALERT_ATTRS = (
 
 # Records for devices unseen this long are pruned (unplugged / replaced disk).
 _SMART_HISTORY_STALE_DAYS = 14
+# Ring buffer per device: one sample per health check (default 5 min) → ~24 h-
+# plus. Bounded so the store can never grow without limit.
+_SMART_SAMPLES_MAX = 288
 
 
 def _smart_history_file() -> Path:
@@ -228,19 +233,23 @@ def _smart_history_file() -> Path:
 
 
 def _load_smart_history() -> dict:
-    """Persisted per-device attribute samples; never raises."""
+    """Persisted per-device attribute samples; never raises.
+
+    Version 1 kept only the current and previous attribute maps (alert deltas).
+    Version 2 adds ``samples`` — a bounded time series the SMART app charts.
+    """
     try:
         with open(_smart_history_file(), "r", encoding="utf-8") as f:
             data = json.load(f)
         devs = data.get("devices") if isinstance(data, dict) else None
-        return {"version": 1,
+        return {"version": 2,
                 "devices": ({k: v for k, v in devs.items() if isinstance(v, dict)}
                             if isinstance(devs, dict) else {})}
     except FileNotFoundError:
-        return {"version": 1, "devices": {}}
+        return {"version": 2, "devices": {}}
     except Exception as exc:  # noqa: BLE001 — corrupt store must not break checks
         logger.warning("smart history unreadable (%s) — starting fresh", exc)
-        return {"version": 1, "devices": {}}
+        return {"version": 2, "devices": {}}
 
 
 def _save_smart_history(history: dict) -> None:
@@ -251,7 +260,7 @@ def _save_smart_history(history: dict) -> None:
                                prefix=".smart-hist-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
+            json.dump({**history, "version": 2}, f, ensure_ascii=False, indent=2)
         os.replace(tmp, hist_file)
     except Exception:
         try:
@@ -298,6 +307,50 @@ def smart_trends() -> dict | None:
                         "attrs": attrs, "prev_attrs": prev_attrs,
                         "changes": changes})
     return {"devices": devices}
+
+
+def _next_samples(rec: dict, now: datetime, attrs: dict, temp) -> list[dict]:
+    """Append one bounded sample to a device's time series."""
+    raw = rec.get("samples") if isinstance(rec, dict) else None
+    samples = [sample for sample in raw if isinstance(sample, dict)] if isinstance(raw, list) else []
+    samples = samples[-_SMART_SAMPLES_MAX:]
+    samples.append({
+        "ts": now.isoformat(timespec="seconds"),
+        "temp": temp if isinstance(temp, (int, float)) else None,
+        "attrs": {k: v for k, v in attrs.items() if isinstance(v, (int, float))},
+    })
+    return samples[-_SMART_SAMPLES_MAX:]
+
+
+def smart_history(hours: int = 24, device: str | None = None) -> dict:
+    """Time series for the SMART app — persisted samples, no probing.
+
+    ``hours`` is clamped to 1…168 (the ring holds roughly a day at the default
+    interval; a longer window simply returns everything recorded).
+    """
+    hours = max(1, min(168, int(hours or 24)))
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    history = _load_smart_history()
+    out = []
+    for dev in sorted(history["devices"]):
+        if device and dev != device:
+            continue
+        rec = history["devices"][dev]
+        samples = rec.get("samples") if isinstance(rec, dict) else None
+        kept = []
+        for sample in samples if isinstance(samples, list) else []:
+            if not isinstance(sample, dict):
+                continue
+            ts = _parse_iso(sample.get("ts"))
+            if ts is None or ts < cutoff:
+                continue
+            kept.append({
+                "ts": sample.get("ts"),
+                "temp": sample.get("temp"),
+                "attrs": sample.get("attrs") if isinstance(sample.get("attrs"), dict) else {},
+            })
+        out.append({"device": dev, "samples": kept})
+    return {"hours": hours, "devices": out}
 
 
 def _collect_temps() -> list[dict]:
@@ -800,7 +853,9 @@ def run_check() -> dict:
                             emitted.append(title)
             hist_devs[dev] = {"last_seen": now.isoformat(timespec="seconds"),
                               "attrs": attrs,
-                              "prev_attrs": prev_attrs}
+                              "prev_attrs": prev_attrs,
+                              "samples": _next_samples(rec, now, attrs,
+                                                       s.get("temperature"))}
         # Prune devices unseen for a long time (unplugged / replaced disk).
         cutoff = now - timedelta(days=_SMART_HISTORY_STALE_DAYS)
         for dev in list(hist_devs):

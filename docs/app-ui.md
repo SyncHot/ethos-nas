@@ -22,7 +22,7 @@ palettes.
 - **Multi-section window (≥ 2 views)** — rail + main: Settings, Packages, Storage,
   Security, Logs, Kanban-style tools. `mountShell(..., { sections })`.
 - **Single-section window** — header + panels only, no rail: Overview, Network, Processes,
-  Services, SMART, System Services, Cron, Search, Shared Links.
+  Services, SMART, Cron, Search, Shared Links.
   `mountShell(..., { sections: [{ id: 'main', label: 'Overview' }], rail: false })`.
 - **Dense tools keep their own panes** — File Manager (explorer) and Terminal
   (xterm) are documented layout exceptions. They still use the tokens and the
@@ -90,6 +90,29 @@ export function renderThingPage(body) {
     }
 }
 ```
+
+## Cross-app links (`core/app-links.js`)
+
+Core windows never park data on `window.*` to talk to each other. Use the one-shot context channel:
+
+```js
+setContext('shared-links', { path });     // before opening
+if (typeof window.openApp === 'function') window.openApp('shared-links');
+```
+
+The target app calls `consumeContext('<id>')` once while rendering (`files.js`, `share-links.js`,
+`settings.js` consume a section). `openAppAt(id, section)` opens an app at a rail section, and
+`openPathInFiles(path)` navigates a live Files window or hands the path to the next one.
+
+Package apps (Gallery, Editor, Photos) still read their documented `window.__fm*Ctx` contract; those
+globals belong to the package API and must not be used by core apps.
+
+## Command palette (`core/command-palette.js`)
+
+`Ctrl+K` / `Cmd+K` opens one search over every registry app plus the Settings sections. It reads
+`core/registry.js`, so a new app appears automatically; add Settings sections to `SETTINGS_SECTIONS`
+in the palette when the rail grows. Styling is `.cmdk-*` in `ethos-ui.css` (tokens only), and the
+terminal is excluded so `Ctrl+K` keeps working in readline.
 
 ## Theming
 

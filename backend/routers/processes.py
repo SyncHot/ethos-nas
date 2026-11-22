@@ -88,9 +88,14 @@ def _safe_proc_info(proc: psutil.Process) -> Optional[dict]:
             except (psutil.AccessDenied, psutil.NoSuchProcess):
                 started = 0
             cmdline = " ".join(proc.cmdline()[:6]) or proc.name()
+            try:
+                cmdline_full = " ".join(proc.cmdline())[:4000] or cmdline
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                cmdline_full = cmdline
             name = proc.name()
             return {
                 "pid": proc.pid,
+                "ppid": proc.ppid(),
                 "name": name,
                 "display_name": _display_name(name, cmdline),
                 "status": proc.status(),
@@ -105,6 +110,7 @@ def _safe_proc_info(proc: psutil.Process) -> Optional[dict]:
                 "started": started,
                 "username": proc.username(),
                 "cmdline": cmdline,
+                "cmdline_full": cmdline_full,
             }
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
         return None
@@ -217,18 +223,26 @@ async def list_processes(
 
 
 @router.delete("/{pid}", dependencies=[Depends(require_admin)])
-async def kill_process(pid: int) -> dict:
-    """Send SIGTERM to a process by PID.
+async def kill_process(pid: int, signal: str = Query("TERM", pattern="^(TERM|KILL)$")) -> dict:
+    """Terminate a process by PID — SIGTERM by default, SIGKILL on request.
 
     Args:
         pid: Target process ID
+        signal: TERM (graceful, the default) or KILL (immediate)
     """
     if pid <= 1:
         raise HTTPException(status_code=400, detail="Cannot terminate system process")
+    sig = (signal or "TERM").upper()
     try:
         proc = psutil.Process(pid)
-        proc.terminate()
-        return {"ok": True, "pid": pid, "message": f"SIGTERM sent to PID {pid}"}
+        if sig == "KILL":
+            proc.kill()
+            message = f"SIGKILL sent to PID {pid}"
+        else:
+            proc.terminate()
+            message = f"SIGTERM sent to PID {pid}"
+        logger.info("processes: %s", message)
+        return {"ok": True, "pid": pid, "signal": sig, "message": message}
     except psutil.NoSuchProcess:
         raise HTTPException(status_code=404, detail=f"Process {pid} not found")
     except psutil.AccessDenied:

@@ -17,7 +17,11 @@ import re
 import subprocess
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+from backend.routers.auth import require_admin
+from backend.services import health_monitor_service as hms
 
 logger = logging.getLogger("ethos-nas.routers.smart")
 
@@ -26,17 +30,33 @@ router = APIRouter()
 
 def _run(cmd: list[str], timeout: int = 15) -> Optional[str]:
     """Run a command and return stdout, or None on error."""
+    rc, out, _err = _run_result(cmd, timeout)
+    return out if rc == 0 else None
+
+
+def _run_result(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
+    """Run a command and return ``(returncode, stdout, stderr)`` — never raises."""
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
         )
-        return result.stdout if result.returncode == 0 else None
+        return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
     except FileNotFoundError:
         logger.warning("smartctl not found — is smartmontools installed?")
-        return None
-    except Exception as exc:
+        return 127, "", "smartctl not installed"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"timed out after {timeout}s"
+    except Exception as exc:  # noqa: BLE001 — callers report the detail
         logger.debug("smartctl error: %s", exc)
-        return None
+        return 1, "", str(exc)[:200]
+
+
+def _device_name(device: str) -> str:
+    """Normalise and validate a device name (short or /dev path)."""
+    dev_name = device.replace("/dev/", "").strip()
+    if not dev_name or not re.match(r"^[a-zA-Z][a-zA-Z0-9_]+$", dev_name):
+        raise HTTPException(status_code=400, detail="Invalid device name")
+    return dev_name
 
 
 def _disks_from_lsblk() -> list[dict]:
@@ -187,6 +207,50 @@ async def smart_list() -> dict:
     return {"disks": results, "total": len(results)}
 
 
+@router.get("/history")
+async def smart_history(hours: int = 24, device: str = "") -> dict:
+    """Persisted SMART samples (temperature + key attributes) for one or all disks.
+
+    Read-only: the health monitor records one sample per check, so this never
+    probes a disk on the request path.
+    """
+    dev = f"/dev/{_device_name(device)}" if device.strip() else None
+    return await asyncio.to_thread(hms.smart_history, hours, dev)
+
+
+class SelfTestRequest(BaseModel):
+    """Self-test action: ``short``, ``long`` or ``abort``."""
+
+    model_config = {"extra": "forbid"}
+    mode: str = "short"
+
+
+@router.post("/{device:str}/self-test", dependencies=[Depends(require_admin)])
+async def start_self_test(device: str, body: SelfTestRequest) -> dict:
+    """Start (or abort) a SMART self-test — drive-side, admin-only."""
+    dev_name = _device_name(device)
+    mode = (body.mode or "").strip().lower()
+    if mode not in {"short", "long", "abort"}:
+        raise HTTPException(status_code=422, detail="mode must be short, long or abort")
+    rc, out, err = await asyncio.to_thread(
+        _run_result, ["smartctl", "-t", mode, f"/dev/{dev_name}"], 30)
+    logger.info("SMART self-test %s on /dev/%s (rc=%s)", mode, dev_name, rc)
+    if rc != 0:
+        raise HTTPException(status_code=500, detail=err or out or f"smartctl exited {rc}")
+    return {"ok": True, "device": f"/dev/{dev_name}", "mode": mode, "output": out}
+
+
+@router.get("/{device:str}/selftest-log")
+async def self_test_log(device: str) -> dict:
+    """The drive's own self-test log (``smartctl -l selftest``)."""
+    dev_name = _device_name(device)
+    rc, out, err = await asyncio.to_thread(
+        _run_result, ["smartctl", "-l", "selftest", f"/dev/{dev_name}"], 15)
+    if rc != 0 and not out:
+        raise HTTPException(status_code=500, detail=err or f"smartctl exited {rc}")
+    return {"device": f"/dev/{dev_name}", "output": out}
+
+
 @router.get("/{device:str}")
 async def smart_device(device: str) -> dict:
     """Return detailed SMART attributes for a single device.
@@ -195,9 +259,7 @@ async def smart_device(device: str) -> dict:
         device: Short name (e.g. ``sda``) or full path (``/dev/sda``).
     """
     # Normalise — strip leading /dev/ if present
-    dev_name = device.replace("/dev/", "").strip()
-    if not dev_name or not re.match(r"^[a-zA-Z][a-zA-Z0-9_]+$", dev_name):
-        raise HTTPException(status_code=400, detail="Invalid device name")
+    dev_name = _device_name(device)
 
     smart_data = await asyncio.to_thread(_parse_smart_json, dev_name)
     if smart_data:

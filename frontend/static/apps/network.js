@@ -1,14 +1,17 @@
 // EthOS NAS — Network (interfaces, connection and throughput; read-only).
 // Firewall state and management live in the Firewall & Access Control app.
-import { escapeHtml, formatBytes, formatSpeed } from '../core/utils.js';
-import { apiRequest } from '../core/api.js';
+import { escapeAttr, escapeHtml, formatBytes, formatSpeed } from '../core/utils.js';
+import { apiRequest, isAdmin } from '../core/api.js';
 import { poll } from '../core/poller.js';
 import { skeletonRows, emptyState, errorState } from '../core/states.js';
+import { notify } from '../core/notification-center.js';
 import { logError } from '../core/logger.js';
 import { mountShell, applyBarWidths } from '../core/ui-shell.js';
 
 let shell = null;
 let _thruStop = null;
+let _ifaceStop = null;
+let _lastIfaces = null;
 let _thruMinutes = 60;
 
 function _alive() {
@@ -17,6 +20,8 @@ function _alive() {
 
 export async function renderNetworkPage(body) {
     if (_thruStop) { _thruStop(); _thruStop = null; }
+    if (_ifaceStop) { _ifaceStop(); _ifaceStop = null; }
+    _lastIfaces = null;
     shell?.destroy();
     shell = mountShell(body, {
         idPrefix: 'network',
@@ -33,6 +38,7 @@ export async function renderNetworkPage(body) {
 
 async function loadInterfaces() {
     const isCurrent = _alive;
+    if (_ifaceStop) { _ifaceStop(); _ifaceStop = null; }
     const content = shell.view;
     content.innerHTML = skeletonRows(6);
     shell.setStatus('Loading interfaces…');
@@ -52,14 +58,18 @@ async function loadInterfaces() {
             const up = iface.status === 'up';
             const rx = iface.bytes_recv_human || (iface.rx_bytes != null ? formatBytes(iface.rx_bytes) : '—');
             const tx = iface.bytes_sent_human || (iface.tx_bytes != null ? formatBytes(iface.tx_bytes) : '—');
-            return `<tr>
+            const ip = iface.ipv4 || iface.ip || '';
+            const errors = (Number(iface.errors_in) || 0) + (Number(iface.errors_out) || 0)
+                + (Number(iface.drops_in) || 0) + (Number(iface.drops_out) || 0);
+            return `<tr data-testid="net-iface-row-${escapeAttr(iface.name || 'if')}">
                 <td>${escapeHtml(iface.name || '—')}</td>
-                <td class="path">${escapeHtml(iface.ipv4 || iface.ip || '—')}</td>
-                <td class="path">${escapeHtml(iface.mac || '—')}</td>
+                <td class="path">${escapeHtml(ip || '—')}${ip ? `<button class="ui-btn small" data-copy="${escapeAttr(ip)}" title="Copy IP address" aria-label="Copy IP address" data-testid="net-copy-ip-${escapeAttr(iface.name || 'if')}">⧉</button>` : ''}</td>
+                <td class="path">${escapeHtml(iface.mac || '—')}${iface.mac ? `<button class="ui-btn small" data-copy="${escapeAttr(iface.mac)}" title="Copy MAC address" aria-label="Copy MAC address" data-testid="net-copy-mac-${escapeAttr(iface.name || 'if')}">⧉</button>` : ''}</td>
                 <td><span class="ui-tag ${up ? 'is-ok' : 'is-warn'}">${up ? 'Up' : 'Down'}</span></td>
                 <td>${iface.speed_mbps ? `${escapeHtml(String(iface.speed_mbps))} Mb/s` : '—'}</td>
-                <td class="num">${escapeHtml(rx)}</td>
-                <td class="num">${escapeHtml(tx)}</td>
+                <td class="num">${escapeHtml(rx)}<div class="ui-muted" data-rx-rate="${escapeAttr(iface.name || '')}">—</div></td>
+                <td class="num">${escapeHtml(tx)}<div class="ui-muted" data-tx-rate="${escapeAttr(iface.name || '')}">—</div></td>
+                <td class="num">${errors ? `<span class="ui-tag is-warn">${errors}</span>` : '—'}</td>
             </tr>`;
         }).join('');
 
@@ -68,16 +78,22 @@ async function loadInterfaces() {
             ${_connectionCard(netStatus)}
             <div class="ui-toolbar">
                 <h2>Interfaces</h2>
-                <span class="ui-tag">${interfaces.length} interface${interfaces.length === 1 ? '' : 's'}</span>
+                <div class="ui-row">
+                    <span class="ui-tag">${interfaces.length} interface${interfaces.length === 1 ? '' : 's'}</span>
+                    <button class="ui-btn small" data-refresh-ifaces data-testid="net-refresh-ifaces">Refresh</button>
+                </div>
             </div>
             ${interfaces.length ? `<div class="ui-panel"><div class="ui-table-wrap"><table class="ui-table" data-testid="net-interfaces-table">
-                    <thead><tr><th>Interface</th><th>IP</th><th>MAC</th><th>Status</th><th>Speed</th><th class="num">RX</th><th class="num">TX</th></tr></thead>
+                    <thead><tr><th>Interface</th><th>IP</th><th>MAC</th><th>Status</th><th>Speed</th><th class="num">RX</th><th class="num">TX</th><th class="num">Errors</th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table></div></div>`
                 : emptyState({ icon: 'network', title: 'No network interfaces found', hint: 'Check the host network configuration.' })}`;
 
         _wireThroughputWindow(content);
+        _wireInterfaceActions(content);
         applyBarWidths(content);
+        _lastIfaces = { t: Date.now(), map: _ifaceCounters(interfaces) };
+        _startIfaceRates();
         await loadThroughput(isCurrent);
         if (!isCurrent()) return;
         shell.setStatus(`${interfaces.length} interface(s)`, 'ok');
@@ -104,7 +120,10 @@ function _connectionCard(status) {
     rows.push(`<div><dt class="ui-kv-key">DNS servers</dt><dd class="ui-kv-value mono">${dns.length ? dns.map((d) => escapeHtml(d)).join(' · ') : 'None configured'}</dd></div>`);
 
     return `<section class="ui-panel" data-testid="net-connection-card">
-        <h2>Connection</h2>
+        <div class="ui-toolbar">
+            <h2>Connection</h2>
+            ${isAdmin() ? `<button class="ui-btn small" data-open-firewall data-testid="net-firewall-btn">🛡️ Firewall</button>` : ''}
+        </div>
         <div class="ui-panel-body"><dl class="ui-kv">${rows.join('')}</dl></div>
     </section>`;
 }
@@ -136,6 +155,69 @@ function _wireThroughputWindow(content) {
             loadThroughput();
         });
     });
+}
+
+function _wireInterfaceActions(content) {
+    content.querySelector('[data-refresh-ifaces]')?.addEventListener('click', () => loadInterfaces());
+    content.querySelector('[data-open-firewall]')?.addEventListener('click', () => window.openApp?.('security'));
+    content.querySelectorAll('[data-copy]').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const value = button.dataset.copy;
+            if (!value) return;
+            try {
+                await navigator.clipboard.writeText(value);
+                notify({ kind: 'success', message: `${value} copied` });
+            } catch (err) {
+                logError('Network: clipboard unavailable', err?.message || String(err));
+                notify({ kind: 'error', message: 'Could not copy to the clipboard' });
+            }
+        });
+    });
+}
+
+function _ifaceCounters(interfaces) {
+    const map = new Map();
+    for (const iface of interfaces) {
+        map.set(iface.name, {
+            rx: Number(iface.bytes_recv) || 0,
+            tx: Number(iface.bytes_sent) || 0,
+        });
+    }
+    return map;
+}
+
+/** Poll the counters every 5 s and update only the rate cells (no re-render). */
+function _startIfaceRates() {
+    if (_ifaceStop) { _ifaceStop(); _ifaceStop = null; }
+    _ifaceStop = poll(_ratesTick, 5_000, { appId: 'network', immediate: false, name: 'network-ifaces' });
+}
+
+async function _ratesTick() {
+    if (!_alive()) return;
+    try {
+        const data = await apiRequest('/api/network/interfaces');
+        if (!_alive()) return;
+        const interfaces = Array.isArray(data) ? data : (data.interfaces || []);
+        const now = Date.now();
+        const previous = _lastIfaces;
+        const dt = previous ? Math.max(0.5, (now - previous.t) / 1000) : 0;
+        const map = _ifaceCounters(interfaces);
+        if (previous && dt) {
+            for (const [name, counters] of map) {
+                const before = previous.map.get(name);
+                if (!before) continue;
+                const rx = Math.max(0, (counters.rx - before.rx) / dt);
+                const tx = Math.max(0, (counters.tx - before.tx) / dt);
+                const rxEl = shell.view.querySelector(`[data-rx-rate="${CSS.escape(name)}"]`);
+                const txEl = shell.view.querySelector(`[data-tx-rate="${CSS.escape(name)}"]`);
+                if (rxEl) rxEl.textContent = `↓ ${formatSpeed(rx)}`;
+                if (txEl) txEl.textContent = `↑ ${formatSpeed(tx)}`;
+            }
+        }
+        _lastIfaces = { t: now, map };
+    } catch (err) {
+        logError('Network: interface counters unavailable', err?.detail || err?.message);
+    }
 }
 
 function _cssToken(name) {

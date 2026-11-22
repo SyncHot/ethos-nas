@@ -7,6 +7,7 @@ import { showConfirm } from '../core/modal.js';
 import { notify } from '../core/notification-center.js';
 import { uiIcon } from '../core/icons.js';
 import { logError } from '../core/logger.js';
+import { consumeContext } from '../core/app-links.js';
 import { mountShell } from '../core/ui-shell.js';
 
 const STATUS_META = {
@@ -36,9 +37,8 @@ function _fmtDate(iso) {
 export async function renderShareLinksPage(body) {
     if (!body) return;
     // Pre-fill path when opened from Files' "Share link…" context menu.
-    const ctx = window.__fmShareCtx || null;
-    if (ctx && ctx.path) delete window.__fmShareCtx;
-    const prefillPath = ctx ? escapeAttr(ctx.path) : '';
+    const ctx = consumeContext('shared-links');
+    const prefillPath = ctx && ctx.path ? escapeAttr(ctx.path) : '';
     const prefillName = ctx && ctx.name ? escapeAttr(ctx.name) : '';
 
     shell?.destroy();

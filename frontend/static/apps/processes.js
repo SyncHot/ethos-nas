@@ -8,12 +8,15 @@ import { notify } from '../core/notification-center.js';
 import { uiIcon } from '../core/icons.js';
 import { logError } from '../core/logger.js';
 import { mountShell, applyBarWidths } from '../core/ui-shell.js';
+import { openLogs } from './logs.js';
 
 let shell = null;
 let sortKey = 'mem';
 let sortAsc = false;
 let filter = '';
 let autoRefresh = false;
+let _procs = [];
+let _detailPid = null;
 
 const AUTO_REFRESH_MS = 5000;
 const HEAVY_MB = 300;
@@ -66,7 +69,8 @@ export async function renderProcessesPage(body) {
         <section class="ui-panel" id="procSummary">${skeletonRows(2)}</section>
         <section class="ui-panel" style="min-height:180px;">
             <div id="procTableWrap">${skeletonRows(10)}</div>
-        </section>`;
+        </section>
+        <div id="procDetail" data-testid="proc-detail-host" style="display:none;"></div>`;
 
     const search = shell.view.querySelector('#procSearch');
     search.value = filter;
@@ -84,6 +88,29 @@ export async function renderProcessesPage(body) {
 
     shell.setStatus('Loading processes…');
     refresh();
+
+    // One delegated handler for the table (re-rendered on every refresh) and the
+    // detail panel (re-rendered on demand).
+    shell.view.addEventListener('click', (event) => {
+        const header = event.target.closest('[data-sort]');
+        if (header) {
+            const key = header.dataset.sort;
+            if (key === '_actions') return;
+            if (sortKey === key) sortAsc = !sortAsc;
+            else { sortKey = key; sortAsc = key === 'name' || key === 'user'; }
+            _refreshProcList(body);
+            return;
+        }
+        const kill = event.target.closest('[data-kill]');
+        if (kill) { _killProcess(Number(kill.dataset.kill), body, 'TERM'); return; }
+        const detail = event.target.closest('[data-proc-detail]');
+        if (detail) { _showDetail(Number(detail.dataset.procDetail)); return; }
+        const force = event.target.closest('[data-proc-force]');
+        if (force) { _killProcess(Number(force.dataset.procForce), body, 'KILL'); return; }
+        const logs = event.target.closest('[data-proc-logs]');
+        if (logs) { openLogs({ container: logs.dataset.procLogs }); return; }
+        if (event.target.closest('[data-proc-close]')) closeDetail();
+    });
 
     async function refresh() {
         await _refreshProcList(body);
@@ -108,6 +135,7 @@ async function _refreshProcList(body) {
         }
 
         let procs = data.processes || [];
+        _procs = procs;
         if (filter) {
             procs = procs.filter((proc) =>
                 (proc.name && proc.name.toLowerCase().includes(filter))
@@ -159,7 +187,10 @@ async function _refreshProcList(body) {
                 <td class="num">${(Number(proc.memory_percent) || 0).toFixed(1)}%</td>
                 <td class="num">${Number(proc.threads) || 0}</td>
                 <td>${_statusTag(proc.status)}</td>
-                <td class="actions"><button class="ui-btn small danger" data-kill="${proc.pid}" data-testid="proc-kill-${proc.pid}">Kill</button></td>
+                <td class="actions"><div class="ui-row" style="justify-content:flex-end;">
+                    <button class="ui-btn small" data-proc-detail="${proc.pid}" data-testid="proc-detail-${proc.pid}">Details</button>
+                    <button class="ui-btn small danger" data-kill="${proc.pid}" data-testid="proc-kill-${proc.pid}">Kill</button>
+                </div></td>
             </tr>`;
         }).join('');
 
@@ -167,19 +198,11 @@ async function _refreshProcList(body) {
             <thead><tr>${columns.map(([key, label]) => `<th data-sort="${key}" style="cursor:pointer;">${escapeHtml(label)}${arrow(key)}</th>`).join('')}</tr></thead>
             <tbody>${rows}</tbody></table></div>`;
 
-        wrap.onclick = (event) => {
-            const header = event.target.closest('[data-sort]');
-            if (header) {
-                const key = header.dataset.sort;
-                if (key === '_actions') return;
-                if (sortKey === key) sortAsc = !sortAsc;
-                else { sortKey = key; sortAsc = key === 'name' || key === 'user'; }
-                _refreshProcList(body);
-                return;
-            }
-            const kill = event.target.closest('[data-kill]');
-            if (kill) _killProcess(Number(kill.dataset.kill), body);
-        };
+        // Keep an open detail panel in sync with the new snapshot.
+        if (_detailPid != null) {
+            if (procs.some((proc) => proc.pid === _detailPid)) _showDetail(_detailPid);
+            else closeDetail();
+        }
         shell.setStatus(`CPU ${procs.reduce((sum, proc) => sum + (Number(proc.cpu_percent) || 0), 0).toFixed(1)}%`, 'ok');
     } catch (err) {
         if (!shell.root.isConnected) return;
@@ -234,15 +257,65 @@ function _summaryHtml(system, groups) {
         </div>` : ''}`;
 }
 
-async function _killProcess(pid, body) {
-    const ok = await showConfirm('Kill process', `Kill process PID ${pid}?`, { danger: true });
+function closeDetail() {
+    _detailPid = null;
+    const host = shell?.view.querySelector('#procDetail');
+    if (host) {
+        host.style.display = 'none';
+        host.innerHTML = '';
+    }
+}
+
+function _showDetail(pid) {
+    if (!shell) return;
+    const proc = _procs.find((item) => item.pid === pid);
+    if (!proc) { closeDetail(); return; }
+    const host = shell.view.querySelector('#procDetail');
+    if (!host) return;
+    _detailPid = pid;
+    host.style.display = '';
+    const started = proc.started ? new Date(proc.started * 1000).toLocaleString() : '—';
+    host.innerHTML = `<section class="ui-panel" data-testid="proc-detail">
+        <div class="ui-toolbar">
+            <div>
+                <h2>${escapeHtml(proc.display_name || proc.name)} <span class="ui-muted">PID ${proc.pid}</span></h2>
+                <p class="ui-muted">${escapeHtml(proc.username || '—')} · ${escapeHtml(proc.status || '?')}${proc.container ? ` · container ${escapeHtml(proc.container)}` : ''}</p>
+            </div>
+            <div class="ui-row">
+                ${proc.container ? `<button class="ui-btn small" data-proc-logs="${escapeAttr(proc.container)}" data-testid="proc-detail-logs">${uiIcon('book', 12)} Container logs</button>` : ''}
+                <button class="ui-btn small" data-proc-force="${proc.pid}" data-testid="proc-detail-force">Force kill</button>
+                <button class="ui-btn small" data-proc-close data-testid="proc-detail-close">Close</button>
+            </div>
+        </div>
+        <div class="ui-panel-body">
+            <dl class="ui-kv">
+                <div><dt class="ui-kv-key">PID / PPID</dt><dd class="ui-kv-value mono">${proc.pid} / ${escapeHtml(String(proc.ppid ?? '—'))}</dd></div>
+                <div><dt class="ui-kv-key">CPU</dt><dd class="ui-kv-value">${(Number(proc.cpu_percent) || 0).toFixed(1)} %</dd></div>
+                <div><dt class="ui-kv-key">RAM</dt><dd class="ui-kv-value">${_mb(proc.memory_rss_mb)} · ${(Number(proc.memory_percent) || 0).toFixed(1)} %</dd></div>
+                <div><dt class="ui-kv-key">Threads</dt><dd class="ui-kv-value">${Number(proc.threads) || 0}</dd></div>
+                <div><dt class="ui-kv-key">Started</dt><dd class="ui-kv-value">${escapeHtml(started)}</dd></div>
+            </dl>
+            <p class="ui-label">Command line</p>
+            <pre class="ui-code" data-testid="proc-detail-cmdline" style="white-space:pre-wrap;word-break:break-all;max-height:160px;overflow:auto;margin:0;">${escapeHtml(proc.cmdline_full || proc.cmdline || '—')}</pre>
+        </div>
+    </section>`;
+}
+
+async function _killProcess(pid, body, signal = 'TERM') {
+    const force = signal === 'KILL';
+    const ok = await showConfirm(force ? 'Force kill process' : 'Terminate process',
+        force
+            ? `SIGKILL cannot be caught — PID ${pid} stops immediately and may leave data inconsistent. Continue?`
+            : `Send SIGTERM to PID ${pid}?`,
+        { danger: true });
     if (!ok) return;
     try {
-        await apiRequest(`/api/processes/${encodeURIComponent(pid)}`, { method: 'DELETE' });
-        notify({ kind: 'success', message: `Process ${pid} terminated` });
+        await apiRequest(`/api/processes/${encodeURIComponent(pid)}?signal=${encodeURIComponent(signal)}`, { method: 'DELETE' });
+        notify({ kind: 'success', message: `Process ${pid} ${force ? 'killed' : 'terminated'}` });
     } catch (err) {
-        logError(`Processes: kill ${pid} failed`, err?.detail || err?.message);
+        logError(`Processes: ${signal} ${pid} failed`, err?.detail || err?.message);
         notify({ kind: 'error', message: err?.detail || err?.message || 'Could not terminate the process' });
     }
+    if (_detailPid === pid) closeDetail();
     _refreshProcList(body);
 }

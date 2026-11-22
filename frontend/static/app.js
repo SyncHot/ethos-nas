@@ -8,6 +8,7 @@ window._showDesktopCtx = _showDc;  // needed for inline oncontextmenu handlers
 
 // ── App Drawer ────────────────────────────────────────────────────────────
 import { initAppDrawer, refreshDrawerPackages } from './apps/app-drawer.js';
+import { initCommandPalette } from './core/command-palette.js';
 import { openApp as _openApp, openWindows, closeCurrentModal, closeWindowWin as _closeWindowWin, initTopbarMenu, initWindowChrome, renderTaskbar, setPackageIdentity, registerCloseGuard as _registerCloseGuard, focusWindow as _focusWindow, showRestartOverlay } from './core/window-manager.js';
 import { apiFetch, apiJsonFetch, apiRequest } from './core/api.js';
 import { pickFile, pickFolder } from './core/file-picker.js';
@@ -21,6 +22,7 @@ import { showAlert, showConfirm as showModalConfirm, showPrompt, showFormModal }
 import { openShareDialog } from './core/share-dialog.js';
 import { startTask } from './core/progress.js';
 import { escapeHtml, escapeAttr, jsAttr } from './core/utils.js';
+import { setContext } from './core/app-links.js';
 import { log as _logDiagnostic } from './core/logger.js';
 import { addNotification, dismissNotification, toggleNotificationDrawer, showToast, startNotificationPolling, pollUnreadCount, openNotifications } from './core/notification-center.js';
 
@@ -49,7 +51,6 @@ import { renderOverviewPage } from './apps/overview.js';
 import { renderStoragePage } from './apps/storage.js';
 import { renderNetworkPage } from './apps/network.js';
 import { renderSmartPage } from './apps/smart.js';
-import { renderSystemdPage } from './apps/systemd.js';
 import { renderServicesPage } from './apps/services.js';
 import { renderCronPage } from './apps/cron.js';
 import { renderSearchPage } from './apps/search.js';
@@ -82,7 +83,6 @@ const RENDERERS = {
     processes: renderProcessesPage, logs: renderLogsPage, packages: renderPackagesPage,
     smart: renderSmartPage,
     services: renderServicesPage,
-    systemd: renderSystemdPage,
     cron: renderCronPage,
     security: renderAccessControlPage,
     search: renderSearchPage,
@@ -164,11 +164,11 @@ window.initPackageRibbons = initPackageRibbons;
 window.refreshPackageRibbons = refreshPackageRibbons;
 
 // Initialize app drawer (taskbar "Show Applications" button + fullscreen grid)
-initAppDrawer();
-renderTaskbar(); // ensure the Show Applications button exists before any window opens
+initAppDrawer();renderTaskbar(); // ensure the Show Applications button exists before any window opens
 startNotificationPolling(); // opens /ws/notifications + 60 s safety-net badge poll
 initDesktopTrash(); // Trash shortcut badge + drop-to-trash target
 initPackageRibbons(); // right-edge ribbon for a pinned native package (if any)
+initCommandPalette(); // Ctrl+K over apps + Settings sections
 
 // ── Generic package window renderer (for dynamic pkg-* apps from desktop icons) ─
 async function _renderNativePackage(pkg, container) {
@@ -452,9 +452,13 @@ const APP_ID_ALIASES = {
     surveillance: 'pkg-ethos-surveillance', shares: 'pkg-ethos-shares',
     editor: 'pkg-ethos-editor', 'git-diff': 'pkg-ethos-git-diff', cleaner: 'pkg-ethos-cleaner',
     docker: 'pkg-ethos-docker',
+    // The System Services window merged into Service Manager (v2.29.0).
+    systemd: 'services',
 };
 window.openApp = function(appId) {
+    const requested = appId;
     appId = APP_ID_ALIASES[appId] || appId;
+    if (requested === 'systemd') setContext('services', { tab: 'systemd' });
     // Trash is a shortcut into Files, not a window app of its own.
     if (appId === 'trash') { openTrashFromDesktop(); return; }
     if (!isAppVisible(appId)) {
