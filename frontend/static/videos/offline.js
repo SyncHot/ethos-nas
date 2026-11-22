@@ -18,8 +18,9 @@ import { logError, logInfo, logWarn } from '../core/logger.js';
 const MEDIA_CACHE = 'ethos-media-v1';
 const MEDIA_PREFIX = '/__media/';
 const DB_NAME = 'ethos-videos-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE = 'downloads';
+const RESUME_STORE = 'resume';
 
 let _db = null;
 let _downloads = [];
@@ -38,6 +39,9 @@ function openDb() {
             if (!db.objectStoreNames.contains(STORE)) {
                 db.createObjectStore(STORE, { keyPath: 'id' });
             }
+            if (!db.objectStoreNames.contains(RESUME_STORE)) {
+                db.createObjectStore(RESUME_STORE, { keyPath: 'path' });
+            }
         };
         request.onsuccess = () => { _db = request.result; resolve(_db); };
         request.onerror = () => reject(request.error || new Error('IndexedDB failed'));
@@ -45,27 +49,39 @@ function openDb() {
 }
 
 function dbPut(row) {
-    return openDb().then((db) => new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, 'readwrite');
-        tx.objectStore(STORE).put(row);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-    }));
+    return dbPutTo(STORE, row);
 }
 
 function dbDelete(id) {
+    return dbDeleteFrom(STORE, id);
+}
+
+function dbAll() {
+    return dbAllFrom(STORE);
+}
+
+function dbPutTo(store, row) {
     return openDb().then((db) => new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, 'readwrite');
-        tx.objectStore(STORE).delete(id);
+        const tx = db.transaction(store, 'readwrite');
+        tx.objectStore(store).put(row);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
     }));
 }
 
-function dbAll() {
+function dbDeleteFrom(store, key) {
     return openDb().then((db) => new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, 'readonly');
-        const request = tx.objectStore(STORE).getAll();
+        const tx = db.transaction(store, 'readwrite');
+        tx.objectStore(store).delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+    }));
+}
+
+function dbAllFrom(store) {
+    return openDb().then((db) => new Promise((resolve, reject) => {
+        const tx = db.transaction(store, 'readonly');
+        const request = tx.objectStore(store).getAll();
         request.onsuccess = () => resolve(request.result || []);
         request.onerror = () => reject(request.error);
     }));
@@ -104,6 +120,26 @@ export function localPoster(row) {
 
 export function localSubtitle(row) {
     return row?.subtitle?.text || '';
+}
+
+// ── local playback progress (survives an offline restart) ────────────────
+
+export async function saveLocalResume(path, time, duration) {
+    if (!path) return;
+    try {
+        await dbPutTo(RESUME_STORE, {
+            path, time: Number(time) || 0, duration: Number(duration) || 0, updated_at: Date.now(),
+        });
+    } catch { /* private mode / quota — resume is best effort */ }
+}
+
+export async function clearLocalResume(path) {
+    if (!path) return;
+    try { await dbDeleteFrom(RESUME_STORE, path); } catch { /* ignore */ }
+}
+
+export async function allLocalResumes() {
+    try { return await dbAllFrom(RESUME_STORE); } catch { return []; }
 }
 
 // ── init ──────────────────────────────────────────────────────────────────
@@ -554,7 +590,7 @@ async function storeSubtitle(entry) {
     } catch { /* subtitles are optional */ }
 }
 
-function srtToVtt(srt) {
+export function srtToVtt(srt) {
     const body = String(srt).replace(/\r/g, '').replace(/^\uFEFF/, '');
     const out = ['WEBVTT', ''];
     for (const block of body.split('\n\n')) {

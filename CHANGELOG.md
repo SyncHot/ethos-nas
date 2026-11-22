@@ -11,6 +11,22 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.21.0] - 2026-11-22
+
+### Added
+
+- **Videos on the phone now works like the desktop window.** The `/videos` app
+  groups episodes into shows with seasons and a *Download season* action, has
+  All / Movies / Series / My List tabs with sort and genre, recent-search chips
+  and batch select in the default 480p version. The player offers subtitles,
+  playback speed (0.5×–2×), cast, and an *up next* card that plays the following
+  episode.
+- **A downloaded film remembers where you stopped**, even offline: the player
+  keeps its position on the device and, with no session and no network, the app
+  opens straight into the downloaded library instead of the login screen.
+- Download buttons estimate the size and warn before a film that cannot fit on
+  the phone is queued.
+
 ## [2.20.2] - 2026-11-22
 
 ### Fixed

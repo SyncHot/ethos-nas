@@ -17,7 +17,8 @@ import '../core/error-reporter.js';
 import {
     initOffline, downloadsSnapshot, queueDownload, pumpDownloads, syncDownloads,
     cancelDownload, retryDownload, deleteDownload, localMediaUrl, storageInfo,
-    refreshStorage,
+    refreshStorage, localSubtitle, srtToVtt, saveLocalResume, clearLocalResume,
+    allLocalResumes,
 } from './offline.js';
 
 setLogContext({ app: 'videos' });
@@ -33,6 +34,16 @@ const state = {
     resume: {},
     list: new Set(),
     query: '',
+    tabs: 'all',          // all | movies | series | mylist
+    sort: 'recent',       // recent | title
+    genre: 'all',
+    show: null,           // series name when browsing a show
+    recentSearches: [],
+    searchTimer: null,
+    config: { options: {} },
+    localResume: new Map(),
+    offlineUnlocked: false,
+    batchErrors: [],
     downloads: [],
     downloadQuality: 'balanced',
     downloadQualities: [],
@@ -86,8 +97,15 @@ const els = {
     time: $('vd-time'),
     playPause: $('vd-playpause'),
     bigPlay: $('vd-bigplay'),
+    sub: $('vd-sub'),
     audio: $('vd-audio'),
     quality: $('vd-quality'),
+    speed: $('vd-speed'),
+    cast: $('vd-cast'),
+    upnext: $('vd-upnext'),
+    upnextText: $('vd-upnext-text'),
+    upnextPlay: $('vd-upnext-play'),
+    upnextCancel: $('vd-upnext-cancel'),
 };
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -219,6 +237,9 @@ function logout() {
     setToken(null);
     stopPlayer();
     if (els.selectBar) setSelectMode(false);
+    state.offlineUnlocked = false;
+    state.localOnly = false;
+    state.show = null;
     state.library = null;
     state.home = { continue_watching: [], recently_added: [] };
     showLogin();
@@ -268,6 +289,151 @@ function qualityLabel(value) {
     return value === 'fast' ? '720p' : '1080p';
 }
 
+// ── series grouping ───────────────────────────────────────────────────────
+
+function episodeOrder(a, b) {
+    return (Number(a.season) || 0) - (Number(b.season) || 0)
+        || (Number(a.episode) || 0) - (Number(b.episode) || 0);
+}
+
+function groupShows(items = videos()) {
+    const map = new Map();
+    for (const item of items) {
+        if (item.kind !== 'episode') continue;
+        const show = item.show
+            || basename(String(item.path || '').split('/').slice(0, -1).join('/'))
+            || item.title;
+        if (!show) continue;
+        if (!map.has(show)) map.set(show, { show, items: [] });
+        map.get(show).items.push(item);
+    }
+    return [...map.values()].map((group) => {
+        const sorted = group.items.slice().sort(episodeOrder);
+        const poster = sorted.find((item) => item.tmdb?.poster_file) || sorted[0];
+        return { show: group.show, items: sorted, poster, latest: sorted[sorted.length - 1] };
+    }).sort((a, b) => a.show.localeCompare(b.show));
+}
+
+function episodesOf(show) {
+    return groupShows().find((group) => group.show === show)?.items || [];
+}
+
+function nextEpisodeOf(item) {
+    if (item?.kind !== 'episode') return null;
+    const episodes = episodesOf(item.show);
+    const index = episodes.findIndex((episode) => episode.path === item.path);
+    return index >= 0 ? (episodes[index + 1] || null) : null;
+}
+
+// ── progress (server + on-device) ─────────────────────────────────────────
+
+function resumeFor(item) {
+    const remote = state.resume[item.path];
+    const local = state.localResume.get(item.path);
+    if (local && (!remote || (local.updated_at || 0) / 1000 >= (remote.updated_at || 0))) {
+        return { time: local.time, duration: local.duration };
+    }
+    return remote || null;
+}
+
+function isNearlyWatched(item) {
+    const resume = resumeFor(item);
+    return !!resume && resume.duration > 0 && resume.time >= resume.duration * 0.97;
+}
+
+// ── download size estimate (≈, from the source size/quality) ─────────────
+
+const QUALITY_BPS = { tiny: 1_200_000, fast: 2_500_000, balanced: 5_000_000 };
+const SOURCE_BPS = { '480p': 1_500_000, '720p': 3_000_000, '1080p': 5_000_000, '2160p': 15_000_000, '4k': 16_000_000, '8k': 40_000_000 };
+
+function sourceBps(item) {
+    const quality = String(item.quality || '').toLowerCase().replace(/\s+/g, '');
+    return SOURCE_BPS[quality] || 5_000_000;
+}
+
+function estimateSize(item, quality) {
+    if (!item) return 0;
+    if (quality === 'original') return Number(item.size) || 0;
+    const bps = QUALITY_BPS[quality] || QUALITY_BPS.balanced;
+    const size = Number(item.size) || 0;
+    if (!size) return 0;
+    return Math.round(size * (bps / sourceBps(item)));
+}
+
+function estimateLabel(item, quality) {
+    const bytes = estimateSize(item, quality);
+    return bytes ? `≈ ${fmtBytes(bytes)}` : '';
+}
+
+async function quotaAllows(needBytes) {
+    if (!needBytes) return true;
+    const info = await refreshStorage();
+    if (!info?.quota) return true;
+    const free = Math.max(0, info.quota - info.usage);
+    if (needBytes > free * 0.95) {
+        toast(`Not enough device storage: need ≈${fmtBytes(needBytes)}, free ≈${fmtBytes(free)}`, 'error');
+        return false;
+    }
+    return true;
+}
+
+// ── search history ───────────────────────────────────────────────────────
+
+function loadRecentSearches() {
+    try {
+        const raw = JSON.parse(localStorage.getItem('vd-recent-searches') || '[]');
+        return Array.isArray(raw) ? raw.filter((q) => typeof q === 'string').slice(0, 8) : [];
+    } catch {
+        return [];
+    }
+}
+
+function rememberSearch(query) {
+    const q = String(query || '').trim();
+    if (q.length < 2) return;
+    state.recentSearches = [q, ...state.recentSearches.filter((old) => old.toLowerCase() !== q.toLowerCase())].slice(0, 8);
+    try { localStorage.setItem('vd-recent-searches', JSON.stringify(state.recentSearches)); } catch { /* ignore */ }
+}
+
+async function loadConfig() {
+    try {
+        const cfg = await apiJson('/api/videos/config');
+        state.config = cfg || { options: {} };
+        const lang = cfg?.options?.preferred_audio_lang;
+        if (lang && !localStorage.getItem('vd-audio-lang')) {
+            try { localStorage.setItem('vd-audio-lang', lang); } catch { /* ignore */ }
+        }
+    } catch { /* offline or older core — defaults apply */ }
+}
+
+async function loadLocalResumes() {
+    try {
+        const rows = await allLocalResumes();
+        state.localResume = new Map(rows.map((row) => [row.path, row]));
+    } catch {
+        state.localResume = new Map();
+    }
+}
+
+async function flushLocalResumes() {
+    if (!authed() || !state.localResume.size) return;
+    for (const row of [...state.localResume.values()]) {
+        try {
+            const res = await apiFetch('/api/videos/resume', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: row.path, time: row.time, duration: row.duration }),
+            });
+            if (!res.ok) continue;
+            state.localResume.delete(row.path);
+            await clearLocalResume(row.path);
+            if (row.duration && row.time < row.duration * 0.97) {
+                state.resume[row.path] = { time: row.time, duration: row.duration, updated_at: row.updated_at / 1000 };
+            }
+        } catch { /* retry on the next reconnect */ }
+    }
+}
+
 async function boot() {
     renderLoading('Reading your library…');
     try {
@@ -280,6 +446,7 @@ async function boot() {
         state.localOnly = false;
         render();
         loadDownloadSettings();
+        loadConfig();
     } catch (error) {
         if (error?.status === 401) { showLogin('Your session expired — sign in again.'); return; }
         // Offline (or the NAS is down): an installed PWA must still show what it
@@ -318,7 +485,7 @@ function searchText(item) {
 
 function cardHtml(item) {
     const dm = downloadFor(item.path);
-    const resume = state.resume[item.path];
+    const resume = resumeFor(item);
     const progress = resume && resume.duration ? Math.min(100, (resume.time / resume.duration) * 100) : 0;
     const sub = [item.quality, item.kind === 'episode' ? episodeLabel(item) : (item.tmdb?.year || '')]
         .filter(Boolean).join(' · ');
@@ -334,12 +501,81 @@ function cardHtml(item) {
     </button>`;
 }
 
+function showCardHtml(group) {
+    const sub = `${group.items.length} episodes · ${episodeLabel(group.latest)}`;
+    return `<button class="vd-card" type="button" data-action="show" data-show="${esc(group.show)}">
+        <span class="vd-card-art">
+            <img src="${esc(artUrl(group.poster))}" alt="" loading="lazy" decoding="async">
+            <span class="vd-card-badge">${group.items.length} eps</span>
+        </span>
+        <span class="vd-card-title">${esc(group.show)}</span>
+        <span class="vd-card-sub">${esc(sub)}</span>
+    </button>`;
+}
+
 function shelfHtml(title, items, { row = true } = {}) {
     if (!items || !items.length) return '';
     return `<section class="vd-shelf">
         <div class="vd-shelf-head"><h2>${esc(title)}</h2><span>${items.length}</span></div>
         <div class="${row ? 'vd-row' : 'vd-grid'}">${items.map((item) => cardHtml(item)).join('')}</div>
     </section>`;
+}
+
+function gridHtml(items, emptyText) {
+    if (!items.length) return `<div class="vd-empty"><b>Nothing here yet</b>${esc(emptyText || '')}</div>`;
+    return `<div class="vd-grid">${items.map((item) => cardHtml(item)).join('')}</div>`;
+}
+
+function filterSort(items) {
+    let out = items;
+    if (state.genre !== 'all') {
+        out = out.filter((item) => (item.tmdb?.genres || []).includes(state.genre));
+    }
+    const sorted = out.slice();
+    if (state.sort === 'title') {
+        sorted.sort((a, b) => displayTitle(a).localeCompare(displayTitle(b)));
+    } else {
+        sorted.sort((a, b) => (Number(b.modified) || 0) - (Number(a.modified) || 0));
+    }
+    return sorted;
+}
+
+function genreOptions() {
+    const genres = new Set();
+    for (const item of videos()) {
+        for (const genre of item.tmdb?.genres || []) genres.add(genre);
+    }
+    return [...genres].sort();
+}
+
+function tabsHtml() {
+    const all = videos();
+    const movies = all.filter((item) => item.kind !== 'episode');
+    const shows = groupShows(all);
+    const counts = { all: all.length, movies: movies.length, series: shows.length, mylist: state.list.size };
+    const tabs = [['all', 'All'], ['movies', 'Movies'], ['series', 'Series'], ['mylist', 'My List']];
+    const genres = genreOptions();
+    return `<div class="vd-tabs" role="tablist" aria-label="Library sections">
+        ${tabs.map(([value, label]) => `<button type="button" role="tab" aria-selected="${state.tabs === value}"
+            class="vd-tab ${state.tabs === value ? 'is-active' : ''}" data-action="tab" data-tab="${value}">
+            ${label}<span>${counts[value]}</span></button>`).join('')}
+        <span class="vd-grow"></span>
+        <select class="vd-select" data-action="sort" aria-label="Sort">
+            <option value="recent" ${state.sort === 'recent' ? 'selected' : ''}>Recently added</option>
+            <option value="title" ${state.sort === 'title' ? 'selected' : ''}>Title</option>
+        </select>
+        ${genres.length && state.tabs !== 'series' ? `<select class="vd-select" data-action="genre" aria-label="Genre">
+            <option value="all">All genres</option>
+            ${genres.map((genre) => `<option value="${esc(genre)}" ${state.genre === genre ? 'selected' : ''}>${esc(genre)}</option>`).join('')}
+        </select>` : ''}
+    </div>`;
+}
+
+function recentSearchesHtml() {
+    if (!state.recentSearches.length) return '';
+    return `<div class="vd-recent" aria-label="Recent searches">
+        ${state.recentSearches.map((q) => `<button type="button" data-action="recent-search" data-q="${esc(q)}">${esc(q)}</button>`).join('')}
+    </div>`;
 }
 
 function render() {
@@ -354,24 +590,78 @@ function render() {
         return;
     }
     if (!state.library) { renderLoading('Reading your library…'); return; }
+    if (state.show) { renderShow(state.show); return; }
 
-    const cw = (state.home.continue_watching || []).filter((item) => item?.path);
-    const recent = (state.home.recently_added || []).slice(0, 18);
-    const all = videos().filter((item) => item.kind !== 'episode');
-    const offline = state.downloads.filter((d) => d.status === 'done');
+    const all = videos();
+    const movies = all.filter((item) => item.kind !== 'episode');
+    const shows = groupShows(all);
+    const pieces = [tabsHtml(), recentSearchesHtml()];
 
-    const pieces = [];
-    if (state.offline && offline.length) {
-        const items = offline.map((d) => videos().find((v) => v.path === d.path) || d.item).filter(Boolean);
-        pieces.push(shelfHtml('On this device', items.length ? items : offline.map((d) => d.item || { path: d.path, title: d.title })));
-    }
-    pieces.push(shelfHtml('Continue watching', cw));
-    pieces.push(shelfHtml('Recently added', recent));
-    pieces.push(shelfHtml('All videos', all.slice(0, 300), { row: false }));
-    if (!all.length && !cw.length) {
-        pieces.push(`<div class="vd-empty"><b>No videos yet</b>Add a folder in the desktop Videos app (Settings → Library).</div>`);
+    if (state.tabs === 'series') {
+        pieces.push(shows.length
+            ? `<div class="vd-grid">${shows.map((group) => showCardHtml(group)).join('')}</div>`
+            : `<div class="vd-empty"><b>No series found</b>Episode files are grouped by their SxxEyy name or folder.</div>`);
+    } else if (state.tabs === 'mylist') {
+        const items = [...state.list].map((path) => findItem(path)).filter(Boolean);
+        pieces.push(gridHtml(filterSort(items), 'Open a title and choose “My List” to save it here.'));
+    } else if (state.tabs === 'movies') {
+        pieces.push(gridHtml(filterSort(movies), 'No movies match this filter.'));
+    } else {
+        const offline = state.downloads.filter((d) => d.status === 'done');
+        if (state.offline && offline.length) {
+            const items = offline.map((d) => findItem(d.path) || d.item).filter(Boolean);
+            pieces.push(shelfHtml('On this device', items));
+        }
+        const serverCw = (state.home.continue_watching || []).filter((item) => item?.path);
+        const localCw = [...state.localResume.keys()]
+            .map((path) => findItem(path))
+            .filter((item) => item && !serverCw.some((cw) => cw.path === item.path) && !isNearlyWatched(item));
+        pieces.push(shelfHtml('Continue watching', [...serverCw, ...localCw].slice(0, 18)));
+        pieces.push(shelfHtml('Recently added', (state.home.recently_added || []).slice(0, 18)));
+        if (shows.length) {
+            pieces.push(`<section class="vd-shelf">
+                <div class="vd-shelf-head"><h2>Series</h2><span>${shows.length} shows</span>
+                    <button class="vd-btn small" type="button" data-action="tab" data-tab="series">See all</button></div>
+                <div class="vd-row">${shows.slice(0, 12).map((group) => showCardHtml(group)).join('')}</div>
+            </section>`);
+        }
+        pieces.push(shelfHtml('Movies', filterSort(movies).slice(0, 300), { row: false }));
+        if (!all.length) {
+            pieces.push(`<div class="vd-empty"><b>No videos yet</b>Add a folder in the desktop Videos app (Settings → Library).</div>`);
+        }
     }
     els.content.innerHTML = pieces.join('');
+    paintSelection();
+    updateDownloadsBadge();
+}
+
+function renderShow(show) {
+    const episodes = episodesOf(show);
+    const header = `<div class="vd-show-head">
+        <button class="vd-icon-btn" type="button" data-action="back-home" aria-label="Back">←</button>
+        <h1>${esc(show)}</h1>
+        <span>${episodes.length} episodes</span>
+    </div>`;
+    if (!episodes.length) {
+        els.content.innerHTML = header + `<div class="vd-empty"><b>No episodes</b>This show has no readable episode files.</div>`;
+        return;
+    }
+    const seasons = [...new Set(episodes.map((ep) => Number(ep.season) || 0))].sort((a, b) => a - b);
+    const next = episodes.find((ep) => !isNearlyWatched(ep)) || episodes[0];
+    const sections = seasons.map((season) => {
+        const list = episodes.filter((ep) => (Number(ep.season) || 0) === season);
+        return `<section class="vd-shelf">
+            <div class="vd-shelf-head"><h2>Season ${season || '—'}</h2><span>${list.length} episodes</span>
+                <button class="vd-btn small" type="button" data-action="download-season"
+                    data-show="${esc(show)}" data-season="${season}">⬇ Download season</button></div>
+            <div class="vd-grid">${list.map((episode) => cardHtml(episode)).join('')}</div>
+        </section>`;
+    }).join('');
+    els.content.innerHTML = `${header}
+        <div class="vd-toolbar">
+            <button class="vd-btn primary" type="button" data-action="play" data-path="${esc(next.path)}">▶ Play next · ${esc(episodeLabel(next))}</button>
+        </div>
+        ${sections}`;
     paintSelection();
     updateDownloadsBadge();
 }
@@ -433,27 +723,66 @@ function selectAllVisible() {
     paintSelection();
 }
 
-async function downloadSelected() {
-    const quality = state.downloadQuality;
-    const items = [...state.selected].map((path) => findItem(path)).filter(Boolean);
-    if (!items.length) return;
+async function queueMany(items, quality, label) {
+    const need = items.reduce((sum, item) => sum + estimateSize(item, quality), 0);
+    if (!(await quotaAllows(need))) return 0;
     setSelectMode(false);
+    state.batchErrors = [];
     let queued = 0;
-    let failed = 0;
     for (const item of items) {
         try {
             await queueDownload(item, quality);
             queued += 1;
         } catch (error) {
-            failed += 1;
-            logWarn('Batch download failed', `${item.path}: ${apiError(error)}`);
+            const reason = apiError(error);
+            state.batchErrors.push({ title: displayTitle(item), reason });
+            logWarn('Batch download failed', `${item.path}: ${reason}`);
         }
     }
     state.downloads = downloadsSnapshot();
     updateDownloadsBadge();
     render();
-    if (failed) toast(`${queued} queued · ${failed} failed`, 'warning');
-    else toast(`${queued} queued · ${qualityLabel(quality)}`, 'success');
+    renderDownloads(true);
+    if (state.batchErrors.length) {
+        const first = state.batchErrors[0];
+        toast(`${queued} queued · ${state.batchErrors.length} not queued — ${first.title}: ${first.reason}`, 'warning');
+    } else {
+        toast(`${queued} queued · ${label || qualityLabel(quality)}`, 'success');
+    }
+    return queued;
+}
+
+async function downloadSelected() {
+    const items = [...state.selected].map((path) => findItem(path)).filter(Boolean);
+    if (!items.length) return;
+    await queueMany(items, state.downloadQuality);
+}
+
+async function downloadSeason(show, season) {
+    const items = episodesOf(show).filter((episode) => (Number(episode.season) || 0) === Number(season || 0));
+    if (!items.length) return;
+    const queued = await queueMany(items, state.downloadQuality);
+    if (queued) toast(`${queued} episodes queued · Season ${season || '—'}`, 'success');
+}
+
+async function redownload(item, quality) {
+    const entry = downloadFor(item.path);
+    if (entry) await deleteDownload(entry.id);
+    state.downloads = downloadsSnapshot();
+    updateDownloadsBadge();
+    await queueOne(item, quality);
+}
+
+async function removeResume(item) {
+    try {
+        await apiFetch(`/api/videos/resume?path=${encodeURIComponent(item.path)}`, { method: 'DELETE' });
+    } catch { /* offline — the local copy still goes away */ }
+    delete state.resume[item.path];
+    state.localResume.delete(item.path);
+    await clearLocalResume(item.path);
+    closeSheets();
+    render();
+    toast('Removed from Continue watching', 'success');
 }
 
 function findItem(path) {
@@ -470,11 +799,14 @@ function openSheet(item) {
     const tm = item.tmdb || {};
     const dm = downloadFor(item.path);
     const pending = pendingFor(item.path);
+    const resume = resumeFor(item);
+    const next = nextEpisodeOf(item);
     const inList = state.list.has(item.path);
     const meta = [
         tm.rating != null ? `★ ${tm.rating}` : '',
         tm.year || '',
         item.quality || '',
+        item.kind === 'episode' ? episodeLabel(item) : '',
         (item.video_codec || '').toUpperCase(),
         (item.audio_codec || '').toUpperCase(),
     ].filter(Boolean);
@@ -483,15 +815,23 @@ function openSheet(item) {
         : pending
             ? `<button class="vd-btn" type="button" data-action="cancel-download" data-id="${esc(pending.id)}">Cancel · ${esc(stageText(pending))}</button>`
             : `<button class="vd-btn primary" type="button" data-action="download" data-path="${esc(item.path)}">⬇ Download · ${esc(qualityLabel(state.downloadQuality))}</button>`;
-    const versionRow = dm || pending ? '' : `<div class="vd-quality-row" aria-label="Download version">
-            ${(state.downloadQualities.length ? state.downloadQualities : [
-                { value: 'original', label: 'Original · no re-encode' },
-                { value: 'balanced', label: '1080p' },
-                { value: 'fast', label: '720p · small' },
-                { value: 'tiny', label: '480p · tiny' },
-            ]).map((q) => `<button class="vd-btn small" type="button" data-action="download-q"
-                    data-q="${esc(q.value)}" data-path="${esc(item.path)}">${esc(q.label)}</button>`).join('')}
-        </div>`;
+    const choices = state.downloadQualities.length ? state.downloadQualities : [
+        { value: 'original', label: 'Original · no re-encode' },
+        { value: 'balanced', label: '1080p' },
+        { value: 'fast', label: '720p · small' },
+        { value: 'tiny', label: '480p · tiny' },
+    ];
+    const versionRow = pending ? '' : `<div class="vd-quality-row" aria-label="${dm ? 'Replace download version' : 'Download version'}">
+        ${choices.map((q) => {
+            const size = estimateLabel(item, q.value);
+            return `<button class="vd-btn small" type="button" data-action="${dm ? 'redownload-q' : 'download-q'}"
+                data-q="${esc(q.value)}" data-path="${esc(item.path)}">${esc(q.label)}${size ? ` · ${esc(size)}` : ''}</button>`;
+        }).join('')}
+    </div>`;
+    const episodeActions = item.kind === 'episode'
+        ? `${next ? `<button class="vd-btn" type="button" data-action="play" data-path="${esc(next.path)}">Next episode</button>` : ''}
+           <button class="vd-btn" type="button" data-action="show" data-show="${esc(item.show || '')}">Series</button>`
+        : '';
     els.sheetBody.innerHTML = `<div class="vd-detail">
         <div class="vd-detail-head">
             <div class="vd-detail-poster"><img src="${esc(artUrl(item))}" alt=""></div>
@@ -505,11 +845,13 @@ function openSheet(item) {
         </div>
         ${tm.overview ? `<p class="vd-overview">${esc(tm.overview)}</p>` : ''}
         <div class="vd-detail-actions">
-            <button class="vd-btn primary" type="button" data-action="play" data-path="${esc(item.path)}">▶ Play</button>
+            <button class="vd-btn primary" type="button" data-action="play" data-path="${esc(item.path)}">▶ ${resume ? `Resume ${fmtTime(resume.time)}` : 'Play'}</button>
+            ${episodeActions}
             <button class="vd-btn" type="button" data-action="list" data-path="${esc(item.path)}">${inList ? '✓ My List' : '+ My List'}</button>
             ${downloadBlock}
+            ${resume ? `<button class="vd-btn" type="button" data-action="remove-resume" data-path="${esc(item.path)}">Remove from Continue watching</button>` : ''}
         </div>
-        <p class="vd-hint">Downloads are prepared by the NAS (H.264 + AAC) and stored on this device. “Original” copies the video without re-encoding when the file allows it.</p>
+        <p class="vd-hint">Downloads are prepared by the NAS (H.264 + AAC) and stored on this device. “Original” copies the video without re-encoding when the file allows it; sizes are approximate.</p>
         ${versionRow}
     </div>`;
     els.sheet.hidden = false;
@@ -603,7 +945,7 @@ function downloadRowHtml(d) {
 function downloadsSignature() {
     return state.downloads
         .map((d) => `${d.id}:${d.status}:${d.queuePosition || 0}:${d.error || ''}`)
-        .join('|');
+        .join('|') + `|batch:${state.batchErrors.map((e) => e.title).join(',')}`;
 }
 
 function downloadsSummaryText() {
@@ -671,11 +1013,19 @@ function renderDownloads(force = false) {
         ? `<section class="vd-dl-group"><h3>${esc(title)}</h3>${hint ? `<p class="vd-dl-hint">${esc(hint)}</p>` : ''}
            ${rows.map((d) => downloadRowHtml(d)).join('')}</section>`
         : '');
+    const batchErrors = state.batchErrors.length
+        ? `<section class="vd-dl-group"><h3>Not queued</h3>
+            ${state.batchErrors.map((entry) => `<div class="vd-dl"><div class="vd-dl-copy">
+                <b>${esc(entry.title)}</b>
+                <span class="vd-dl-stage" data-tone="bad">${esc(entry.reason)}</span></div></div>`).join('')}
+           </section>`
+        : '';
     els.downloadsList.innerHTML = [
         section('Preparing', active, 'The NAS renders the next film while the previous one saves.'),
         section('Ready to save', ready),
         section('On this device', done),
         section('Failed', failed),
+        batchErrors,
     ].join('');
     els.downloadsList.dataset.signature = downloadsSignature();
 }
@@ -705,6 +1055,8 @@ function startDownloadPolling() {
 
 async function queueOne(item, quality) {
     try {
+        const need = estimateSize(item, quality || state.downloadQuality);
+        if (!(await quotaAllows(need))) return;
         await queueDownload(item, quality || undefined);
         state.downloads = downloadsSnapshot();
         updateDownloadsBadge();
@@ -881,12 +1233,19 @@ async function openPlayer(item, { local = false } = {}) {
     els.playerMode.hidden = true;
     els.playerEnc.hidden = true;
     els.playerError.hidden = true;
+    els.upnext.hidden = true;
+    els.sub.hidden = true;
+    els.sub.innerHTML = '';
     els.quality.value = localStorage.getItem('vd-quality') || 'balanced';
+    els.speed.value = localStorage.getItem('vd-speed') || '1';
+    els.video.playbackRate = Number(els.speed.value) || 1;
+    if (els.cast) els.cast.hidden = !('remote' in els.video);
 
     const player = {
         item, local, video: els.video, hls: null, session: null, base: 0,
         live: false, acodec: audioCodec(), lastSave: 0, wakeLock: null,
-        retried: false, hideTimer: null, error: '',
+        retried: false, hideTimer: null, error: '', nextTimer: null,
+        next: nextEpisodeOf(item), subtitleUrl: '',
     };
     state.player = player;
     bindPlayerEvents(player);
@@ -898,17 +1257,21 @@ async function openPlayer(item, { local = false } = {}) {
         const url = entry ? localMediaUrl(entry.id) : '';
         if (!url) { showPlayerError(player, 'This download is no longer on the device.'); return; }
         player.live = false;
-        player.duration = item.duration || 0;
+        player.duration = entry.size ? 0 : (item.duration || 0);
         els.video.src = url;
-        els.quality.disabled = true;
+        els.quality.hidden = true;
+        els.audio.hidden = true;
         els.video.play().catch(() => {});
         els.playerMode.hidden = false;
-        els.playerMode.textContent = 'Offline';
+        els.playerMode.textContent = `Offline · ${entry.qualityLabel || qualityLabel(entry.quality)}`;
         restoreResume(player);
+        setupSubtitles(player);
         return;
     }
 
+    els.quality.hidden = false;
     els.quality.disabled = false;
+    els.audio.hidden = false;
     try {
         const [infoData, resumeData] = await Promise.all([
             apiJson(`/api/videos/info?path=${encodeURIComponent(item.path)}`).catch(() => ({ info: {} })),
@@ -923,7 +1286,7 @@ async function openPlayer(item, { local = false } = {}) {
         renderAudioSelect(player);
         const resume = resumeData.resume;
         const resumeTime = resume && resume.time > 5 && (!resume.duration || resume.time < resume.duration * 0.97)
-            ? Number(resume.time) : 0;
+            ? Number(resume.time) : localStartFor(item);
         player.base = resumeTime;
         let mode = info.playback_mode || (info.needs_transcode ? 'transcode' : 'direct');
         if (mode === 'direct' && player.audioTracks.length > 1) mode = 'remux';
@@ -932,19 +1295,146 @@ async function openPlayer(item, { local = false } = {}) {
             await startHls(player, resumeTime, player.audioIdx);
         } else {
             els.video.src = withToken(`/api/videos/stream?path=${encodeURIComponent(item.path)}`);
-            if (resumeTime > 0) {
-                els.video.addEventListener('loadedmetadata', () => {
-                    try { els.video.currentTime = resumeTime; } catch { /* ignore */ }
-                }, { once: true });
-            }
+            seekWhenReady(resumeTime);
             els.video.play().catch(() => {});
             els.playerMode.hidden = false;
             els.playerMode.textContent = 'Direct';
         }
+        setupSubtitles(player);
         if (resumeTime > 5) toast(`Resumed at ${fmtTime(resumeTime)}`);
     } catch (error) {
         showPlayerError(player, apiError(error));
     }
+}
+
+function localStartFor(item) {
+    const resume = resumeFor(item);
+    return resume && resume.time > 5 && (!resume.duration || resume.time < resume.duration * 0.97)
+        ? Number(resume.time) : 0;
+}
+
+// ── subtitles ─────────────────────────────────────────────────────────────
+
+const _subCache = new Map();
+
+function clearSubtitleTrack(player = state.player) {
+    if (player?.subtitleUrl) {
+        try { URL.revokeObjectURL(player.subtitleUrl); } catch { /* ignore */ }
+        player.subtitleUrl = '';
+    }
+    els.video.querySelectorAll('track').forEach((track) => track.remove());
+}
+
+async function subtitleText(sub) {
+    if (sub.text) return sub.text;
+    if (_subCache.has(sub.path)) return _subCache.get(sub.path);
+    const res = await apiFetch(withToken(`/api/files/raw?path=${encodeURIComponent(sub.path)}`));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let text = await res.text();
+    if (!String(sub.name || '').toLowerCase().endsWith('.vtt')) text = srtToVtt(text);
+    _subCache.set(sub.path, text);
+    return text;
+}
+
+async function setupSubtitles(player) {
+    clearSubtitleTrack(player);
+    els.sub.hidden = true;
+    els.sub.innerHTML = '';
+    let subs = [];
+    if (player.local) {
+        const entry = downloadFor(player.item.path);
+        const text = localSubtitle(entry);
+        if (text) subs = [{ name: entry?.subtitle?.name || 'Subtitle', text }];
+    } else {
+        try {
+            const data = await apiJson(`/api/videos/subtitles?path=${encodeURIComponent(player.item.path)}`);
+            subs = (data.subtitles || []).map((sub) => ({ name: sub.name, path: sub.path, preferred: !!sub.preferred }));
+        } catch { subs = []; }
+    }
+    if (state.player !== player) return;
+    player.subs = subs;
+    if (!subs.length) return;
+    const saved = localStorage.getItem('vd-sub') || '';
+    const auto = state.config?.options?.auto_subtitles !== false;
+    let index = -1;
+    if (saved === 'off') index = -1;
+    else if (saved && subs.some((sub) => sub.name === saved)) index = subs.findIndex((sub) => sub.name === saved);
+    else if (auto) index = Math.max(0, subs.findIndex((sub) => sub.preferred));
+    els.sub.hidden = false;
+    els.sub.innerHTML = '<option value="-1">Subtitles off</option>' + subs.map((sub, i) =>
+        `<option value="${i}" ${i === index ? 'selected' : ''}>${esc(sub.name)}</option>`).join('');
+    if (index >= 0) await selectSubtitle(player, index);
+}
+
+async function selectSubtitle(player, index) {
+    clearSubtitleTrack(player);
+    if (index < 0 || !player.subs?.[index]) {
+        try { localStorage.setItem('vd-sub', 'off'); } catch { /* ignore */ }
+        return;
+    }
+    const sub = player.subs[index];
+    try {
+        const text = await subtitleText(sub);
+        if (state.player !== player) return;
+        const url = URL.createObjectURL(new Blob([text], { type: 'text/vtt' }));
+        player.subtitleUrl = url;
+        const track = document.createElement('track');
+        track.kind = 'subtitles';
+        track.label = sub.name;
+        track.srclang = 'und';
+        track.src = url;
+        track.default = true;
+        els.video.appendChild(track);
+        try { track.track.mode = 'showing'; } catch { /* ignore */ }
+        try { localStorage.setItem('vd-sub', sub.name); } catch { /* ignore */ }
+    } catch (error) {
+        logWarn('Subtitle failed', `${sub.name}: ${apiError(error)}`);
+    }
+}
+
+// ── up next (series autoplay) ────────────────────────────────────────────
+
+function clearUpNext(player) {
+    if (player?.nextTimer) { clearInterval(player.nextTimer); player.nextTimer = null; }
+    if (player) player.pendingNext = null;
+    els.upnext.hidden = true;
+}
+
+function playNext(player) {
+    const next = player?.pendingNext;
+    if (!next) return;
+    clearUpNext(player);
+    const local = !!downloadFor(next.path);
+    if (!local && !navigator.onLine) {
+        toast('That episode is not downloaded — connect to stream it', 'warning');
+        return;
+    }
+    openPlayer(next, { local });
+}
+
+function showUpNext(player, next) {
+    if (state.player !== player || !next) return;
+    clearUpNext(player);
+    player.pendingNext = next;
+    els.upnextText.textContent = `Up next · ${displayTitle(next)}`;
+    els.upnext.hidden = false;
+    if (state.config?.options?.autoplay_next === false) return;
+    let left = 10;
+    const tick = () => {
+        if (state.player !== player || !player.pendingNext) return;
+        if (left <= 0) { playNext(player); return; }
+        els.upnextText.textContent = `Up next in ${left}s · ${displayTitle(next)}`;
+        left -= 1;
+    };
+    player.nextTimer = setInterval(tick, 1000);
+    tick();
+}
+
+function handleEnded(player) {
+    if (player.local) saveLocalProgress(player, true);
+    else saveResume(true, player);
+    updatePlayIcon();
+    if (player.next) showUpNext(player, player.next);
 }
 
 function defaultAudioIdx(tracks) {
@@ -1100,21 +1590,46 @@ function saveResume(force, player = state.player) {
     if (duration && time < duration * 0.97) state.resume[player.item.path] = { time, duration };
 }
 
-function restoreResume(player) {
-    const resume = state.resume[player.item.path];
-    const start = resume && resume.time > 5 ? Number(resume.time) : 0;
-    if (start > 0) {
-        els.video.addEventListener('loadedmetadata', () => {
-            try { els.video.currentTime = start; } catch { /* ignore */ }
-        }, { once: true });
+function saveLocalProgress(player, force = false) {
+    if (!player?.local || !player.item) return;
+    const now = Date.now();
+    if (!force && now - (player.lastSave || 0) < RESUME_EVERY_MS) return;
+    player.lastSave = now;
+    const time = absTime(player);
+    const duration = durationOf(player) || player.duration || 0;
+    if (time < 5) return;
+    if (duration && time >= duration * 0.97) {
+        state.localResume.delete(player.item.path);
+        clearLocalResume(player.item.path);
+        return;
     }
+    state.localResume.set(player.item.path, {
+        path: player.item.path, time, duration, updated_at: now,
+    });
+    saveLocalResume(player.item.path, time, duration);
+}
+
+function seekWhenReady(seconds) {
+    if (!(seconds > 0)) return;
+    const apply = () => { try { els.video.currentTime = seconds; } catch { /* ignore */ } };
+    if (els.video.readyState >= 1) apply();
+    else els.video.addEventListener('loadedmetadata', apply, { once: true });
+}
+
+function restoreResume(player) {
+    seekWhenReady(localStartFor(player.item));
 }
 
 function stopPlayer({ quiet = false } = {}) {
     const player = state.player;
     if (!player) return;
     state.player = null;
-    if (!quiet) saveResume(true, player);
+    if (!quiet) {
+        if (player.local) saveLocalProgress(player, true);
+        else saveResume(true, player);
+    }
+    clearUpNext(player);
+    clearSubtitleTrack(player);
     try { els.video.pause(); } catch { /* ignore */ }
     if (player.hls) { try { player.hls.destroy(); } catch { /* ignore */ } }
     if (player.session) {
@@ -1179,7 +1694,8 @@ function bindPlayerEvents(player) {
                 els.buffered.style.width = `${duration ? Math.min(100, (end / duration) * 100) : 0}%`;
             }
         } catch { /* ignore */ }
-        saveResume(false, player);
+        if (player.local) saveLocalProgress(player);
+        else saveResume(false, player);
         updatePositionState(player);
     };
     player.onTime = onTime;
@@ -1193,8 +1709,7 @@ function bindPlayerEvents(player) {
         if (!player.seekReloading) showPlayerError(player, player.error || 'The stream could not be played.');
     };
     player.onEnded = () => {
-        if (!player.local) saveResume(true, player);
-        updatePlayIcon();
+        handleEnded(player);
     };
     video.addEventListener('timeupdate', onTime);
     video.addEventListener('loadedmetadata', onTime);
@@ -1230,6 +1745,12 @@ function bindEvents() {
         els.menu.hidden = true;
     });
     $('vd-logout').addEventListener('click', logout);
+    $('vd-refresh').addEventListener('click', () => {
+        els.menu.hidden = true;
+        state.library = null;
+        state.show = null;
+        boot();
+    });
     $('vd-settings-btn').addEventListener('click', openSettings);
     els.downloadsBtn.addEventListener('click', () => {
         state.downloads = downloadsSnapshot();
@@ -1247,18 +1768,59 @@ function bindEvents() {
     });
     els.search.addEventListener('input', () => {
         state.query = els.search.value;
+        state.show = null;
+        clearTimeout(state.searchTimer);
+        state.searchTimer = setTimeout(() => render(), 200);
+    });
+    els.search.addEventListener('change', () => {
+        rememberSearch(state.query);
         render();
     });
     els.content.addEventListener('click', (event) => {
         const el = event.target.closest('[data-action]');
         if (!el) return;
+        const action = el.dataset.action;
+        if (action === 'tab') {
+            state.tabs = el.dataset.tab || 'all';
+            state.show = null;
+            state.query = '';
+            els.search.value = '';
+            render();
+            return;
+        }
+        if (action === 'show') {
+            state.show = el.dataset.show || null;
+            state.query = '';
+            els.search.value = '';
+            render();
+            return;
+        }
+        if (action === 'back-home') { state.show = null; render(); return; }
+        if (action === 'recent-search') {
+            els.search.value = el.dataset.q || '';
+            state.query = els.search.value;
+            render();
+            return;
+        }
+        if (action === 'download-season') {
+            downloadSeason(el.dataset.show || '', Number(el.dataset.season) || 0);
+            return;
+        }
         const item = findItem(el.dataset.path);
-        if (el.dataset.action !== 'open' || !item) return;
+        if (!item) return;
+        if (action === 'play') { openPlayer(item); return; }
+        if (action !== 'open') return;
         if (state.selectMode) {
             toggleSelect(item.path, el.closest('.vd-card'));
             return;
         }
         openSheet(item);
+    });
+    els.content.addEventListener('change', (event) => {
+        const el = event.target.closest('[data-action]');
+        if (!el) return;
+        if (el.dataset.action === 'sort') { state.sort = el.value; render(); }
+        else if (el.dataset.action === 'genre') { state.genre = el.value; render(); }
     });
     els.selectBtn.addEventListener('click', () => setSelectMode(!state.selectMode));
     els.selectCancel.addEventListener('click', () => setSelectMode(false));
@@ -1276,6 +1838,13 @@ function bindEvents() {
         else if (action === 'list') toggleList(item.path);
         else if (action === 'download') queueOne(item, state.downloadQuality);
         else if (action === 'download-q') queueOne(item, el.dataset.q || undefined);
+        else if (action === 'redownload-q') redownload(item, el.dataset.q || state.downloadQuality);
+        else if (action === 'remove-resume') removeResume(item);
+        else if (action === 'show') {
+            state.show = el.dataset.show || null;
+            closeSheets();
+            render();
+        }
     });
     els.downloadsList.addEventListener('click', (event) => {
         const el = event.target.closest('[data-action]');
@@ -1336,6 +1905,22 @@ function bindEvents() {
         player.audioIdx = Number(els.audio.value) || 0;
         stopHlsSession(player).then(() => startHls(player, absTime(player), player.audioIdx));
     });
+    els.sub.addEventListener('change', () => {
+        const player = state.player;
+        if (player) selectSubtitle(player, Number(els.sub.value));
+    });
+    els.speed.addEventListener('change', () => {
+        const rate = Number(els.speed.value) || 1;
+        els.video.playbackRate = rate;
+        try { localStorage.setItem('vd-speed', String(rate)); } catch { /* ignore */ }
+    });
+    if (els.cast) {
+        els.cast.addEventListener('click', () => {
+            if (els.video.remote) els.video.remote.prompt().catch(() => toast('Casting is not available', 'warning'));
+        });
+    }
+    els.upnextPlay.addEventListener('click', () => playNext(state.player));
+    els.upnextCancel.addEventListener('click', () => clearUpNext(state.player));
     ['mousemove', 'touchstart', 'click'].forEach((type) => {
         els.player.addEventListener(type, () => { if (state.player) showUi(state.player); }, { passive: true });
     });
@@ -1347,7 +1932,8 @@ function bindEvents() {
     window.addEventListener('pagehide', () => {
         const player = state.player;
         if (!player) return;
-        if (!player.local) saveResume(true, player);
+        if (player.local) saveLocalProgress(player, true);
+        else saveResume(true, player);
         if (player.session) {
             try {
                 fetch(`/api/videos/hls/${encodeURIComponent(player.session)}/stop`, {
@@ -1373,6 +1959,7 @@ function bindEvents() {
         // Coming back from an offline-only library, re-read the real one.
         if (state.localOnly) { state.localOnly = false; boot(); return; }
         syncResume();
+        flushLocalResumes();
     });
     window.addEventListener('offline', () => setOnline(false));
     window.addEventListener('beforeinstallprompt', (event) => {
@@ -1385,7 +1972,7 @@ function bindEvents() {
 function setOnline(online) {
     state.offline = !online;
     els.net.hidden = online;
-    if (!online) els.net.textContent = 'Offline';
+    if (!online) els.net.textContent = state.offlineUnlocked ? 'Offline · downloads' : 'Offline';
 }
 
 async function syncResume() {
@@ -1394,6 +1981,7 @@ async function syncResume() {
         const data = await apiJson('/api/videos/resume/all').catch(() => null);
         if (data?.resume) { state.resume = data.resume; render(); }
     } catch { /* ignore */ }
+    flushLocalResumes();
 }
 
 async function storeInfo() {
@@ -1421,6 +2009,8 @@ async function main() {
     bindEvents();
     setOnline(navigator.onLine);
     registerWorker();
+    state.recentSearches = loadRecentSearches();
+    await loadLocalResumes();
     // Loaded before boot so an offline start still has the downloaded items.
     try {
         await initOffline((list) => {
@@ -1432,8 +2022,28 @@ async function main() {
     } catch (error) {
         logWarn('Offline store unavailable', String(error)); // private mode / no IDB
     }
+    state.downloads = downloadsSnapshot();
+    updateDownloadsBadge();
 
-    if (!authed()) { showLogin(); return; }
+    if (!authed()) {
+        // A trip can outlast the JWT. If the device already holds downloads and
+        // there is no network, open in a playback-only mode instead of a login
+        // wall; every server call still needs a fresh token.
+        const done = state.downloads.filter((entry) => entry.status === 'done');
+        if (!navigator.onLine && done.length) {
+            state.offlineUnlocked = true;
+            state.localOnly = true;
+            state.library = { videos: done.map((entry) => entry.item || { path: entry.path, title: entry.title }) };
+            showApp();
+            setOnline(false);
+            if (els.net) els.net.textContent = 'Offline · downloads';
+            render();
+            startDownloadPolling();
+            return;
+        }
+        showLogin();
+        return;
+    }
     showApp();
     await boot();
     state.downloads = downloadsSnapshot();

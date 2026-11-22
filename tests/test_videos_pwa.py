@@ -72,6 +72,33 @@ def main() -> int:
     check("a poster is cached as soon as a film is queued",
           "storePoster(row, row.item" in offline)
 
+    # Parity with the desktop Video Station (2.20): series, subtitles, offline resume.
+    check("series are grouped client-side",
+          "function groupShows(" in videos and "function episodesOf(" in videos)
+    check("a show view has seasons and a season download",
+          "renderShow(" in videos and "download-season" in videos)
+    check("next episode + up-next overlay",
+          "function nextEpisodeOf(" in videos and "showUpNext(" in videos
+          and 'id="vd-upnext"' in page)
+    check("subtitles attach a <track>",
+          "setupSubtitles(" in videos and "createElement('track')" in videos
+          and 'id="vd-sub"' in page)
+    check("offline playback uses the stored subtitle",
+          "localSubtitle(entry)" in videos)
+    check("playback speed and cast controls",
+          'id="vd-speed"' in page and 'id="vd-cast"' in page
+          and "playbackRate" in videos)
+    check("local progress is persisted for offline restarts",
+          "saveLocalResume(" in offline and "RESUME_STORE" in offline
+          and "saveLocalProgress(" in videos)
+    check("offline unlock without a valid token",
+          "offlineUnlocked" in videos
+          and "!navigator.onLine && done.length" in videos)
+    check("download size is estimated and quota-checked",
+          "estimateSize(" in videos and "quotaAllows(" in videos)
+    check("library tabs and My List view",
+          "function tabsHtml(" in videos and "state.tabs === 'mylist'" in videos)
+
     check("markup has the settings entry", 'id="vd-settings-btn"' in page)
     check("markup has the download version group", 'id="vd-quality-options"' in page)
     check("markup has the queue summary", 'id="vd-downloads-summary"' in page)

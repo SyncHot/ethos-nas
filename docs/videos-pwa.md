@@ -101,9 +101,48 @@ after a reload; nothing outside the caller's scope is ever returned.
   `visibilitychange` and after the `release` event; released on pause/close.
 - **Media Session**: lock-screen metadata and `setPositionState` seeking.
 - **Resume**: `/api/videos/resume` every 5 s, flushed via
-  `/api/videos/resume/all` when the connection returns.
+  `/api/videos/resume/all` when the connection returns. Offline playback keeps
+  its own row in the IndexedDB `resume` store (see below) and merges with the
+  server value on the next online start (newest `updated_at` wins).
+- **Subtitles**: the library `.srt`/`.vtt` tracks are offered in a picker; the
+  text is fetched with the token and attached as a `blob:` `<track>` (`srtToVtt`
+  converts SRT), so burning in or a second request per cue is never needed. An
+  offline download keeps its converted `.vtt` next to the cached media and is
+  used when the NAS is unreachable.
+- **Up next**: for an episode, a 10 s countdown overlay offers the next episode
+  in the same season (`#vd-upnext`, `#vd-upnext-play` / `-cancel`); autoplay is
+  skipped when the player was opened from a download that is not on the device.
+- **Speed / cast**: `0.5×–2×` playback rate kept in `localStorage` (`vd-speed`),
+  plus the native Remote Playback picker (`x-webkit-airplay` on the element) when
+  the browser exposes `remote`.
 - Errors render inline with a retry that restarts the stream at the same
   position (one automatic attempt first).
+
+## Library on a phone
+
+- Tabs **All / Movies / Series / My List** with live counts, sort (recent,
+  title, size, duration) and a genre filter; the choice is per session.
+- **Series** groups episodes by show: `groupShows()` builds one card per show,
+  opening it lists the seasons with a per-season **Download season** action and
+  the episodes in order (resume badges included).
+- **Search** filters client-side with a 200 ms debounce; the last 8 queries are
+  kept in `localStorage` (`vd-recent-searches`) and offered as chips.
+- **Batch select** (`Select`) shows the default version and the estimated total
+  on the Download button; failures are collected and reported once at the end.
+
+## Storage and offline sessions
+
+- `estimateSize(item, quality)` scales the source size by the target bitrate
+  (`QUALITY_BPS`) and shows `≈ 700 MB` before queueing; `quotaAllows()`
+  preflights `navigator.storage.estimate()` so a film that cannot fit warns
+  instead of failing mid-transfer (95 % of the free space is the ceiling).
+- `ethos-videos-db` is **v2**: `downloads` (cached media rows) and `resume`
+  (`{path, time, duration, updated_at}`), so progress survives a reload, a
+  closed tab and a dead NAS.
+- **Offline unlock**: when the page has no token, no network **and** downloaded
+  rows on the device, `boot()` opens the Downloads view instead of the login
+  form (`Offline · <version>`), so a plane-mode phone still plays the trip
+  library. A valid session restores the normal flow.
 
 ## Files
 
@@ -132,7 +171,13 @@ after a reload; nothing outside the caller's scope is ever returned.
 - `tests/test_video_engine.py` — `build_render_cmd` copy mode (remux),
   `download_mode` passthrough/fallback, plus faststart/`-progress`/hw/`-an`.
 - `tests/test_videos_pwa.py` — static guards: reload reconciles with the NAS
-  queue, streaming into Cache Storage, no whole-file Blob, version settings.
+  queue, streaming into Cache Storage, no whole-file Blob, version settings,
+  series/seasons, tabs, subtitles, up-next, offline unlock and the `resume`
+  store.
+- `tests/test_videos_pwa_ui.py` — Playwright E2E on an isolated instance with
+  ffmpeg fixtures (show with two subtitled episodes + one movie): tabs, series →
+  season, episode sheet, subtitle attachment, up-next, batch download in the
+  default version, offline unlock and offline resume.
 - `tests/test_pwa_assets.py` — manifest, icons, public paths, worker precache,
   media cache survival, `/__media` Range.
 - `tests/test_retention.py` — `video_exports` is measured but never swept by
@@ -149,6 +194,11 @@ after a reload; nothing outside the caller's scope is ever returned.
 - [x] Multi-select batch queueing in the default version (core 2.18.0)
 - [x] Cache Storage downloads with Range-capable offline playback
 - [x] Service worker precache + `/__media` handler + shell fallback
+- [x] Series grouping with seasons and “Download season” (core 2.20.0)
+- [x] Subtitles, up-next autoplay, playback speed and cast
+- [x] Library tabs, sort/genre, recent searches, size estimate + quota check
+- [x] On-device resume (`resume` store, DB v2) and offline unlock without a
+  session
 - [x] Retention hook, shutdown handling, `docs` + `CHANGELOG`
 - [ ] Settings row that points phones at `/videos` (APK stays for Android TV)
 - [ ] Optional background sync of the resume queue while offline

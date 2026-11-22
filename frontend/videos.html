@@ -66,6 +66,7 @@
             </div>
             <div id="vd-menu" class="vd-menu" hidden>
                 <button type="button" id="vd-theme">Toggle theme</button>
+                <button type="button" id="vd-refresh">Refresh library</button>
                 <button type="button" id="vd-settings-btn">Download settings</button>
                 <button type="button" id="vd-logout">Sign out</button>
             </div>
@@ -127,7 +128,14 @@
 
     <!-- Player -->
     <div id="vd-player" class="vd-player" hidden>
-        <video id="vd-video" playsinline webkit-playsinline preload="metadata"></video>
+        <video id="vd-video" playsinline webkit-playsinline x-webkit-airplay="allow" preload="metadata"></video>
+        <div id="vd-upnext" class="vd-upnext" hidden>
+            <p id="vd-upnext-text"></p>
+            <div class="vd-upnext-actions">
+                <button type="button" class="vd-btn primary" id="vd-upnext-play">Play now</button>
+                <button type="button" class="vd-btn" id="vd-upnext-cancel">Cancel</button>
+            </div>
+        </div>
         <div class="vd-player-ui" id="vd-player-ui">
             <div class="vd-player-top">
                 <button type="button" class="vd-icon-btn" id="vd-player-back" aria-label="Back">←</button>
@@ -149,12 +157,21 @@
                     <button type="button" class="vd-icon-btn" id="vd-fwd10">+10</button>
                     <span id="vd-time" class="vd-time">0:00 / --:--</span>
                     <span class="vd-grow"></span>
+                    <select id="vd-sub" class="vd-select" aria-label="Subtitles" hidden></select>
                     <select id="vd-audio" class="vd-select" aria-label="Audio track" hidden></select>
                     <select id="vd-quality" class="vd-select" aria-label="Quality">
                         <option value="fast">720p</option>
                         <option value="balanced">1080p</option>
                         <option value="high">Source</option>
                     </select>
+                    <select id="vd-speed" class="vd-select" aria-label="Playback speed">
+                        <option value="0.75">0.75×</option>
+                        <option value="1" selected>1×</option>
+                        <option value="1.25">1.25×</option>
+                        <option value="1.5">1.5×</option>
+                        <option value="2">2×</option>
+                    </select>
+                    <button type="button" class="vd-icon-btn" id="vd-cast" aria-label="Cast" hidden>⧉</button>
                     <button type="button" class="vd-icon-btn" id="vd-fullscreen" aria-label="Fullscreen">⛶</button>
                 </div>
             </div>

@@ -518,6 +518,26 @@ Spec: `docs/videos-pwa.md`. Tests: `tests/test_video_render.py`,
 `tests/test_video_api.py` (`/exports`), `tests/test_video_engine.py`
 (`build_render_cmd`), `tests/test_pwa_assets.py`.
 
+### Phase 12b — phone parity (2.20.0)
+
+The PWA now browses like the desktop window and survives a flight:
+
+- **Series**: shows are grouped (`groupShows`), the show view lists seasons with
+  a per-season *Download season* action, and an episode ends with an *up next*
+  card (10 s) that plays the following episode.
+- **Library**: tabs All / Movies / Series / My List with counts, sort and genre
+  filter, debounced search plus recent-query chips, and batch select with the
+  default (480p) version and a size estimate.
+- **Player**: subtitle picker (`blob:` `<track>`, SRT → VTT), playback speed
+  (0.5×–2×) and the Remote Playback / cast picker.
+- **Offline**: `ethos-videos-db` v2 adds a `resume` store, so a download keeps
+  its position across reloads; when the token is gone, the network is down and
+  downloads exist, the page opens straight into the Downloads view.
+- Queue preflight warns when a film cannot fit (`navigator.storage.estimate`).
+
+Tests: `tests/test_videos_pwa.py` (static guards) and
+`tests/test_videos_pwa_ui.py` (Playwright E2E with ffmpeg fixtures).
+
 ## Status
 - [x] Phase 1 — docs + metadata service + API enrichment + /home endpoint
 - [x] Phase 2 — frontend home/movies/series + player subtitle picker
@@ -536,6 +556,8 @@ Spec: `docs/videos-pwa.md`. Tests: `tests/test_video_render.py`,
 - [x] Phase 11 — audio codec negotiation (`acodec=aac|opus|none`) + hls.js
 - [x] Phase 12 — `/videos` PWA: offline MP4 downloads, fullscreen, wake lock
       (`docs/videos-pwa.md`); APK kept for Android TV
+- [x] Phase 12b — PWA phone parity: series/seasons, subtitles, up-next, tabs,
+      speeds/cast, on-device resume and offline unlock (core 2.20.0)
 
 ## Verification log
 | Date | What | Result |
