@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T14:12:32+00:00",
+  "generated_at": "2026-11-22T14:26:12+00:00",
   "latest": {
-    "version": "2.22.0",
-    "git_sha": "f6637ab",
-    "git_sha_full": "f6637ab0c9fad84bfb732f961b86e50e20c53ebf",
-    "build": 158,
-    "released_at": "2026-11-22T14:12:32+00:00",
-    "notes": "Books: offline retry/cancel, locked-phone progress, offline reading without a session, faster large libraries, EPUB swipe and PDF pinch"
+    "version": "2.23.0",
+    "git_sha": "a5e7a7a",
+    "git_sha_full": "a5e7a7a346d85ba69a6657248d8f5f3258262e50",
+    "build": 160,
+    "released_at": "2026-11-22T14:26:12+00:00",
+    "notes": "System: EthOS pauses heavy work and skips the OOM killer when the box runs out of memory, and reports why it was killed"
   },
   "releases": [
+    {
+      "version": "2.23.0",
+      "git_sha": "a5e7a7a",
+      "git_sha_full": "a5e7a7a346d85ba69a6657248d8f5f3258262e50",
+      "build": 160,
+      "released_at": "2026-11-22T14:26:12+00:00",
+      "notes": "System: EthOS pauses heavy work and skips the OOM killer when the box runs out of memory, and reports why it was killed"
+    },
     {
       "version": "2.22.0",
       "git_sha": "f6637ab",
@@ -201,14 +209,6 @@
       "build": 97,
       "released_at": "2026-11-22T08:43:47+00:00",
       "notes": "Packages: cleaner catalog cards, pill filters and working action buttons; uninstall now completes cleanly."
-    },
-    {
-      "version": "2.12.1",
-      "git_sha": "3ff0647",
-      "git_sha_full": "3ff0647ff14dddd71de25fde7c01858c1e43b31d",
-      "build": 95,
-      "released_at": "2026-11-22T08:30:15+00:00",
-      "notes": "Download Manager: Resume repairs tasks queued under an old, unwritable download folder"
     }
   ]
 }
