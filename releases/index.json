@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T07:05:03+00:00",
+  "generated_at": "2026-11-22T07:27:19+00:00",
   "latest": {
-    "version": "2.10.0",
-    "git_sha": "e83f659",
-    "git_sha_full": "e83f65966e0e54b6caf4f8f46d1db4959f8f7e72",
-    "build": 88,
-    "released_at": "2026-11-22T07:05:03+00:00",
-    "notes": "Provisioning: core updates apply helpers, sudoers, unit and confs from the signed release"
+    "version": "2.11.0",
+    "git_sha": "f441c3c",
+    "git_sha_full": "f441c3cfeb305fc6fdcb1b0d4aaa06c5f0c74a97",
+    "build": 90,
+    "released_at": "2026-11-22T07:27:19+00:00",
+    "notes": "EthOS OS: A/B image updates — check, download, install to the standby slot, reboot or automatic rollback"
   },
   "releases": [
+    {
+      "version": "2.11.0",
+      "git_sha": "f441c3c",
+      "git_sha_full": "f441c3cfeb305fc6fdcb1b0d4aaa06c5f0c74a97",
+      "build": 90,
+      "released_at": "2026-11-22T07:27:19+00:00",
+      "notes": "EthOS OS: A/B image updates — check, download, install to the standby slot, reboot or automatic rollback"
+    },
     {
       "version": "2.10.0",
       "git_sha": "e83f659",
@@ -201,14 +209,6 @@
       "build": 34,
       "released_at": "2026-11-17T18:37:34+00:00",
       "notes": "Download Manager: transient failures retry with exponential backoff (permanent errors do not), Retry failed bulk action, and duplicate/skip/overwrite handling for re-added URLs and existing files."
-    },
-    {
-      "version": "2.3.7",
-      "git_sha": "5385233",
-      "git_sha_full": "538523379821af5890572773b21938d3bd3c53ad",
-      "build": 32,
-      "released_at": "2026-11-17T18:29:04+00:00",
-      "notes": "Updates: the root helper survives its own service restart (systemd scope) and refreshes its installed copy; a stuck running job is detected and finalized after a restart instead of blocking every later update."
     }
   ]
 }
