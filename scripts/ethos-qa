@@ -79,8 +79,9 @@ class Report:
         return [row for row in self.rows if row["level"] == "warn"]
 
     def dump(self) -> None:
-        for row in sorted(self.rows, key=lambda r: (r["level"] != "error", r["package"], r["rule"])):
-            mark = "ERROR" if row["level"] == "error" else "warn "
+        order = {"error": 0, "warn": 1, "info": 2}
+        for row in sorted(self.rows, key=lambda r: (order.get(r["level"], 3), r["package"], r["rule"])):
+            mark = {"error": "ERROR", "warn": "warn ", "info": "info "}[row["level"]]
             print(f"  {mark} {row['rule']} {row['package']}: {row['message']}")
         total_err, total_warn = len(self.errors()), len(self.warnings())
         print(f"\n{total_err} error(s), {total_warn} warning(s)")
@@ -333,9 +334,15 @@ def command_static(args: argparse.Namespace) -> int:
                 continue  # the package is installed here as a container; expected
             if _package_service_pid(value) in owners:
                 continue  # this NAS runs the package's own venv service on that port
-            report.add("S06", "warn", ",".join(owners),
-                       f"port {value} is in use by {published.get(value) or 'another process'} "
-                       "— installing this package here would fail to bind")
+            names = published.get(value)
+            if names:
+                report.add("S06", "warn", ",".join(owners),
+                           f"port {value} is published by docker container(s) {sorted(set(names))} "
+                           "— a new install cannot bind it")
+            else:
+                report.add("S06", "info", ",".join(owners),
+                           f"port {value} is listening; it is this package's own service if the "
+                           "package is installed, otherwise the install cannot bind it")
 
     print(f"ethos-qa static — {len(rows)} package(s) in {repo}")
     if version:

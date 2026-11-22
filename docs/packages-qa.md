@@ -35,6 +35,9 @@ ETHOS_QA_SHOTS=/tmp/qa-shots .venv/bin/python tests/test_packages_qa_ui.py
 `--live` adds read-only host checks (`ss`, `docker ps`); `ETHOS_QA_THEME=dark` re-runs the UI sweep
 in the dark palette. Neither tool installs, starts, stops or uninstalls anything.
 
+Findings are `error` (contract broken), `warn` (defect or drift) or `info` (needs a human eye — for
+example a listening port whose owner cannot be read without root).
+
 Rules: `S01` identity/icon · `S02` icon artwork · `S03` declared files on disk · `S04` min core
 version · `S05` UI/healthcheck contract · `S06` port ownership · `S07–S11` forbidden JS patterns ·
 `S12` container healthchecks · `S13` module self-containment · `S15` test hooks · `S16` palette
@@ -84,7 +87,7 @@ every window painted in light **and** dark, no iframe for native modules.
   `"The <id> service is not responding. Start it in Package Center and try again."`
   Guard: `tests/test_package_proxy_error.py`.
 
-### ☐ P1-02 · Three packages cannot bind their port on this NAS
+### ☐ P1-02 · Three packages ship a port this NAS already uses
 `ethos-qa static --live` compares every declared port with `docker ps`:
 
 | Package | Wants | Already published by |
@@ -93,11 +96,13 @@ every window painted in light **and** dark, no iframe for native modules.
 | `ethos-rss` | 8080 | `wawalocal-api-1` |
 | `vmm` (console) | 8094 | `ethos-nas-site` |
 
-Install/update fails at the `start` step with "port is already allocated". `ethos-git` had the same
-problem on 3000 and was moved to 3005 (`2186e5b`).
+Because the core now probes the port before downloading (2.28.2), the install fails fast with
+`Port 3001 is already used by wawalocal-user-1` instead of dying in `compose up` — but the package
+still cannot be installed on a host that uses those ports. `ethos-git` had the same problem on 3000
+and was moved to 3005 (`2186e5b`).
 - **Fix.** Pick ports outside the host's used range and record the rule in the packages `AGENTS.md`
   ("known in-use ports" list). vmm's console also needs a published range that does not overlap a
-  documented service.
+  documented service. Ports that are merely *listening* with an unreadable owner stay `info`.
 
 ### ☐ P1-03 · `ethos-music` is the only app in Polish
 103 lines of hardcoded Polish copy (`Dobry wieczór`, `Polubione`, `Szukaj`, `0 utworów`) while the
