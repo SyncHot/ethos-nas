@@ -43,12 +43,19 @@ one ffmpeg per stream (CameraPipeline supervisor, restart 5/15/60 s)
 - `-c:v copy` whenever the source is H.264 (HEVC for the archive), so a
   multi-camera install costs almost no CPU. MJPEG-only sources transcode at
   CFR 15 fps.
+- **Single-stream cameras** (no `sub` URL) that deliver H.264 write the live
+  window *and* the archive from the same ffmpeg, so live + continuous recording
+  + motion use **one** RTSP session. Eufy/NAS(RTSP) cameras allow only one or
+  two sessions and drop the rest, which made a second archive process fail.
 - Archive uses one run directory per ffmpeg start: `append_list` restarts
   segment numbering at zero and would overwrite older playlists.
 - The live window is deleted/rotated by ffmpeg (`delete_segments`); the janitor
   never touches it.
 - A run is only purged when its newest file is ≥ 5 min old and it is not the
   camera's newest run, so a write in progress is never deleted.
+- The quota is a **free-space budget**: the janitor lets recordings grow only
+  into space that keeps `100 − quota_pct` of the volume free, so a system disk
+  that already holds other data is never filled (it is not `total × quota_pct`).
 
 ## Data model
 
@@ -182,3 +189,7 @@ but are admin-only; the desktop app records through `record.mode`.
   not running. `ffmpeg.log` captured the full URL with the password; fixed by
   draining stderr through `mask_text`, resetting the log per run and masking
   URL-like camera names (v2.25.1).
+- 2026-11-22 — v2.26.0: single-stream cameras archive from the live ffmpeg (one
+  RTSP session for live + recording + motion) and the retention quota is based
+  on actual free space. `tests/test_cameras_core.py` **55/55**; combined
+  live+archive+frames command verified against an H.264 file input.

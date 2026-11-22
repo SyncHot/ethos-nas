@@ -135,6 +135,26 @@ def dir_size(path: Path) -> int:
     return total
 
 
+def _budget(root: Path, quota_pct: int) -> tuple[int, int, dict]:
+    """(recordings bytes, allowed bytes, disk info) for the retention janitor.
+
+    `quota_pct` is a cap on the *volume*, not a promise of free space: the tree
+    may only grow into the space that keeps `100 - quota_pct` of the disk free,
+    so unrelated data on a 75 %-full system disk is never overwritten.
+    """
+    recordings_size = dir_size(recordings_root())
+    try:
+        disk = shutil.disk_usage(root)
+    except OSError:
+        return recordings_size, recordings_size, {"total_bytes": 0, "free_bytes": 0,
+                                                  "used_pct": 0}
+    target_free = int(disk.total * max(0, 100 - quota_pct) / 100)
+    allowed = recordings_size + max(0, disk.free - target_free)
+    used_pct = round((disk.total - disk.free) / disk.total * 100, 1) if disk.total else 0
+    return recordings_size, allowed, {"total_bytes": disk.total, "free_bytes": disk.free,
+                                      "used_pct": used_pct}
+
+
 def usage() -> dict:
     root = storage_root()
     by_camera: list[dict] = []
@@ -148,18 +168,14 @@ def usage() -> dict:
         size = dir_size(cam_dir)
         total += size
         by_camera.append({"camera_id": cam_dir.name, "size_bytes": size})
-    try:
-        disk = shutil.disk_usage(root)
-        disk_info = {"total_bytes": disk.total, "free_bytes": disk.free, "used_pct":
-                     round((disk.total - disk.free) / disk.total * 100, 1) if disk.total else 0}
-    except OSError:
-        disk_info = {"total_bytes": 0, "free_bytes": 0, "used_pct": 0}
+    quota = camera_settings.load()["quota_pct"]
+    recordings_size, allowed, disk_info = _budget(root, quota)
     live_size = dir_size(live_root())
     return {
         "storage_dir": str(root),
         "recordings_bytes": total,
         "live_bytes": live_size,
-        "quota_bytes": int(disk_info["total_bytes"] * camera_settings.load()["quota_pct"] / 100),
+        "quota_bytes": max(0, allowed),
         **disk_info,
         "cameras": sorted(by_camera, key=lambda c: c["size_bytes"], reverse=True),
     }
@@ -235,11 +251,11 @@ def purge(retention_days: int | None = None, quota_pct: int | None = None) -> di
         except OSError:
             pass  # concurrent writes can make the directory non-empty again
 
-    # Quota: keep the recordings tree under quota_pct of the volume.
+    # Quota: keep the recordings tree inside the free-space budget computed
+    # from the volume (see `_budget`), not a fixed share of its total size.
     try:
-        disk = shutil.disk_usage(root)
-        limit = int(disk.total * quota / 100)
-        while dir_size(recordings_root()) > limit:
+        recordings_size, allowed, _disk = _budget(root, quota)
+        while recordings_size > allowed:
             candidates: list[tuple[float, Path, Path]] = []
             for cam_dir in camera_dirs:
                 newest = _newest_run(cam_dir)
@@ -253,8 +269,10 @@ def purge(retention_days: int | None = None, quota_pct: int | None = None) -> di
             candidates.sort(key=lambda item: item[0])
             _, _, oldest = candidates[0]
             try:
-                removed_bytes += dir_size(oldest)
+                freed = dir_size(oldest)
                 shutil.rmtree(oldest)
+                recordings_size -= freed
+                removed_bytes += freed
                 removed_dirs += 1
                 logger.info("Quota purge removed %s", oldest)
             except OSError as exc:

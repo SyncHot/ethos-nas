@@ -31,7 +31,7 @@ def main() -> int:
     os.environ.setdefault("ETHOS_ALLOW_INSECURE", "1")
 
     from backend.services import (camera_recordings, camera_secrets, camera_service,
-                                  camera_storage, camera_runner)
+                                  camera_settings, camera_storage, camera_runner)
 
     print("\nPart A — credentials")
     blob = camera_secrets.encrypt_secret("s3cr3t!")
@@ -187,6 +187,46 @@ def main() -> int:
           str(usage.get("recordings_bytes")))
     result = camera_storage.purge(retention_days=0, quota_pct=80)
     check("retention=0 purges old runs", result["removed_dirs"] >= 1, str(result))
+
+    print("\nPart H — single-connection archive + space budget")
+    live_dir = camera_storage.camera_live_dir(cam_id)
+    archive_dir = camera_storage.run_dir(cam_id, day, "12-00-00")
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    cmd = camera_runner._live_cmd("rtsp://host/live0", "h264", live_dir,
+                                  archive_dir=archive_dir, segment_s=30)
+    check("combined command has two HLS outputs", cmd.count("hls") == 2,
+          f"{cmd.count('hls')} hls muxers")
+    check("combined command writes the archive playlist",
+          str(archive_dir / "index.m3u8") in cmd)
+    check("combined command still pipes motion frames", "rawvideo" in cmd and "pipe:1" in cmd)
+    check("single output command has no archive",
+          str(archive_dir / "index.m3u8") not in camera_runner._live_cmd(
+              "rtsp://host/live0", "h264", live_dir))
+
+    camera_settings.save({"quota_pct": 80})
+    real_disk_usage = camera_storage.shutil.disk_usage
+    try:
+        class _Disk:
+            total = 100 * 1024 ** 3
+            free = 50 * 1024 ** 3
+
+        camera_storage.shutil.disk_usage = lambda _path: _Disk()
+        usage = camera_storage.usage()
+        expected = usage["recordings_bytes"] + 30 * 1024 ** 3
+        check("budget reserves 20% of the volume", usage["quota_bytes"] == expected,
+              f"{usage['quota_bytes']} != {expected}")
+
+        class _FullDisk:
+            total = 100 * 1024 ** 3
+            free = 5 * 1024 ** 3
+
+        camera_storage.shutil.disk_usage = lambda _path: _FullDisk()
+        usage = camera_storage.usage()
+        check("full disk gives no growth budget",
+              usage["quota_bytes"] == usage["recordings_bytes"],
+              f"{usage['quota_bytes']} != {usage['recordings_bytes']}")
+    finally:
+        camera_storage.shutil.disk_usage = real_disk_usage
 
     failures = [name for name, ok, _ in _results if not ok]
     print(f"\n{len(_results) - len(failures)}/{len(_results)} checks passed")

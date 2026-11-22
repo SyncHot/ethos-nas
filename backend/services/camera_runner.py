@@ -97,9 +97,15 @@ def _video_args(codec: str, *, allow_copy: bool = True, fps: int = 15) -> list[s
             "-fps_mode", "cfr", "-r", str(max(1, int(fps)))]
 
 
-def _live_cmd(url: str, codec: str, out_dir: Path) -> list[str]:
-    """Live HLS + a raw gray frame pipe on fd 3 (both from one decode)."""
-    return [
+def _live_cmd(url: str, codec: str, out_dir: Path, *,
+              archive_dir: Optional[Path] = None, segment_s: int = 60) -> list[str]:
+    """Live HLS + motion frames, optionally the archive from the same connection.
+
+    Cameras that expose a single stream (most Eufy models) allow only one or two
+    RTSP sessions. Writing the archive from the live process keeps a single
+    camera connection for live + recording + motion when the codec can be copied.
+    """
+    cmd = [
         FFMPEG, "-nostdin", "-hide_banner", "-loglevel", "error",
         *_input_args(url), "-i", url,
         "-map", "0:v:0", *_video_args(codec), "-an",
@@ -110,10 +116,24 @@ def _live_cmd(url: str, codec: str, out_dir: Path) -> list[str]:
         "-hls_fmp4_init_filename", "init.mp4",
         "-hls_segment_filename", str(out_dir / "seg%05d.m4s"),
         str(out_dir / "index.m3u8"),
+    ]
+    if archive_dir is not None:
+        cmd += [
+            "-map", "0:v:0", *_video_args(codec), "-an",
+            "-f", "hls",
+            "-hls_time", str(max(10, int(segment_s))), "-hls_list_size", "0",
+            "-hls_flags", "independent_segments+temp_file+program_date_time",
+            "-hls_segment_type", "fmp4",
+            "-hls_fmp4_init_filename", "init.mp4",
+            "-hls_segment_filename", str(archive_dir / "seg%05d.m4s"),
+            str(archive_dir / "index.m3u8"),
+        ]
+    cmd += [
         "-map", "0:v:0",
         "-vf", f"fps={MOTION_FPS},scale={FRAME_W}:{FRAME_H},format=gray",
         "-an", "-f", "rawvideo", "pipe:1",
     ]
+    return cmd
 
 
 def _archive_cmd(url: str, codec: str, out_dir: Path, segment_s: int) -> list[str]:
@@ -275,6 +295,7 @@ class CameraPipeline(threading.Thread):
         self._codec = ""
         self._resolution = ""
         self._recording = False
+        self._live_archive_day = ""
 
     # ── lifecycle ──────────────────────────────────────────────────────────
 
@@ -314,6 +335,10 @@ class CameraPipeline(threading.Thread):
                 self._resolution = f"{probe['width']}x{probe['height']}"
         while not self._stop.is_set() and not shutdown_state.is_set():
             try:
+                # Midnight rollover: the archive directory is fixed at spawn.
+                today = datetime.now().strftime("%Y-%m-%d")
+                if self._live_archive_day and self._live_archive_day != today:
+                    self._stop_proc("live")
                 self._ensure_live()
                 self._ensure_archive()
                 self._drain_events()
@@ -343,6 +368,11 @@ class CameraPipeline(threading.Thread):
 
     # ── process management ─────────────────────────────────────────────────
 
+    def _use_combined_archive(self) -> bool:
+        """Single-stream cameras archive inside the live process (one session)."""
+        has_sub = bool((self.cam.get("streams") or {}).get("sub"))
+        return (not has_sub) and self._codec in COPY_CODECS
+
     def _ensure_live(self) -> None:
         if self._live and self._live.process.poll() is None:
             return
@@ -351,8 +381,21 @@ class CameraPipeline(threading.Thread):
         url = _live_source(self.cam)
         out_dir = camera_storage.camera_live_dir(self.cam_id)
         log_path = out_dir / "ffmpeg.log"
+        archive_dir: Optional[Path] = None
+        self._live_archive_day = ""
+        if self._use_combined_archive() and camera_service.recording_active(self.cam):
+            day = datetime.now().strftime("%Y-%m-%d")
+            run = datetime.now().strftime("%H-%M-%S")
+            try:
+                archive_dir = camera_storage.run_dir(self.cam_id, day, run)
+                archive_dir.mkdir(parents=True, exist_ok=True)
+                self._live_archive_day = day
+            except (OSError, ValueError) as exc:
+                logger.warning("Camera %s: cannot open archive dir: %s", self.cam_id, exc)
+                archive_dir = None
         self._reset_log(log_path)
-        cmd = _live_cmd(url, self._codec, out_dir)
+        cmd = _live_cmd(url, self._codec, out_dir, archive_dir=archive_dir,
+                        segment_s=camera_settings.load()["segment_s"])
         try:
             process = subprocess.Popen(
                 limit_child(cmd, mem_mb=1024),
@@ -361,15 +404,24 @@ class CameraPipeline(threading.Thread):
         except OSError as exc:
             self._fail("live", f"{type(exc).__name__}: {exc}")
             return
-        self._live = _Proc("live", process, log_path, time.time())
+        self._live = _Proc("live", process, log_path, time.time(),
+                           {"archive": str(archive_dir) if archive_dir else ""})
+        self._recording = bool(archive_dir)
         threading.Thread(target=_drain_stderr, args=(process.stderr, log_path, self._live),
                          name=f"stderr-live-{self.cam_id}", daemon=True).start()
         self._frame_reader = threading.Thread(
             target=self._read_frames, args=(process.stdout,),
             name=f"frames-{self.cam_id}", daemon=True)
         self._frame_reader.start()
+        if archive_dir:
+            logger.info("Recording started (single-stream): %s → %s", self.cam_id, archive_dir)
 
     def _ensure_archive(self) -> None:
+        if self._use_combined_archive():
+            # The live process already writes the archive; keep the flag honest.
+            self._recording = bool(self._live and self._live.process.poll() is None
+                                   and self._live.detail.get("archive"))
+            return
         active = camera_service.recording_active(self.cam) if self.cam.get("enabled") else False
         if not active:
             if self._archive and self._archive.process.poll() is None:
@@ -426,7 +478,7 @@ class CameraPipeline(threading.Thread):
                 except OSError:
                     pass  # already gone
         setattr(self, f"_{name}", None)
-        if name == "archive":
+        if name == "archive" or (name == "live" and proc.detail.get("archive")):
             self._recording = False
 
     def _handle_exit(self, name: str) -> None:
@@ -436,7 +488,7 @@ class CameraPipeline(threading.Thread):
         code = proc.process.returncode
         tail = proc.last_line or _stderr_tail(proc.log_path)
         setattr(self, f"_{name}", None)
-        if name == "archive":
+        if name == "archive" or (name == "live" and proc.detail.get("archive")):
             self._recording = False
         if self._stop.is_set() or shutdown_state.is_set():
             return

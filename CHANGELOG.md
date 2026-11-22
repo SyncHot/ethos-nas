@@ -11,6 +11,22 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.26.0] - 2026-11-22
+
+### Added
+
+- **Cameras: continuous recording on single-stream cameras.** A camera without a
+  sub-stream URL (Eufy NAS/RTSP and similar) now writes live HLS, the archive and
+  the motion frames from one ffmpeg, using a single camera session instead of
+  two. Cameras that allow only one RTSP client can record continuously.
+
+### Fixed
+
+- **Cameras: the recording quota is now a free-space budget.** The janitor lets
+  recordings grow only into space that keeps `100 − quota_pct` of the volume
+  free, so a system disk that already holds other data is never filled by
+  camera recordings (previously `total × quota_pct` could exceed free space).
+
 ## [2.25.1] - 2026-11-22
 
 ### Security
