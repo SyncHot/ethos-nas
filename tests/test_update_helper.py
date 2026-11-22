@@ -64,6 +64,17 @@ def main() -> int:
     check("job.json carries the helper pid for liveness checks",
           '"pid": os.getppid()' in helper)
     check("no eval", not re.search(r"\beval\b", helper))
+    # `set -u` kills the script on the first undefined variable, and everything
+    # before `trap on_exit EXIT` dies *without* writing a result — the UI then
+    # shows "nothing happened" and the request file stays behind. 2.29.4 lost
+    # STATE_DIR/JOB that way.
+    conf_vars = {"INSTALL_DIR", "REPO_OWNER", "SERVICE_USER", "SERVICE_UNIT",
+                 "DATA_DIR", "INDEX_URL", "PUBKEY_PEM"}
+    assigned = set(re.findall(r"^\s*([A-Z_][A-Z0-9_]*)=", helper, re.M))
+    used = {name for name, rest in re.findall(r"\$\{([A-Z_][A-Z0-9_]*)([^}]*)\}", helper)
+            if ":-" not in rest}
+    undefined = sorted(used - assigned - conf_vars)
+    check("every variable is defined before use", not undefined, str(undefined))
     check("git/pip run as the repo owner, not root",
           'runuser -u "${REPO_OWNER}"' in helper and "runuser -u \"${REPO_OWNER}\" -- \"${INSTALL_DIR}/.venv/bin/pip\"" in helper)
     check("restarts the unit", 'systemctl restart "${SERVICE_UNIT}"' in helper)

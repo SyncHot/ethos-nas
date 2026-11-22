@@ -75,6 +75,8 @@ if ! id -u "${REPO_OWNER}" >/dev/null 2>&1; then
     log "warning: REPO_OWNER '${REPO_OWNER}' does not exist — using '${RESOLVED_OWNER}' (owner of ${INSTALL_DIR})"
     REPO_OWNER="${RESOLVED_OWNER}"
 fi
+STATE_DIR="${DATA_DIR}/update"
+JOB="${STATE_DIR}/job.json"
 RESULT="${STATE_DIR}/result.json"
 REQUEST="${STATE_DIR}/request.json"
 FROM_SHA=""
