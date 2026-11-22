@@ -11,7 +11,22 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.28.5] - 2026-11-22
+
+### Fixed
+
+- **A package whose port is already taken now installs anyway.** Many hosts run
+  another compose project (or a dev server) on the port a package asks for, and a
+  signed compose file cannot be edited. EthOS now publishes the package on the next
+  free port: it writes a compose override with `ports: !override`, stores the
+  effective port in the package record and everything — the window, the package
+  proxy, health probes — follows. The remapped port stays the same across updates,
+  so a bookmarked URL keeps working. Venv/native packages cannot be remapped and
+  still report “Port 3000 is already used by <container>”, because EthOS starts
+  those processes itself.
+
 ## [2.28.4] - 2026-11-22
+ - 2026-11-22
 
 ### Fixed
 

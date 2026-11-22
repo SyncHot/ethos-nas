@@ -128,12 +128,21 @@ repo/
     - `ui.auth` — `"package"` (the app has its own login) or `"none"` (it does not). Required
       whenever `expose` is `"lan"`, so shipping an unauthenticated panel on the LAN is a
       deliberate, visible decision.
-    - **Port collisions fail fast.** A fresh install binds `ui.port` / `healthcheck.port`
-      before anything is downloaded; if the port is taken (another compose project on the
-      host, a dev server) it stops with “Port 3000 is already used by wawalocal-public-1”
-      instead of deploying the files and dying inside `docker compose up`. Updates skip the
-      check — the running package owns its own port then. `_preflight_ports` in
-      `services/package_installer.py`.
+    - **A busy port is re-mapped, not fatal.** The compose file is signed, so the
+      published port cannot be edited — but it can be *overridden*. When
+      `ui.port` (or `healthcheck.port`) is already taken on the host — another
+      compose project, a dev server, a leftover container — the installer picks
+      a free port nearby, writes `docker-compose.override.yml` next to the package
+      compose file with `ports: !override` (Compose ≥ 2.24 replaces the list
+      instead of appending) and records the effective port in the package record
+      (`ui.port`, `healthcheck.port` + `port_remap: {from, to, reserved}`). The
+      window iframe, the package proxy and health probes read the record, so
+      everything follows automatically; the container keeps listening on its own
+      port and only the host side changes. A recorded remap is sticky across
+      updates, so the URL the user opened keeps working. Venv/native packages
+      cannot be remapped (EthOS starts the process itself) — those still fail
+      with “Port 3000 is already used by <container>”. Implementation:
+      `services/package_ports.py` + `_port_plan` in `services/package_installer.py`.
     When EthOS itself is served over HTTPS, the browser blocks an `http` frame (mixed content);
     the window then offers the tab-only card instead of a blank pane.
   - `{"mode": "native", "entry": "frontend/app.js"}` — the entry module is loaded

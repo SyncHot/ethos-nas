@@ -11,16 +11,17 @@ import json
 import logging
 import os
 import shutil
-import socket
 import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 from backend.config import APP_VERSION, settings
 from backend.services import (
-    package_cleanup, package_jobs, package_repo, package_runtime, package_wheels,
-    packages_store, system_deps,
+    package_cleanup, package_jobs, package_ports, package_repo, package_runtime,
+    package_wheels, packages_store, system_deps,
 )
 from backend.services.compose_policy import enforce_compose
 from backend.services.notifications_service import emit_event
@@ -130,19 +131,128 @@ def _preflight_ports(manifest: dict, pkg_id: str) -> None:
         if 0 < port < 65536 and port not in ports:
             ports.append(port)
     for port in ports:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            try:
-                probe.bind(("0.0.0.0", port))
-            except OSError:
-                owner = _port_owner(port)
-                where = f" by {owner}" if owner else ""
-                logger.warning("Package %s: port %d is already in use%s", pkg_id, port, where)
-                raise PackageError(
-                    f"Port {port} is already used{where}. {manifest.get('name') or pkg_id} "
-                    f"needs it for its window — free the port or stop that container first.",
-                    409,
-                ) from None
+        if package_ports.port_free(port):
+            continue
+        owner = package_ports.port_owner(port)
+        where = f" by {owner}" if owner else ""
+        logger.warning("Package %s: port %d is already in use%s", pkg_id, port, where)
+        raise PackageError(
+            f"Port {port} is already used{where}. {manifest.get('name') or pkg_id} "
+            f"needs it for its window — free the port or stop that container first.",
+            409,
+        )
     logger.debug("Package %s: ports %s are free", pkg_id, ports)
+
+
+def _reserved_ports(pkg_id: str) -> set:
+    """Host ports the *other* installed packages claim, so two installs cannot
+    pick the same remapped port."""
+    reserved = set()
+    for record in packages_store.load_installed():
+        if str(record.get("id")) == pkg_id:
+            continue
+        for section in ("ui", "healthcheck"):
+            try:
+                port = int((record.get(section) or {}).get("port") or 0)
+            except (TypeError, ValueError):
+                port = 0
+            if port:
+                reserved.add(port)
+        for port in ((record.get("port_remap") or {}).get("reserved") or []):
+            reserved.add(int(port))
+    return reserved
+
+
+def _port_plan(pkg_id: str, manifest: dict, package_dir: Path, *,
+               previous: Optional[dict] = None) -> dict:
+    """Effective host ports for a package, re-mapping a busy one instead of failing.
+
+    Signed compose files publish a fixed port, and that port is regularly taken
+    by another project on the host. When that happens the *published* side is
+    remapped (a `docker-compose.override.yml` with `ports: !override`) and the
+    new port goes into the record, which the window, the proxy and the health
+    probe read. Returns `{"ui": port|None, "healthcheck": port|None, "remap": {}}`
+    — `remap` is `{old: new}` and empty when nothing changed.
+    """
+    ui = (manifest.get("ui") or {})
+    health = (manifest.get("healthcheck") or {})
+
+    def _as_port(value) -> int:
+        try:
+            port = int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+        return port if 0 < port < 65536 else 0
+
+    ui_port = _as_port(ui.get("port"))
+    health_port = _as_port(health.get("port"))
+    plan = {"ui": ui_port or None, "healthcheck": health_port or None, "remap": {}}
+    if not ui_port:
+        return plan
+
+    reserved = _reserved_ports(pkg_id)
+    keep = _as_port((previous or {}).get("to"))
+    if keep and keep not in reserved and package_ports.port_free(keep):
+        # Sticky: the URL the user already opened keeps working across updates.
+        new_port = keep
+    elif not package_ports.port_free(ui_port) or ui_port in reserved:
+        try:
+            new_port = package_ports.allocate_port(ui_port, reserved=reserved)
+        except ValueError:
+            owner = package_ports.port_owner(ui_port)
+            where = f" by {owner}" if owner else ""
+            raise PackageError(
+                f"Port {ui_port} is already used{where} and no free port was found "
+                f"nearby. Free the port or stop that container first.", 409,
+            ) from None
+    else:
+        return plan
+
+    compose_path = Path(package_dir) / "docker-compose.yml"
+    try:
+        compose = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        logger.error("Package %s: could not read the compose file for the port remap: %s",
+                     pkg_id, exc, exc_info=True)
+        compose = {}
+    mapping = {ui_port: new_port}
+    if health_port and health_port != ui_port and not package_ports.port_free(health_port):
+        mapping[health_port] = package_ports.allocate_port(health_port, reserved=reserved | {new_port})
+    text = package_ports.build_override(compose, mapping)
+    if not text:
+        # Nothing in the compose file publishes that port (e.g. the UI is served
+        # through the package proxy) — leave the record alone.
+        logger.warning("Package %s: port %d is busy but no compose mapping uses it",
+                       pkg_id, ui_port)
+        return plan
+    package_ports.write_override(package_dir, text)
+    owner = package_ports.port_owner(ui_port)
+    logger.info("Package %s: host port %d is in use%s — published on %d instead",
+                pkg_id, ui_port, f" by {owner}" if owner else "", new_port)
+    plan["ui"] = new_port
+    if health_port == ui_port:
+        plan["healthcheck"] = new_port
+    plan["remap"] = {ui_port: new_port}
+    plan["reserved"] = sorted(mapping.values())
+    return plan
+
+
+def _apply_port_plan(record: dict, plan: dict) -> dict:
+    """Copy the record with the effective ports (never mutates the manifest)."""
+    ui_port = plan.get("ui")
+    if not ui_port:
+        return record
+    record["ui"] = {**(record.get("ui") or {}), "port": ui_port}
+    if record.get("healthcheck") and plan.get("healthcheck"):
+        record["healthcheck"] = {**(record.get("healthcheck") or {}),
+                                 "port": plan["healthcheck"]}
+    if plan.get("remap"):
+        record["port_remap"] = {
+            "from": next(iter(plan["remap"])),
+            "to": ui_port,
+            "reserved": plan.get("reserved") or [],
+        }
+    return record
 
 
 def _preflight_disk(pkg_id: str) -> None:
@@ -186,7 +296,17 @@ def compose_file(pkg_id: str) -> Optional[Path]:
 
 
 def _compose_cmd(pkg_id: str, path: Path, *args: str) -> list[str]:
-    return ["docker", "compose", "-f", str(path), "-p", pkg_id, *args]
+    """Compose invocation, including the generated port override when present.
+
+    `docker compose` only auto-loads `docker-compose.override.yml` for the
+    default file name, and this one has to be explicit: it is what moves a
+    package's published host port when the requested one is taken.
+    """
+    cmd = ["docker", "compose", "-f", str(path)]
+    override = package_ports.override_path(path.parent)
+    if override.exists():
+        cmd += ["-f", str(override)]
+    return [*cmd, "-p", pkg_id, *args]
 
 
 def _compose_env() -> dict:
@@ -501,7 +621,10 @@ async def install(entry: dict, job_id: str) -> None:
     check_min_ethos_version(manifest, APP_VERSION)
     _installable(manifest)
     _preflight_disk(pkg_id)
-    _preflight_ports(manifest, pkg_id)
+    # A compose package can be re-mapped to a free port (`_port_plan`); a venv or
+    # native one cannot — EthOS starts that process on the exact port itself.
+    if not manifest.get("compose"):
+        _preflight_ports(manifest, pkg_id)
     package_jobs.set_step(job_id, "requires")
     await _ensure_requires(manifest, job_id)
     manifest, staging = await _stage_package(entry, job_id, manifest)
@@ -531,6 +654,15 @@ async def install(entry: dict, job_id: str) -> None:
 
     source = next((s for s in packages_store.load_sources() if s.get("url") == entry.get("source")), {})
     record = _write_record(manifest, entry, source)
+    if compose_file(pkg_id):
+        plan = _port_plan(pkg_id, manifest, target)
+        record = _apply_port_plan(record, plan)
+        if plan.get("remap"):
+            package_jobs.log(
+                job_id,
+                f"host port {next(iter(plan['remap']))} is busy — "
+                f"publishing on {plan['ui']} instead",
+            )
     packages_store.add_package(record)
     package_jobs.log(job_id, "files deployed")
 
@@ -598,6 +730,15 @@ async def update(pkg_id: str, job_id: str) -> None:
     shutil.move(str(staging), str(target))
     source = next((s for s in packages_store.load_sources() if s.get("url") == entry.get("source")), {})
     record = _write_record(manifest, entry, source)
+    if compose_file(pkg_id):
+        plan = _port_plan(pkg_id, manifest, target, previous=old.get("port_remap"))
+        record = _apply_port_plan(record, plan)
+        if plan.get("remap"):
+            package_jobs.log(
+                job_id,
+                f"host port {next(iter(plan['remap']))} is busy — "
+                f"publishing on {plan['ui']} instead",
+            )
     packages_store.replace_package(record)
     package_jobs.log(job_id, f"deployed v{manifest['version']}")
 

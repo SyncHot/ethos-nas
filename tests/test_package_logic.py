@@ -283,6 +283,46 @@ try:
 finally:
     _sock.close()
 
+print("\nPort remap")
+from backend.services import package_ports  # noqa: E402
+
+_demo = {"services": {"app": {"ports": ["3000:3000", "2222:22"]}}}
+_text = package_ports.build_override(_demo, {3000: 3007})
+check("override publishes the new host port", '"3007:3000"' in _text, _text)
+check("override drops the busy one", '"3000:3000"' not in _text, _text)
+check("override keeps the other mappings", '"2222:22"' in _text, _text)
+check("override uses !override so compose replaces the base list",
+      "ports: !override" in _text, _text)
+check("no override when no service publishes that port",
+      package_ports.build_override({"services": {"app": {"ports": ["8080:80"]}}}, {3000: 3007}) == "")
+check("host-ip form is remapped",
+      package_ports.remap_spec("127.0.0.1:3000:3000", 3000, 3007) == "127.0.0.1:3007:3000")
+check("long syntax is remapped",
+      package_ports.remap_spec({"published": "3000", "target": 3000}, 3000, 3007)
+      == {"published": "3007", "target": 3000})
+check("unrelated mapping is untouched",
+      package_ports.remap_spec("2222:22", 3000, 3007) == "2222:22")
+
+_sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+_sock2.bind(("0.0.0.0", 0))
+_sock2.listen(1)
+_busy2 = _sock2.getsockname()[1]
+try:
+    check("allocate skips a bound port", package_ports.allocate_port(_busy2) != _busy2)
+    check("allocate respects ports reserved by other packages",
+          package_ports.allocate_port(_busy2 + 1, reserved=[_busy2 + 1, _busy2 + 2]) >= _busy2 + 3)
+finally:
+    _sock2.close()
+
+_manifest_ui = {"ui": {"mode": "window", "port": 3000}, "healthcheck": {"port": 3000}}
+_plan = {"ui": 3007, "healthcheck": 3007, "remap": {3000: 3007}, "reserved": [3007]}
+_record = package_installer._apply_port_plan(dict(_manifest_ui), _plan)
+check("record carries the effective port",
+      _record["ui"]["port"] == 3007 and _record["healthcheck"]["port"] == 3007, str(_record)[:120])
+check("record keeps the remap for the next update",
+      _record["port_remap"]["from"] == 3000 and _record["port_remap"]["to"] == 3007)
+check("the manifest itself is never mutated", _manifest_ui["ui"]["port"] == 3000)
+
 failed = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
 sys.exit(1 if failed else 0)
