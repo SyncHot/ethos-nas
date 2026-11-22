@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.12.4] - 2026-11-22
+
+### Fixed
+
+- **Tasks: one row per OS update job.** Reopening Settings → System (or any
+  section re-render) while Ubuntu updates or an EthOS OS image job is running no
+  longer stacks another identical task row. The existing row keeps updating in
+  the background and reaches 100% even if you leave the System section.
+
 ## [2.12.3] - 2026-11-22
 
 ### Fixed

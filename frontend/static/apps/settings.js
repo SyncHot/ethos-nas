@@ -430,6 +430,30 @@ async function _applyUpdate() {
 
 const OS_TABLE_ROWS = 40;
 
+// One background watch per job. Settings re-renders (and the navToken bump that
+// comes with them) must reuse the running task row — starting a second watcher
+// used to add an identical “Updating Ubuntu” row on every visit to System.
+const _osWatches = new Map();
+
+function _beginWatch(key, makeTask) {
+    if (_osWatches.has(key)) return null;
+    const watch = { task: makeTask(), timer: null };
+    _osWatches.set(key, watch);
+    return watch;
+}
+
+function _endWatch(key, watch) {
+    if (watch.timer) clearTimeout(watch.timer);
+    watch.timer = null;
+    if (_osWatches.get(key) === watch) _osWatches.delete(key);
+}
+
+// Refresh the System cards after a job only when the user is still looking at
+// them; the task row itself lives in the global panel.
+function _refreshSystemIfVisible() {
+    if (shell?.active === 'system' && shell.root.isConnected) renderSection('system');
+}
+
 async function renderSystem(isCurrent) {
     const isAdmin = _isAdmin();
     const [data, applyState, imageData] = await Promise.all([
@@ -688,20 +712,20 @@ async function _installOsImage() {
     _watchOsImageInstall();
 }
 
-async function _watchOsImageDownload() {
-    const task = startTask({
+function _watchOsImageDownload() {
+    const watch = _beginWatch('os-image-download', () => startTask({
         appId: 'system', title: 'Downloading EthOS OS', detail: 'starting the download…',
         percent: null, testIdPrefix: 'os-image-download',
-    });
-    const token = navToken;
+    }));
+    if (!watch) return;
+    const { task } = watch;
     const tick = async () => {
-        if (token !== navToken) return;
         let state;
         try {
             state = await apiRequest('/api/system/os-image');
         } catch (err) {
             logError('Settings: OS image download status lost', err?.detail || err?.message);
-            setTimeout(tick, 3000);
+            watch.timer = setTimeout(tick, 3000);
             return;
         }
         const download = state?.download || {};
@@ -712,37 +736,39 @@ async function _watchOsImageDownload() {
                 percent: Number.isFinite(Number(download.percent)) ? Number(download.percent) : null,
                 detail: total ? `${formatBytes(done)} of ${formatBytes(total)}` : 'downloading…',
             });
-            setTimeout(tick, 1500);
+            watch.timer = setTimeout(tick, 1500);
             return;
         }
         if (download.status === 'downloaded') {
+            _endWatch('os-image-download', watch);
             task.finish('done', { percent: 100, detail: 'image verified and ready' });
-            renderSection('system');
+            _refreshSystemIfVisible();
         } else if (download.status === 'failed') {
+            _endWatch('os-image-download', watch);
             task.finish('failed', { percent: 100, detail: download.detail || 'download failed' });
             showAlert('Download failed', download.detail || 'The image could not be downloaded.');
-            renderSection('system');
+            _refreshSystemIfVisible();
         } else {
-            setTimeout(tick, 2000);
+            watch.timer = setTimeout(tick, 2000);
         }
     };
-    setTimeout(tick, 1000);
+    watch.timer = setTimeout(tick, 1000);
 }
 
-async function _watchOsImageInstall() {
-    const task = startTask({
+function _watchOsImageInstall() {
+    const watch = _beginWatch('os-image-install', () => startTask({
         appId: 'system', title: 'Installing EthOS OS to standby',
         detail: 'writing the standby slot…', percent: null, testIdPrefix: 'os-image-install',
-    });
-    const token = navToken;
+    }));
+    if (!watch) return;
+    const { task } = watch;
     const tick = async () => {
-        if (token !== navToken) return;
         let state;
         try {
             state = await apiRequest('/api/system/os-image/status');
         } catch (err) {
             logError('Settings: OS image install status lost', err?.detail || err?.message);
-            setTimeout(tick, 3000);
+            watch.timer = setTimeout(tick, 3000);
             return;
         }
         const install = state?.install || {};
@@ -750,23 +776,25 @@ async function _watchOsImageInstall() {
             const job = install.job || {};
             task.update({ percent: Number.isFinite(Number(job.percent)) ? Number(job.percent) : null,
                           detail: `${job.step || 'writing'}${job.detail ? ` — ${job.detail}` : ''}` });
-            setTimeout(tick, 2000);
+            watch.timer = setTimeout(tick, 2000);
             return;
         }
         const result = install.result || {};
         if (result.status === 'ok') {
+            _endWatch('os-image-install', watch);
             task.finish('done', { percent: 100, detail: result.detail || 'staged' });
             notify({ kind: 'warning', title: 'Reboot to apply', message: result.detail || 'Reboot to boot the new slot.' });
-            renderSection('system');
+            _refreshSystemIfVisible();
         } else if (result.status === 'failed') {
+            _endWatch('os-image-install', watch);
             task.finish('failed', { percent: 100, detail: result.detail || 'install failed' });
             showAlert('OS image install failed', result.detail || 'The helper reported a failure.');
-            renderSection('system');
+            _refreshSystemIfVisible();
         } else {
-            setTimeout(tick, 2000);
+            watch.timer = setTimeout(tick, 2000);
         }
     };
-    setTimeout(tick, 1000);
+    watch.timer = setTimeout(tick, 1000);
 }
 
 async function _applyOsUpdate(count, security) {
@@ -786,48 +814,44 @@ async function _applyOsUpdate(count, security) {
         return;
     }
 
-    const task = startTask({
+    _watchOsUpdate();
+}
+
+function _watchOsUpdate() {
+    const watch = _beginWatch('os-update', () => startTask({
         appId: 'system',
         title: 'Updating Ubuntu',
         detail: 'starting the helper…',
         percent: null,
         testIdPrefix: 'os-update',
-    });
-    _watchOsUpdate(task);
-}
-
-async function _watchOsUpdate(existingTask = null) {
-    const task = existingTask || startTask({
-        appId: 'system',
-        title: 'Updating Ubuntu',
-        detail: 'reattaching to the helper…',
-        percent: null,
-        testIdPrefix: 'os-update',
-    });
-    const token = navToken;
+    }));
+    // Already watching (Settings re-render, revisit, another window) — reuse
+    // the row instead of stacking a duplicate.
+    if (!watch) return;
+    const { task } = watch;
 
     const tick = async () => {
-        if (token !== navToken) return; // another section took over
         let state;
         try {
             state = await apiRequest('/api/system/os-update/status');
         } catch (err) {
             logError('Settings: OS update status lost', err?.detail || err?.message);
-            setTimeout(tick, 3000);
+            watch.timer = setTimeout(tick, 3000);
             return;
         }
         const job = state?.job || {};
-        if (job.status === 'running') {
+        if (job.status === 'running' || job.status === 'queued') {
             const percent = Number.isFinite(Number(job.percent)) ? Number(job.percent) : null;
             const detail = `${job.step || 'working'}`
                 + `${job.upgraded ? ` · ${job.upgraded} upgraded` : ''}`
                 + `${job.detail ? ` — ${job.detail}` : ''}`;
             task.update({ percent, detail });
-            setTimeout(tick, 2000);
+            watch.timer = setTimeout(tick, 2000);
             return;
         }
         const result = state?.result || {};
         if (result.status === 'ok') {
+            _endWatch('os-update', watch);
             task.finish('done', { percent: 100, detail: result.detail || 'updates installed' });
             notify({
                 kind: result.reboot_required ? 'warning' : 'success',
@@ -836,19 +860,21 @@ async function _watchOsUpdate(existingTask = null) {
                     ? 'Updates need a restart — open Settings → System.'
                     : (result.detail || 'All updates installed'),
             });
-            renderSection('system');
+            _refreshSystemIfVisible();
         } else if (result.status === 'up_to_date') {
+            _endWatch('os-update', watch);
             task.finish('done', { percent: 100, detail: result.detail || 'already up to date' });
-            renderSection('system');
+            _refreshSystemIfVisible();
         } else if (result.status === 'failed') {
+            _endWatch('os-update', watch);
             task.finish('failed', { percent: 100, detail: result.detail || 'update failed' });
             showAlert('Ubuntu update failed', result.detail || 'The helper reported a failure.');
-            renderSection('system');
+            _refreshSystemIfVisible();
         } else {
-            setTimeout(tick, 2000);
+            watch.timer = setTimeout(tick, 2000);
         }
     };
-    setTimeout(tick, 1200);
+    watch.timer = setTimeout(tick, 1200);
 }
 
 async function _rebootServer() {
