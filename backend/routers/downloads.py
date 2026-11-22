@@ -90,6 +90,8 @@ from backend.services.download_config import (
     upsert_category as _upsert_category,
 )
 from backend.services import download_providers as _providers
+from backend.services import download_retry as _retry_policy
+from backend.services import download_schedule as _schedule_policy
 
 DATA_DIR = settings.DATA_DIR
 TASKS_FILE = DATA_DIR / "downloads_tasks.json"
@@ -1110,40 +1112,16 @@ def _try_next_mirror(task: dict) -> bool:
     return True
 
 
+# Window/backoff policy lives in services/download_schedule.py and
+# services/download_retry.py (P2-01).
+
+
 def _queue_order(tasks: Optional[list] = None) -> list:
     """Waiting tasks in start order: higher `priority` first, then FIFO."""
     candidates = [t for t in (_tasks if tasks is None else tasks)
                   if t.get("status") == "waiting"]
     return sorted(candidates,
                   key=lambda x: (-int(x.get("priority") or 0), x.get("created_at", 0)))
-
-
-def _in_schedule_window(cfg: dict, now: Optional[datetime] = None) -> bool:
-    """True when transfers may start now (no schedule = always true)."""
-    sched = cfg.get("schedule") or {}
-    if not sched.get("enabled"):
-        return True
-    start = _parse_hhmm(sched.get("start"))
-    end = _parse_hhmm(sched.get("end"))
-    if start is None or end is None or start == end:
-        return True
-    current = now or datetime.now()
-    minute = current.hour * 60 + current.minute
-    if start < end:
-        return start <= minute < end
-    return minute >= start or minute < end  # overnight window
-
-
-def _seconds_until_window(cfg: dict) -> float:
-    """Seconds until the next window start (minimum 5 s)."""
-    sched = cfg.get("schedule") or {}
-    start = _parse_hhmm(sched.get("start"))
-    if start is None:
-        return 60.0
-    current = datetime.now()
-    minute = current.hour * 60 + current.minute + current.second / 60.0
-    delta = (start - minute) % 1440.0 or 1440.0
-    return max(5.0, delta * 60.0)
 
 
 _window_timer: Optional[asyncio.TimerHandle] = None
@@ -1162,7 +1140,7 @@ def _schedule_window_pump(cfg: dict) -> None:
     if _window_timer is not None and not _window_timer.cancelled():
         return
     loop = asyncio.get_running_loop()
-    delay = _seconds_until_window(cfg)
+    delay = _schedule_policy.seconds_until_window(cfg)
 
     def _go() -> None:
         global _window_timer
@@ -1293,25 +1271,7 @@ def _set_status(task: dict, status: str) -> None:
 
 
 # ── Task retry (JDownloader-style backoff) ──────────────────────────────────
-# A network hiccup must not leave a download dead until the user notices. A
-# permanent failure (dead hoster link, bad debrid key, full disk) is not
-# retried — otherwise a package of expired links would hammer the provider.
-_PERMANENT_ERROR_RE = re.compile(
-    r"(?i)(not available|not found|404|410|invalid|expired|bad[_ ]?token|"
-    r"no debrid provider|no longer configured|not configured|unsupported|forbidden|403|quota|"
-    r"permission|no space|disk is full|already exists)"
-)
-
-
-def _is_retryable(message: str) -> bool:
-    """False for failures another identical attempt cannot fix."""
-    return not _PERMANENT_ERROR_RE.search(str(message or ""))
-
-
-def _retry_delay(cfg: dict, attempt: int) -> int:
-    """Exponential base * 2^(attempt-1), capped at six hours."""
-    base = max(10, int(cfg.get("retry_delay") or 60))
-    return min(6 * 3600, base * (2 ** max(0, attempt - 1)))
+# Retry policy lives in services/download_retry.py (P2-01).
 
 
 def _fail_task(task: dict, message: str, *, permanent: bool = False) -> None:
@@ -1321,10 +1281,10 @@ def _fail_task(task: dict, message: str, *, permanent: bool = False) -> None:
     task["speed"] = 0
     attempts = int(task.get("_retry_count") or 0)
     limit = int(cfg.get("retry_max") or 0) if cfg.get("auto_retry", True) else 0
-    if not permanent and limit and attempts < limit and _is_retryable(task["error"]):
+    if not permanent and limit and attempts < limit and _retry_policy.is_retryable(task["error"]):
         attempts += 1
         task["_retry_count"] = attempts
-        task["_next_retry_at"] = _now() + _retry_delay(cfg, attempts)
+        task["_next_retry_at"] = _now() + _retry_policy.retry_delay(cfg, attempts)
         task["status"] = "waiting"
         _events.pop(task["id"], None)
         _save_tasks()
@@ -1420,7 +1380,7 @@ async def _pump_scoped() -> None:
     async with _pump_lock:
         cfg = _load_config()
         limit = cfg["max_concurrent"]
-        if not _in_schedule_window(cfg):
+        if not _schedule_policy.in_window(cfg):
             # Tasks stay `waiting`; one timer re-pumps when the window opens.
             _schedule_window_pump(cfg)
             return

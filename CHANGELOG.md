@@ -11,6 +11,16 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.29.4] - 2026-11-22
+
+### Changed
+
+- **Download engine policy moved into services**: the daily transfer window (`in_window`,
+  `seconds_until_window`, overnight windows included) and the retry decision/backoff
+  (`is_retryable`, `retry_delay`) now live in `services/download_schedule.py` and
+  `services/download_retry.py`, covered by `tests/test_download_schedule_retry.py`.
+  Behaviour is unchanged — this is the next slice of the `downloads.py` split.
+
 ## [2.29.3] - 2026-11-22
 
 ### Fixed

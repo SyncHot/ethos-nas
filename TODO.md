@@ -146,6 +146,13 @@ files, range resume, disk guard, bandwidth token bucket). Dedicated tests:
 `test_downloads_ui.py`. Still inline: pump/worker scheduling and watch folders (the file
 is ~1.9k lines after the feature work).
 
+**Progress (2.29.4).** `services/download_schedule.py` (`in_window`, `seconds_until_window` —
+day/night windows including the overnight case) and `services/download_retry.py`
+(`is_retryable`, `retry_delay` — permanent-error matcher + capped exponential backoff) are out
+of the router, with `tests/test_download_schedule_retry.py` (25 checks). The router keeps the
+timer that wakes the pump and the task-state side of a failure. Still inline: `_pump`/worker
+scheduling, the watch-folder scanner thread and the qBittorrent shim.
+
 ### ☐ P2-02 · Split `gallery.py` (~2.1k lines) — `XL`
 **Problem.** SQLite indexing, EXIF extraction, the AES-GCM private vault + PIN sessions, albums, facets,
 thumbnails and rescan logic share one file.
