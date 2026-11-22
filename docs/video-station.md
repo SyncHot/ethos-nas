@@ -460,14 +460,35 @@ pipeline):
 
 ### Verification
 
-- `tests/test_video_engine.py` (57 checks): layout normalisation, no filter on
-  standard layouts, AAC copy vs re-encode, the filter in the HLS command.
+- `tests/test_video_engine.py` (62 checks): layout normalisation, no filter on
+  standard layouts, AAC copy vs re-encode, the filter in the HLS command, the
+  audio-codec negotiation (libopus stereo / `-an` / unknown → aac).
 - `tests/test_video_hls.py` (18): `channel_layout` in the probe, concurrent
   starts capped, dead encoder flagged with its exit code.
 - Real browser (snap Chromium 157) on an isolated instance: `Runner` (2160p HEVC
   + DD+ 5.1) plays; also verified `Other.Mommy` (H.264 + DDP 5.1 MP4 → remux),
   `Steps` (10-bit HEVC + AC3) and `Heart of the Beast` (2160p Dolby Vision) —
   all `readyState 4` with ~20 s buffered.
+
+## Phase 11 — audio codec negotiation (2026-11-22)
+
+MSE audio support cannot be assumed: Chromium/Electron builds without the
+proprietary decoders report
+`MediaSource.isTypeSupported('video/mp4; codecs="avc1…,mp4a.40.2"') === false`
+(the VS Code integrated browser is one), and then *every* remux/transcode fails
+with the same black player. `/api/videos/hls` and `/api/videos/transcode` accept
+`acodec=aac|opus|none` (allowlisted, unknown → `aac`); `opus` encodes with
+`libopus` downmixed to stereo, `none` drops the track. The package probes the
+browser once (`audioCodec()`), sends the choice with every session and shows a
+notice when it has to play without sound.
+
+The same package version prefers **hls.js whenever MSE exists** instead of
+`video.canPlayType('application/vnd.apple.mpegurl')`: the sliding HLS window is
+a live stream for a VOD file, and Safari/Android Chrome's native player starts at
+the live edge and errors on seeks outside the window.
+
+Verified in Chromium 157 (`aac`, `opus`, `none` all `readyState 4`) and in the
+Electron browser without AAC/Opus (`none` plays, 14.7 s in).
 
 ## Status
 - [x] Phase 1 — docs + metadata service + API enrichment + /home endpoint
@@ -499,3 +520,5 @@ pipeline):
 | 2026-11-22 | Phase 8 hardware re-probe + HLS E2E: `/api/videos/status` on production media files, isolated instance HLS start/playlist/init/segment/token/owner, real headless Chromium playback with hls.js, VA-API micro-encode | `encoder=vaapi`, QSV `MFX session: -9` (oneVPL runtime missing), libx264 fallback ready; video-only HLS loaded to `readyState 4` (headless Chromium lacks AAC in MSE); core 2.12.0 published + tagged `v2.12.0` |
 | 2026-11-22 | Phase 9 keyless metadata: offline provider/fixture suite (58/58), isolated API suite (28/28), live isolated refresh on `:9017` (`Interstellar` + `Severance` → 2 Cinemeta matches, local JPEG/WebP posters, both image endpoints), live package harness (`Test sources` shows Cinemeta 40 ms / TVmaze 178 ms, detail shows `Metadata: Cinemeta`) | all green; core 2.13.0 published + tagged `v2.13.0`, package 2.1.0 signed/pushed, Android 1.5.0 (code 56) served |
 | 2026-11-22 | Web playback hotfix (2.13.1): production `h264_vaapi` failed on 10-bit HEVC (`No usable encoding profile`). Forced 8-bit `nv12` output in the VA-API decode/scale chain and added a one-shot software HLS retry. Engine 50/50, HLS 13/13, video API 28/28; live isolated `:9019` HLS on the real 10-bit file returned 200/`transcode`/`encoder=vaapi` | core 2.13.1 published + tagged `v2.13.1` |
+| 2026-11-22 | Phase 10 AAC layout fix: reproduced `CHUNK_DEMUXER_ERROR_APPEND_FAILED` in Chromium 157, proved the 5.1(side)/PCE cause with four segment variants, applied `aformat` normalisation | isolated `:9015` + snap Chromium 157: failing title plays (`readyState 4`, 20 s buffered); engine 57/57, HLS 18/18; core 2.13.2 published + tagged `v2.13.2` |
+| 2026-11-22 | Phase 11 audio negotiation: `acodec=aac|opus|none` on `/hls` + `/transcode`, package probes MSE once and prefers hls.js over native HLS | Chromium 157: aac/opus/none all `readyState 4`; Electron without AAC/Opus: video-only plays (14.7 s, `readyState 4`); engine 62/62 |

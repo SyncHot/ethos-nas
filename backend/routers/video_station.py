@@ -796,6 +796,7 @@ async def transcode(
     t: float = Query(default=0.0, ge=0),
     a: int = Query(default=0, ge=0),
     q: str = Query(default="balanced"),
+    acodec: str = Query(default="aac"),
 ):
     """Live processing for files the browser can't play directly.
 
@@ -824,6 +825,7 @@ async def transcode(
         start = max(0.0, duration - 2)  # don't start inside the final GOP
 
     quality = q if q in QUALITY_PRESETS else "balanced"
+    acodec = acodec if acodec in video_engine.AUDIO_CODECS else "aac"
     cfg_options = _load_config()["options"]
     audio_bitrate = cfg_options["audio_bitrate"]
     engine_status = await _ENGINE.status()
@@ -836,12 +838,12 @@ async def transcode(
     cmd = video_engine.build_transcode_cmd(
         FFMPEG_BIN, abs_path, info, start, encoder, mode, a, quality,
         audio_bitrate, decode_hw=decode_hw, device=engine_status.get("device"),
-        loglevel=settings.FFMPEG_LOGLEVEL,
+        loglevel=settings.FFMPEG_LOGLEVEL, acodec=acodec,
     )
     hw_tag = encoder or "none"
     decode_tag = "hw" if decode_hw else "sw"
-    logger.info("Transcode start | mode=%s hw=%s decode=%s track=%d q=%s input=%s t=%.2f\ncmd: %s",
-                mode, hw_tag, decode_tag, a, quality, abs_path, start, shlex.join(cmd))
+    logger.info("Transcode start | mode=%s hw=%s decode=%s track=%d q=%s acodec=%s input=%s t=%.2f\ncmd: %s",
+                mode, hw_tag, decode_tag, a, quality, acodec, abs_path, start, shlex.join(cmd))
 
     if not await video_engine.LIMITER.acquire(timeout=5.0):
         raise HTTPException(status_code=429, detail="Transcoder is busy — try again in a moment",
@@ -904,6 +906,8 @@ class HlsRequest(BaseModel):
     t: float = 0.0
     a: int = 0
     q: str = "balanced"
+    # aac (default) | opus (browsers without AAC) | none (video only)
+    acodec: str = "aac"
 
 
 @router.post("/hls")
@@ -923,6 +927,7 @@ async def start_hls(payload: HlsRequest) -> dict:
     if duration and start >= duration - 1:
         start = max(0.0, duration - 2)
     quality = payload.q if payload.q in QUALITY_PRESETS else "balanced"
+    acodec = payload.acodec if payload.acodec in video_engine.AUDIO_CODECS else "aac"
     cfg_options = _load_config()["options"]
     audio_bitrate = cfg_options["audio_bitrate"]
     engine_status = await _ENGINE.status()
@@ -939,6 +944,7 @@ async def start_hls(payload: HlsRequest) -> dict:
             FFMPEG_BIN, abs_path, info, start, use_encoder, mode, payload.a, quality,
             audio_bitrate, out_dir, decode_hw=use_decode_hw,
             device=engine_status.get("device"), loglevel=settings.FFMPEG_LOGLEVEL,
+            acodec=acodec,
         )
 
     try:
@@ -990,6 +996,7 @@ async def start_hls(payload: HlsRequest) -> dict:
         "mode": mode,
         "encoder": encoder,
         "decode": "hw" if decode_hw else "sw",
+        "acodec": acodec,
         "audio_tracks": info.get("audio_tracks", []),
     }
 

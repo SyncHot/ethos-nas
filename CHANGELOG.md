@@ -11,6 +11,18 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.13.3] - 2026-11-22
+
+### Fixed
+
+- **Playback in every browser.** The player now negotiates the audio codec with
+  the server: AAC normally, **Opus** when the browser has no AAC decoder in MSE
+  (some Chromium/Electron builds) and **video only** — with a short notice — when
+  neither is available, instead of dying with “The stream could not be played”.
+  The web player also prefers hls.js whenever MSE exists, so Safari and Android
+  Chrome no longer fall back to their native player, which treats the bounded
+  HLS window as a live stream and fails on any seek outside it.
+
 ## [2.13.2] - 2026-11-22
 
 ### Fixed

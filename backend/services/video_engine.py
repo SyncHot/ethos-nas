@@ -33,6 +33,12 @@ STREAMABLE_EXTS = {".mp4", ".m4v", ".webm", ".mov"}
 AAC_STANDARD_LAYOUTS = {"mono", "stereo", "3.0", "4.0", "quad", "5.0", "5.1", "7.1"}
 _AAC_LAYOUT_BY_CHANNELS = {1: "mono", 2: "stereo", 3: "3.0", 4: "4.0", 5: "5.0", 6: "5.1", 8: "7.1"}
 
+# Audio codecs the player may ask for. ``aac`` is the default; Chromium builds
+# without the proprietary AAC decoder (some distro/Electron builds report
+# ``MediaSource.isTypeSupported('audio/mp4; codecs="mp4a.40.2") === false``)
+# still decode Opus in MP4, and ``none`` keeps video playable without sound.
+AUDIO_CODECS = ("aac", "opus", "none")
+
 QUALITY_PRESETS = {
     # Tuned for a 4-core Celeron-class CPU (Intel N150): libx264 veryfast does
     # ~8 fps at 1440p, so downscaling is what keeps live playback watchable.
@@ -174,10 +180,18 @@ def aac_layout_filter(track: dict) -> list[str]:
     return ["-af", f"aformat=channel_layouts={target}"] if target else []
 
 
-def build_audio_args(info: dict, track_idx: int, mode: str, audio_bitrate: str) -> list[str]:
+def build_audio_args(info: dict, track_idx: int, mode: str, audio_bitrate: str,
+                     acodec: str = "aac") -> list[str]:
+    acodec = acodec if acodec in AUDIO_CODECS else "aac"
     tracks = info.get("audio_tracks") or []
     idx = min(max(0, int(track_idx)), max(0, len(tracks) - 1)) if tracks else 0
     track = tracks[idx] if idx < len(tracks) else {}
+    if acodec == "none":
+        return ["-an"]
+    if acodec == "opus":
+        # Browsers without AAC still decode Opus inside fMP4; downmix to stereo
+        # because multichannel Opus in MSE is not portable.
+        return ["-map", f"0:a:{idx}?", "-c:a", "libopus", "-b:a", audio_bitrate, "-ac", "2"]
     codec = (track.get("codec") or "").lower()
     layout = (track.get("channel_layout") or "").strip().lower()
     # Copy AAC only when it is already a standard layout — a PCE-based stream
@@ -198,11 +212,12 @@ def _av_args(
     *,
     decode_hw: bool,
     device: str | None,
+    acodec: str = "aac",
 ) -> tuple[list[str], list[str], list[str]]:
     pre, video, filters = build_video_args(
         info, mode, encoder, quality, decode_hw=decode_hw, device=device,
     )
-    audio = build_audio_args(info, track_idx, mode, audio_bitrate)
+    audio = build_audio_args(info, track_idx, mode, audio_bitrate, acodec)
     return pre, video + (["-vf", ",".join(filters)] if filters else []), audio
 
 
@@ -220,10 +235,11 @@ def build_transcode_cmd(
     decode_hw: bool = False,
     device: str | None = None,
     loglevel: str = "error",
+    acodec: str = "aac",
 ) -> list[str]:
     pre, video, audio = _av_args(
         info, mode, encoder, track_idx, quality, audio_bitrate,
-        decode_hw=decode_hw, device=device,
+        decode_hw=decode_hw, device=device, acodec=acodec,
     )
     return [
         ffmpeg, "-nostdin", "-hide_banner", "-loglevel", loglevel,
@@ -252,11 +268,12 @@ def build_hls_cmd(
     loglevel: str = "error",
     segment_seconds: int = 4,
     list_size: int = 10,
+    acodec: str = "aac",
 ) -> list[str]:
     """Bounded live HLS: real-time read, fMP4 segments, small sliding window."""
     pre, video, audio = _av_args(
         info, mode, encoder, track_idx, quality, audio_bitrate,
-        decode_hw=decode_hw, device=device,
+        decode_hw=decode_hw, device=device, acodec=acodec,
     )
     return [
         ffmpeg, "-nostdin", "-hide_banner", "-loglevel", loglevel,
@@ -549,6 +566,7 @@ def prune_decode_cache(probe: HardwareProbe, max_items: int = 64) -> None:
 __all__ = [
     "AAC_STANDARD_LAYOUTS",
     "AUDIO_BITRATES",
+    "AUDIO_CODECS",
     "BROWSER_AUDIO_OK",
     "BROWSER_VIDEO_OK",
     "HardwareProbe",

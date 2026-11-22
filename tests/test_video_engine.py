@@ -143,6 +143,25 @@ def test_aac_channel_layout() -> None:
           "aformat=channel_layouts=5.1" in " ".join(cmd), " ".join(cmd))
 
 
+def test_audio_codec_negotiation() -> None:
+    # Browsers without AAC (some Chromium builds) get Opus, or video only.
+    ac3 = {"audio_tracks": [{"codec": "ac3", "channels": 6, "channel_layout": "5.1"}]}
+    args = ve.build_audio_args(ac3, 0, "transcode", "192k", "opus")
+    check("opus fallback uses libopus", "libopus" in args and "192k" in args, str(args))
+    check("opus is downmixed to stereo", "-ac" in args and "2" in args, str(args))
+
+    args = ve.build_audio_args(ac3, 0, "transcode", "192k", "none")
+    check("no-audio mode drops the track", args == ["-an"], str(args))
+
+    args = ve.build_audio_args(ac3, 0, "transcode", "192k", "bogus")
+    check("unknown acodec falls back to aac", "aac" in args, str(args))
+
+    cmd = ve.build_hls_cmd(
+        "ffmpeg", "/x/movie.mkv", ac3, 0, "vaapi", "transcode", 0,
+        "balanced", "192k", "/tmp/out", acodec="none")
+    check("HLS command can drop audio", "-an" in cmd, " ".join(cmd))
+
+
 def test_commands() -> None:
     cmd = ve.build_transcode_cmd(
         "ffmpeg", "/x/movie.mkv", HEVC, 12.5, "vaapi", "transcode", 0,
@@ -200,6 +219,7 @@ def main() -> int:
     test_video_args()
     test_audio_args()
     test_aac_channel_layout()
+    test_audio_codec_negotiation()
     test_commands()
     test_playlist_and_segments()
     asyncio.run(test_probe_without_ffmpeg())
