@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T14:06:49+00:00",
+  "generated_at": "2026-11-22T14:11:13+00:00",
   "latest": {
-    "version": "2.21.0",
-    "git_sha": "7389ef5",
-    "git_sha_full": "7389ef5fda3404ae1c46eba4afa6a2cf84a6668b",
-    "build": 154,
-    "released_at": "2026-11-22T14:06:49+00:00",
-    "notes": "Videos on the phone now browses series with seasons, subtitles, up-next autoplay, playback speed and cast, works offline with saved progress and without a valid session, and estimates download sizes."
+    "version": "2.21.1",
+    "git_sha": "faf3194",
+    "git_sha_full": "faf3194e6bfaf6e881f329f1acc3769f24a6b595",
+    "build": 156,
+    "released_at": "2026-11-22T14:11:13+00:00",
+    "notes": ""
   },
   "releases": [
+    {
+      "version": "2.21.1",
+      "git_sha": "faf3194",
+      "git_sha_full": "faf3194e6bfaf6e881f329f1acc3769f24a6b595",
+      "build": 156,
+      "released_at": "2026-11-22T14:11:13+00:00",
+      "notes": ""
+    },
     {
       "version": "2.21.0",
       "git_sha": "7389ef5",
@@ -201,14 +209,6 @@
       "build": 92,
       "released_at": "2026-11-22T08:15:52+00:00",
       "notes": "Video Station: HLS playback with VA-API hardware decode/encode, cinema UI 2.0 and mobile parity."
-    },
-    {
-      "version": "2.11.0",
-      "git_sha": "f441c3c",
-      "git_sha_full": "f441c3cfeb305fc6fdcb1b0d4aaa06c5f0c74a97",
-      "build": 90,
-      "released_at": "2026-11-22T07:27:19+00:00",
-      "notes": "EthOS OS: A/B image updates — check, download, install to the standby slot, reboot or automatic rollback"
     }
   ]
 }
