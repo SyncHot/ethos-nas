@@ -6,7 +6,12 @@ this file documents the design and shipped changes.
 Scope: `frontend/static/apps/files.js`, `frontend/static/apps/fm-controls.js`,
 `frontend/static/core/upload-engine.js`, `backend/routers/files.py`,
 `backend/routers/file_ops.py`, `backend/services/files_service.py`,
-`tests/test_file_station_*.py`.
+`backend/services/media_cache.py` (cache roots + mtime/size sidecar meta),
+`backend/services/thumbnails.py` (video master frame, per-size slots, covers,
+face crop, image thumbs), `backend/services/transcode.py` (H.264 worker + job
+registry — the router only exposes `/api/files/transcode*`),
+`tests/test_file_station_*.py`, `tests/test_media_cache_transcode.py`,
+`tests/test_video_thumb_pipeline.py`.
 
 ## 1. Audit — findings
 

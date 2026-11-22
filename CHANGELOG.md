@@ -11,6 +11,25 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.30.0] - 2026-11-22
+
+### Changed
+
+- **Media pipeline moved out of the Files router**: the thumbnail cache rule (source
+  mtime + size sidecar), video master-frame/slot pipeline, custom covers, the Haar face
+  crop, image thumbnails and the H.264 transcode worker now live in
+  `services/media_cache.py`, `services/thumbnails.py` and `services/transcode.py`.
+  `routers/files.py` keeps the HTTP endpoints (same paths, same responses) and
+  `gallery.py` / `share_links.py` import the thumbnail service directly instead of
+  reaching into the router. `files.py` 2133 → 1362 lines. No behaviour, cache-path or
+  API change.
+
+### Tests
+
+- New `tests/test_media_cache_transcode.py` (27 checks: freshness, orphan sweep,
+  transcode job lifecycle); `tests/test_video_thumb_pipeline.py` now targets the
+  service.
+
 ## [2.29.9] - 2026-11-22
 
 ### Changed

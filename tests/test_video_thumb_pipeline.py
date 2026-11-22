@@ -35,7 +35,8 @@ _TMP = Path(tempfile.mkdtemp(prefix="ethos-video-thumb-test-"))
 os.environ["ETHOS_DATA_DIR"] = str(_TMP)
 
 from backend.routers import files as fm  # noqa: E402
-from backend.services import path_scope  # noqa: E402
+from backend.services import media_cache, path_scope  # noqa: E402
+from backend.services import thumbnails as thumbs  # noqa: E402
 
 _results: list[tuple[str, bool, str]] = []
 
@@ -60,7 +61,10 @@ def main() -> int:
     video = root / "clip.mp4"
     video.write_bytes(b"\x00" * 4096)
 
-    fm.THUMB_DIR = _TMP / "thumbnails"
+    # The pipeline lives in services/thumbnails.py — relocate its cache root
+    # (and the router-side alias) so nothing touches the real data dir.
+    media_cache.set_cache_root(_TMP)
+    fm.THUMB_DIR = media_cache.THUMB_DIR
     fm._ensure_thumb_dir()
 
     real_queue = fm._queue_video_thumb
@@ -76,16 +80,16 @@ def main() -> int:
 
         # 2. A generated master serves every size; smaller sizes are PIL slots.
         from PIL import Image
-        master = fm._video_master_file(str(video))
+        master = thumbs._video_master_file(str(video))
         Image.new("RGB", (640, 360), (30, 60, 90)).save(master, "WEBP")
-        fm._write_thumb_meta(master, str(video))
-        check("master reported fresh", fm._video_master_is_fresh(str(video)))
+        thumbs._write_thumb_meta(master, str(video))
+        check("master reported fresh", thumbs._video_master_is_fresh(str(video)))
 
         resp = asyncio.run(fm.video_thumbnail(path=str(video), size=640))
         check("640 serves the master", Path(resp.path) == master, str(resp.path))
 
         resp = asyncio.run(fm.video_thumbnail(path=str(video), size=320))
-        slot = fm._video_slot_file(str(video), 320)
+        slot = thumbs._video_slot_file(str(video), 320)
         check("320 renders a slot", Path(resp.path) == slot and slot.exists(), str(resp.path))
         if slot.exists():
             with Image.open(slot) as img:
@@ -94,19 +98,19 @@ def main() -> int:
         # 3. A changed source invalidates the master and the derived slot.
         video.write_bytes(b"\x01" * 8192)
         _age_source(video, 5)
-        check("changed source invalidates master", not fm._video_master_is_fresh(str(video)))
+        check("changed source invalidates master", not thumbs._video_master_is_fresh(str(video)))
         check("changed source invalidates slot",
-              not fm._video_slot_is_fresh(slot, master, str(video)))
+              not thumbs._video_slot_is_fresh(slot, master, str(video)))
 
         # 4. Failures back off exponentially and end as a permanent marker.
         delays: list[int] = []
         marker: dict = {}
-        for _ in range(fm._VIDEO_THUMB_FAIL_MAX_ATTEMPTS):
-            marker = fm._record_video_thumb_failure(str(video), "no_frame")
+        for _ in range(thumbs._VIDEO_THUMB_FAIL_MAX_ATTEMPTS):
+            marker = thumbs._record_video_thumb_failure(str(video), "no_frame")
             delays.append(round(float(marker["next_try"]) - time.time()))
         check("backoff grows between attempts", delays[0] < delays[1] < delays[2], str(delays))
         check("last attempt is permanent", bool(marker.get("permanent")), str(marker))
-        check("backoff marker is active", fm._video_thumb_backoff(str(video)) is not None)
+        check("backoff marker is active", thumbs._video_thumb_backoff(str(video)) is not None)
 
         resp = asyncio.run(fm.video_thumbnail(path=str(video), size=320))
         check("permanent failure serves the static SVG",
@@ -117,16 +121,16 @@ def main() -> int:
         video.write_bytes(b"\x02" * 4096)
         _age_source(video, 10)
         check("replaced source resets the marker",
-              fm._video_thumb_backoff(str(video)) is None)
+              thumbs._video_thumb_backoff(str(video)) is None)
 
         # 6. warm-thumbnails queues video paths only and skips cached ones.
         second = root / "second.mkv"
         second.write_bytes(b"\x00" * 2048)
         cached = root / "cached.mp4"
         cached.write_bytes(b"\x00" * 2048)
-        cached_master = fm._video_master_file(str(cached))
+        cached_master = thumbs._video_master_file(str(cached))
         Image.new("RGB", (640, 360), (10, 10, 10)).save(cached_master, "WEBP")
-        fm._write_thumb_meta(cached_master, str(cached))
+        thumbs._write_thumb_meta(cached_master, str(cached))
 
         queued.clear()
         out = asyncio.run(fm.warm_thumbnails(paths=f"{second},{cached},/etc/passwd"))

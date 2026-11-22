@@ -39,10 +39,10 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from backend.config import settings
-from backend.routers.files import render_video_thumb
 from backend.services import path_scope
 from backend.services import share_links_service as svc
 from backend.services.notifications_service import emit_event
+from backend.services.thumbnails import render_video_thumb
 
 logger = logging.getLogger("ethos-nas.routers.share_links")
 

@@ -188,6 +188,17 @@ test_search_service.py` covers recursion, skip dirs, filters, truncation and mer
 2269 → 2133 lines. Still inline: thumbnails/transcode pipeline, archive extract and the trash
 store (plus the duplicated `files_service.py` favourites/trash logic).
 
+**Progress (2.30.0).** Media pipeline extracted: `services/media_cache.py` owns the cache roots,
+the `*.meta.json` sidecar (source mtime+size) freshness rule, the orphan sweep, `probe_duration` and
+`append_bytes`; `services/thumbnails.py` owns the master-frame/slot video pipeline, covers, the Haar
+face crop, `render_video_thumb` and `_render_image_thumb`; `services/transcode.py` owns the H.264
+worker, the job registry and the `status/start/output_*` API the three HTTP endpoints call. The
+router keeps thin endpoints and aliases the helpers, and `gallery.py`/`share_links.py` now import the
+thumbnail service directly instead of reaching into the router. `files.py` 2133 → 1362 lines,
+`tests/test_media_cache_transcode.py` (27 checks) covers freshness, the sweep and the job lifecycle;
+`test_video_thumb_pipeline.py` points at the service. Still inline: archive extract and the trash
+store (plus the duplicated `files_service.py` favourites/trash logic).
+
 ### ◐ P2-04 · Split `music.py` (~1.4k) and replace the hand-rolled RSS parser — `L`
 **Problem.** yt-dlp wrappers, the per-user library store, podcast RSS parsing and radio share one router;
 the RSS/XML parsing was hand-written and fragile, and `pip install --upgrade yt-dlp` was reachable by any

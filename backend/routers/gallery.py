@@ -79,9 +79,11 @@ from starlette.background import BackgroundTask
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-# Shared path sanitizer + video-thumb helpers from the File Manager router
+# Shared path sanitizer (File Manager) + video-thumb helpers (thumbnail
+# service — the ffmpeg pipeline moved out of files.py, TODO.md P2-03)
 from backend.config import settings
-from backend.routers.files import _sanitize, _extract_video_frame, _video_fallback_svg
+from backend.routers.files import _sanitize
+from backend.services.thumbnails import _extract_video_frame, _video_fallback_svg
 # JWT payload decoder (to bind Private sessions to the logged-in user)
 from backend.routers.auth import _verify_token
 from backend.services import json_store, path_scope, sharing_service, user_data
