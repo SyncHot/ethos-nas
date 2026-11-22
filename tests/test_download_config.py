@@ -70,6 +70,9 @@ def main() -> int:
         check("defaults: 3 concurrent downloads", base["max_concurrent"] == 3)
         check("defaults: schedule disabled", base["schedule"]["enabled"] is False)
         check("defaults: watch folder placeholder", len(base["watch_folders"]) == 1)
+        check("defaults: no hoster-link provider", base["debrid"]["link_provider"] == "")
+        check("defaults: tb7 credentials empty",
+              base["debrid"]["tb7_username"] == "" and base["debrid"]["tb7_password"] == "")
 
         # ── v1 → v5 migration ────────────────────────────────────────────────
         Path(_DATA, "downloads_config.json").write_text(json.dumps({
@@ -98,7 +101,26 @@ def main() -> int:
               cfg.category_target(reloaded, "movies"))
         check("unknown category has no destination", cfg.category_target(reloaded, "nope") == "")
 
-        # ── qB key lifecycle ─────────────────────────────────────────────────
+        # ── v8 → v9: the link-provider slot keeps AllDebrid routing ─────────
+        Path(_DATA, "downloads_config.json").write_text(json.dumps({
+            "version": 8,
+            "debrid": {"provider": "alldebrid", "alldebrid_api_key": "key"},
+        }), encoding="utf-8")
+        migrated9 = cfg.load_config()
+        check("v8→v9: AllDebrid becomes the link provider too",
+              migrated9["debrid"]["link_provider"] == "alldebrid",
+              str(migrated9["debrid"]))
+        check("v8→v9: tb7 fields default to empty",
+              migrated9["debrid"]["tb7_username"] == "" and migrated9["debrid"]["tb7_password"] == "")
+        Path(_DATA, "downloads_config.json").write_text(json.dumps({
+            "version": 8,
+            "debrid": {"provider": "torbox", "torbox_api_key": "key"},
+        }), encoding="utf-8")
+        migrated9b = cfg.load_config()
+        check("v8→v9: a torrent-only provider gets no link slot",
+              migrated9b["debrid"]["link_provider"] == "", str(migrated9b["debrid"]))
+
+        # ── qB key lifecycle ──────────────────────────────────────────────────
         key1 = cfg.qb_get_api_key()
         check("qB key is generated with the ethos_ prefix", key1.startswith("ethos_"), key1[:10])
         check("qB key is stable across calls", cfg.qb_get_api_key() == key1)

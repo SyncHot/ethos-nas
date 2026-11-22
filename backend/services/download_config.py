@@ -15,10 +15,22 @@ from typing import Optional
 
 from backend.config import settings
 from backend.services import json_store, path_scope, user_data
+from backend.services.download_providers import (
+    CAP_LINK_UNLOCK,
+    CAP_TORRENTS,
+    ids_by_capability,
+    link_provider,
+    primary_secret,
+    provider_credentials,
+    torrent_provider,
+)
 
 logger = logging.getLogger("ethos-nas.services.download_config")
 
-DEBRID_PROVIDERS = ("realdebrid", "alldebrid", "torbox")
+# Torrent-capable providers (legacy name kept for importers); hoster-link
+# providers are tracked separately since config v9.
+DEBRID_PROVIDERS = ids_by_capability(CAP_TORRENTS)
+LINK_PROVIDERS = ids_by_capability(CAP_LINK_UNLOCK)
 
 DATA_DIR = settings.DATA_DIR
 CONFIG_FILE = DATA_DIR / "downloads_config.json"
@@ -51,10 +63,13 @@ DEFAULT_CONFIG = {
     "categories": [],               # [{name, save_path}] — "" = <download_dir>/<name>
     "rss_feeds": [],                # [{id,url,enabled,pattern,exclude,category,destination,interval_minutes}]
     "debrid": {
-        "provider": "",             # "" | realdebrid | alldebrid | torbox
+        "provider": "",             # torrent slot: "" | realdebrid | alldebrid | torbox
+        "link_provider": "",        # hoster-link slot: "" | alldebrid | tb7
         "realdebrid_api_token": "",
         "alldebrid_api_key": "",
         "torbox_api_key": "",
+        "tb7_username": "",
+        "tb7_password": "",
     },
 }
 
@@ -93,6 +108,15 @@ def _migrate_config(from_version: int, to_version: int, data: dict) -> dict:
         data.setdefault("auto_extract_delete", False)
     if from_version < 8:
         data.setdefault("package_limits", {})
+    if from_version < 9:
+        # Two independent provider slots: AllDebrid used to be the only
+        # hoster-link provider, so keep its previous routing behaviour.
+        db = data.get("debrid")
+        db = dict(db) if isinstance(db, dict) else {}
+        db.setdefault("link_provider", "alldebrid" if db.get("provider") == "alldebrid" else "")
+        db.setdefault("tb7_username", "")
+        db.setdefault("tb7_password", "")
+        data["debrid"] = db
     return data
 
 
@@ -115,7 +139,7 @@ def _default_download_dir() -> str:
     return str(Path(home) / "Downloads")
 
 
-_CONFIG_STORE = json_store.get(CONFIG_FILE, version=8, migrate=_migrate_config)
+_CONFIG_STORE = json_store.get(CONFIG_FILE, version=9, migrate=_migrate_config)
 
 
 def parse_hhmm(value) -> Optional[int]:
@@ -364,13 +388,21 @@ def qb_get_api_key() -> str:
 
 
 def active_debrid(cfg: dict) -> tuple:
-    """Return (provider_name, api_key) for the configured debrid provider."""
-    db = cfg.get("debrid") or {}
-    name = str(db.get("provider") or "").strip()
-    if name not in DEBRID_PROVIDERS:
+    """Return (provider_name, primary_secret) for the torrent/debrid slot."""
+    name, creds = torrent_provider(cfg)
+    if not name:
         return "", ""
-    key_field = {"realdebrid": "realdebrid_api_token", "alldebrid": "alldebrid_api_key", "torbox": "torbox_api_key"}[name]
-    return name, str(db.get(key_field) or "").strip()
+    return name, primary_secret(name, creds)
+
+
+def active_link_provider(cfg: dict) -> tuple:
+    """Return (provider_name, credentials) for the hoster-link slot."""
+    return link_provider(cfg)
+
+
+def credentials_for(cfg: dict, provider: str) -> dict:
+    """Credential values for any provider id, read from the config."""
+    return provider_credentials(cfg, provider)
 
 
 def save_config(cfg: dict) -> None:

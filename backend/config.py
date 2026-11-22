@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.8.0"
+APP_VERSION = "2.9.0"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -212,6 +212,11 @@ class Settings:
     # ── Network throughput history (services/net_stats_service.py) ───────────
     # How often the sampler records total RX/TX counters (seconds).
     NET_STATS_INTERVAL: int = int(os.getenv("ETHOS_NET_STATS_INTERVAL", "60"))
+
+    # ── Downloads: tb7.pl multihoster (services/tb7.py) ──────────────────────
+    # Override only for tests/development (a local fixture server); production
+    # always talks to the real site.
+    TB7_BASE_URL: str = os.getenv("ETHOS_TB7_BASE", "https://tb7.pl")
 
     # ── Android APK delivery (routers/updates.py) ────────────────────────────
     # Per-app search order; the newest (version_code, mtime) wins.

@@ -15,6 +15,9 @@ MAX_TASK_HISTORY = 500
 TERMINAL_STATUSES = ("completed", "error", "canceled")
 IN_FLIGHT_STATUSES = ("downloading", "waiting", "debrid_downloading", "debrid_selecting")
 _SECRET_FIELDS = ("_events", "_debrid_key")
+# Per-file transient values: multihoster links may carry a session Cookie in
+# `_link_url_headers`; it must never land in downloads_tasks.json.
+_FILE_SECRET_FIELDS = ("_link_url_headers",)
 
 
 def write(tasks: list, store) -> None:
@@ -34,7 +37,14 @@ def write(tasks: list, store) -> None:
                 terminal_seen += 1
                 if terminal_seen > MAX_TASK_HISTORY:
                     continue
-            serializable.append({k: v for k, v in t.items() if k not in _SECRET_FIELDS})
+            item = {k: v for k, v in t.items() if k not in _SECRET_FIELDS}
+            files = item.get("_files")
+            if isinstance(files, list):
+                item["_files"] = [
+                    {k: v for k, v in f.items() if k not in _FILE_SECRET_FIELDS}
+                    for f in files if isinstance(f, dict)
+                ]
+            serializable.append(item)
         serializable.reverse()
         store.save(serializable)
     except Exception as exc:

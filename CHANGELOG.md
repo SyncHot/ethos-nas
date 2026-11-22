@@ -11,6 +11,30 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-22
+
+### Added
+
+- **Download Manager: provider slots and tb7.pl.** A torrent debrid and a
+  hoster-link multihoster are now independent slots (Settings → Providers), so
+  magnets keep working while premium file-host links go through tb7.pl; tb7
+  accounts get Verify with premium/transfer status and its supported-hoster
+  list, and `GET /api/downloads/providers` exposes the provider catalogue
+  without secrets. Requires the download-manager package 1.1.0.
+
+### Changed
+
+- **Overview / Network / Firewall split.** Overview now paints from the existing
+  `/ws/stats` socket (slow HTTP fallback) and shows only the live network rate —
+  the duplicate 30-minute chart moved out. Network is a single-pane, read-only
+  view (interfaces, connection, throughput); its raw iptables tab and the
+  `/api/network/firewall*` endpoints were removed, so Firewall & Access Control
+  (UFW) is the only firewall surface. That app is now hidden from non-admin
+  accounts, `ufw.service` cannot be started/stopped from Services or System
+  Services (403, shown as Protected), and the repeated UFW status markup inside
+  Security is shared. Also fixes the Network Interfaces view crashing on a
+  missing import.
+
 ## [2.8.0] - 2026-11-22
 
 ### Added

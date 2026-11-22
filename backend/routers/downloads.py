@@ -77,8 +77,6 @@ router = APIRouter(dependencies=[Depends(path_scope.scope_request)])
 from backend.services import download_tasks
 from backend.services import json_store
 from backend.services.download_config import (
-    DEBRID_PROVIDERS,
-    active_debrid as _active_debrid,
     category_target as _category_target,
     default_debrid as _default_debrid,
     load_config as _load_config,
@@ -91,6 +89,7 @@ from backend.services.download_config import (
     save_config as _save_config,
     upsert_category as _upsert_category,
 )
+from backend.services import download_providers as _providers
 
 DATA_DIR = settings.DATA_DIR
 TASKS_FILE = DATA_DIR / "downloads_tasks.json"
@@ -142,12 +141,18 @@ class SelectFilesRequest(BaseModel):
 
 
 class VerifyDebridRequest(BaseModel):
-    """Body of `POST /api/downloads/verify` — provider key check."""
+    """Body of `POST /api/downloads/verify` — provider credential check.
+
+    `key` is the legacy single-secret form; `credentials` carries any provider's
+    declared fields (tb7.pl needs `tb7_username` + `tb7_password`). A masked
+    value ("****…") verifies the stored credential instead of the sent one.
+    """
 
     model_config = {"extra": "forbid"}
 
     provider: str = Field(min_length=1, max_length=32)
     key: str = Field(default="", max_length=512)
+    credentials: dict = Field(default_factory=dict)
 
 
 class PriorityRequest(BaseModel):
@@ -359,9 +364,7 @@ from backend.services.debrid import (
     select_files as _debrid_select_files,
     download_link as _debrid_download_link,
     delete_torrent as _debrid_delete_torrent,
-    verify as _debrid_verify,
     ProviderHTTPError as _ProviderHTTPError,
-    ad_link_info as _ad_link_info,
     ad_unlock as _ad_unlock,
     ad_magnet_files as _ad_magnet_files,
 )
@@ -395,32 +398,43 @@ def _debrid_worker(task: dict, stop_event: threading.Event) -> None:
 
 def _debrid_worker_scoped(task: dict, stop_event: threading.Event) -> None:
     cfg = _load_config()
-    provider, key = task["provider"], task["_debrid_key"]
+    provider = str(task.get("provider") or "")
+    spec = _providers.get(provider)
+    if spec is None:
+        raise RuntimeError(f"Unknown download provider: {provider!r}")
+    # Credentials live in the config (engine fields); a legacy task may still
+    # carry only its single `_debrid_key`, which is used as a fallback.
+    creds = _providers.provider_credentials(cfg, provider)
+    if not _providers.credentials_complete(provider, creds):
+        creds = _providers.credentials_from_secret(provider, str(task.get("_debrid_key") or "")) or creds
+    if not _providers.credentials_complete(provider, creds):
+        raise RuntimeError(f"{spec.label} credentials are no longer configured (set them in Settings)")
+    key = _providers.primary_secret(provider, creds)
     tid = int(task.get("_debrid_id") or 0)
     is_link = task.get("kind") == "debrid_link"
 
     # ── Phase 1: resolve premium link / add the magnet ─────────────────────
     if is_link:
-        # File-hosting link (RapidGator, Mega, …): no torrent — resolve it to a
-        # direct download URL through AllDebrid's premium API.
-        info = _ad_link_info(key, _source_url(task))
-        if info.get("name"):
-            task["name"] = os.path.basename(info["name"].replace("\\", "/")) or task["name"]
-        if info.get("size"):
-            task["size"] = int(info["size"])
-        link = _ad_unlock(key, _source_url(task), stop_event)
-        fname = os.path.basename(link.get("name") or "") or os.path.basename(task["name"].replace("\\", "/")) or "download.bin"
+        # File-hosting link (RapidGator, Mega, tb7.pl-supported hosts, …):
+        # no torrent — the link provider resolves it to a direct download URL.
+        link = _providers.resolve_link(provider, creds, _source_url(task), stop_event)
+        if link.get("name"):
+            task["name"] = os.path.basename(str(link["name"]).replace("\\", "/")) or task["name"]
+        if link.get("size"):
+            task["size"] = int(link["size"])
+        fname = os.path.basename(task["name"].replace("\\", "/")) or "download.bin"
         # Per-task folder (set at creation) wins over the global default dir.
         base_dir = os.path.abspath(task.get("path") or cfg["download_dir"])
         dest = os.path.abspath(os.path.join(base_dir, fname))
         task["_files"] = [{
             "id": 0,
             "name": fname,
-            "size": int(link.get("size") or info.get("size") or 0),
+            "size": int(link.get("size") or 0),
             "path": "",
             "is_selected": True,
             "dest": dest,
-            "_link_url": link["url"],   # resolved premium URL — phase 3 uses it directly
+            "_link_url": str(link.get("url") or ""),   # resolved premium URL — phase 3 uses it directly
+            "_link_url_headers": dict(link.get("headers") or {}),  # transient: stripped before persisting
         }]
         task["_debrid_status"] = "completed"
     else:
@@ -648,6 +662,7 @@ def _debrid_worker_scoped(task: dict, stop_event: threading.Event) -> None:
             limit_bps=pkg_limit or int(limits.get("per_task_bps") or 0),
             global_bps=int(limits.get("global_bps") or 0),
             limit_key=f"pkg:{pkg_key}" if pkg_limit else "",
+            headers=f.get("_link_url_headers") or None,
         )
         # Only mark complete when the transfer actually finished — a pause
         # mid-file must leave it resumable instead of corrupting on re-scan.
@@ -1400,17 +1415,17 @@ async def _pump_scoped() -> None:
             ev = threading.Event()
             _events[t["id"]] = ev
             if t.get("kind") in ("debrid", "debrid_link"):
-                provider, key = _active_debrid(cfg)
-                if not provider or not key:
+                if t.get("kind") == "debrid_link":
+                    provider, creds = _providers.link_provider(cfg)
+                    missing = ("Hoster link downloads need a link provider — "
+                               "set AllDebrid or tb7.pl in Settings")
+                else:
+                    provider, creds = _providers.torrent_provider(cfg)
+                    missing = "Torrent provider is no longer configured (set it in Settings)"
+                if not provider or not _providers.credentials_complete(provider, creds):
                     # Config changed since the task was added — don't silently start.
                     t["status"] = "error"
-                    t["error"] = "Debrid provider is no longer configured (set it in Settings)"
-                    _save_tasks()
-                    _notify_status_change(t, "waiting", "error")
-                    continue
-                if t.get("kind") == "debrid_link" and provider != "alldebrid":
-                    t["status"] = "error"
-                    t["error"] = "Debrid link downloads require AllDebrid as the active provider"
+                    t["error"] = missing
                     _save_tasks()
                     _notify_status_change(t, "waiting", "error")
                     continue
@@ -1418,7 +1433,7 @@ async def _pump_scoped() -> None:
                     # Provider changed while the task was paused — the old torrent ID is meaningless on the new provider.
                     t["_debrid_id"] = 0
                 t["provider"] = provider
-                t["_debrid_key"] = key
+                t["_debrid_key"] = _providers.primary_secret(provider, creds)
                 t["status"] = "debrid_downloading"
                 wt = loop.create_task(_run_debrid(t, ev))
             else:
@@ -1474,9 +1489,9 @@ def _watch_scan_once(cfg: dict, loop: asyncio.AbstractEventLoop, entry: dict) ->
     wf = (entry.get("folder") or "").strip()
     if not wf or not os.path.isdir(wf):
         return
-    provider, _key = _active_debrid(cfg)
-    if not provider:  # nothing to do — leave files for a later pass
-        return
+    provider, creds = _providers.torrent_provider(cfg)
+    if not provider or not _providers.credentials_complete(provider, creds):
+        return  # nothing to do — leave files for a later pass
     # A blank per-entry destination means "save into the watched folder itself"
     # (qBittorrent-style), not the global default download dir.
     dest_dir = (entry.get("destination") or "").strip() or wf
@@ -1770,7 +1785,8 @@ async def get_task(task_id: str):
 
 def _make_debrid_task(target_dir: str, url: str, name: str, size: int = 0) -> dict:
     """Build (not yet persisted) a debrid task for a magnet/torrent URL."""
-    provider, key = _active_debrid(_load_config())
+    provider, creds = _providers.torrent_provider(_load_config())
+    key = _providers.primary_secret(provider, creds)
     return {
         "id": _uid(),
         "url": url,
@@ -1800,9 +1816,9 @@ def _make_debrid_task(target_dir: str, url: str, name: str, size: int = 0) -> di
 async def add_task(payload: AddTaskRequest):
     """Create (and start) a download.
 
-    magnet:? links are sent to the configured debrid provider and streamed
-    back once cached there; premium file-hosting links (RapidGator, Mega, …)
-    are resolved through AllDebrid's link API when it is the active provider;
+    magnet:? links are sent to the configured torrent provider and streamed
+    back once cached there; premium file-hosting links (RapidGator, Mega, …) are
+    resolved through the configured hoster-link provider (AllDebrid or tb7.pl);
     any other http(s) URL runs the built-in HTTP engine.
     """
     raw_url = payload.url.strip()
@@ -1834,9 +1850,14 @@ async def add_task(payload: AddTaskRequest):
 
     # ── Magnet link → debrid task ───────────────────────────────────────────
     if raw_url.lower().startswith("magnet:?"):
-        provider, key = _active_debrid(cfg)
+        provider, creds = _providers.torrent_provider(cfg)
+        key = _providers.primary_secret(provider, creds)
         if not provider or not key:
-            raise HTTPException(status_code=400, detail="No debrid provider configured — set one in Settings first")
+            raise HTTPException(
+                status_code=400,
+                detail="No torrent/debrid provider configured — set one in Settings "
+                       "(tb7.pl only handles hoster links)",
+            )
         info = _parse_magnet(raw_url)
         fallback = f"magnet-{info['hash'][:12]}" if info["hash"] else "magnet"
         name = (payload.name or "").strip() or info["name"] or fallback
@@ -1851,12 +1872,14 @@ async def add_task(payload: AddTaskRequest):
         await _pump()
         return _public(task)
 
-    # ── Premium file-hosting link (RapidGator, Mega, …) → debrid task ───────
+    # ── Premium file-hosting link (RapidGator, Mega, …) → link task ─────────
     url = _validate_url(raw_url)
     _reject_private_url(url)
-    provider, key = _active_debrid(cfg)
-    if provider == "alldebrid" and key and _is_file_host(url):
-        # Route through AllDebrid's premium API (link/infos + link/unlock).
+    provider, link_creds = _providers.link_provider(cfg)
+    key = _providers.primary_secret(provider, link_creds)
+    if (provider and _providers.credentials_complete(provider, link_creds)
+            and await asyncio.to_thread(_providers.host_matches, provider, url)):
+        # Route through the hoster-link provider's unlock API/flow.
         name = (payload.name or "").strip() or _name_from_url(url)
         name = os.path.basename(name.replace("\\", "/")).strip() or "download.bin"
         task = {
@@ -1939,9 +1962,12 @@ async def add_torrent(files: list[UploadFile] = File(...), folder: str = ""):
     parse are reported in `errors` without aborting the rest of the batch.
     """
     cfg = _load_config()
-    provider, key = _active_debrid(cfg)
-    if not provider or not key:
-        raise HTTPException(status_code=400, detail="No debrid provider configured — set one in Settings first")
+    provider, torrent_creds = _providers.torrent_provider(cfg)
+    if not provider or not _providers.credentials_complete(provider, torrent_creds):
+        raise HTTPException(
+            status_code=400,
+            detail="No torrent/debrid provider configured — .torrent uploads need one in Settings",
+        )
 
     folder = (folder or "").strip()
     if folder:
@@ -2535,19 +2561,14 @@ async def select_debrid_files(task_id: str, payload: SelectFilesRequest):
 
 
 def _public_config(admin: bool = False) -> dict:
-    """Config with debrid credentials masked (save endpoint ignores masked values).
+    """Config with provider credentials masked (save endpoint ignores masked values).
 
     The qBittorrent API key is a real credential — it authenticates the whole
     *arr integration. Only admins see it in full; everyone else gets a masked
     hint plus `qb_api_key_set` so the UI can explain why copying is disabled.
     """
     cfg = _load_config()
-    db = dict(cfg.get("debrid") or {})
-    for k in ("realdebrid_api_token", "alldebrid_api_key", "torbox_api_key"):
-        v = db.get(k)
-        if isinstance(v, str) and v:
-            db[k] = ("****" + v[-4:]) if len(v) > 6 else "****"
-    cfg["debrid"] = db
+    cfg["debrid"] = _providers.mask_credentials(cfg.get("debrid"))
 
     key = str(cfg.get("qb_api_key") or "").strip()
     if admin:
@@ -2674,14 +2695,16 @@ async def save_config(request: Request, payload: dict = Body(...)):
         # Merge over the CURRENT config so fields not sent by the UI (e.g. an
         # unchanged API key) are preserved; masked values ("****…") keep the old one.
         db = {**_default_debrid(), **(cfg.get("debrid") or {})}
-        for k in _default_debrid():
-            v = db_in.get(k)
-            if isinstance(v, str):
-                v = v.strip()
-                if "****" not in v:
-                    db[k] = v
-        if db["provider"] not in DEBRID_PROVIDERS:
-            db["provider"] = ""
+        db = _providers.merge_credential_values(db, db_in)
+        # Slot names are validated against provider capabilities, not a list.
+        for slot, allowed in (("provider", _providers.is_torrent_provider),
+                              ("link_provider", _providers.is_link_provider)):
+            if slot in db_in:
+                name = str(db_in.get(slot) or "").strip()
+                if name and not allowed(name):
+                    logger.warning("Ignoring %s=%r — the provider does not support that slot", slot, name)
+                    name = ""
+                db[slot] = name
         cfg["debrid"] = db
     _save_config(cfg)
     logger.info("Download config updated by %s",
@@ -2701,44 +2724,108 @@ async def rotate_qb_api_key():
 
 @router.post("/verify", dependencies=[Depends(require_admin)])
 async def verify_debrid(payload: VerifyDebridRequest):
-    """Check a debrid provider API key against the provider's user endpoint."""
-    provider = payload.provider
-    key = payload.key.strip()
-    if provider not in DEBRID_PROVIDERS:
-        raise HTTPException(status_code=400, detail="Unknown debrid provider")
-    if "****" in key:
-        # UI sends the masked value when the user hasn't re-typed the key —
-        # verify against the stored one instead.
-        field = {"realdebrid": "realdebrid_api_token", "alldebrid": "alldebrid_api_key", "torbox": "torbox_api_key"}[provider]
-        key = str((_load_config().get("debrid") or {}).get(field) or "").strip()
-        logger.info("%s verify: using the saved key (masked value sent by the UI)", provider)
-    else:
-        key = "".join(key.split())  # RD/AD tokens are pasted with stray newlines/spaces
-    if not key:
-        raise HTTPException(status_code=400, detail="API key is required")
+    """Check provider credentials (API key, or tb7.pl username/password)."""
+    provider = payload.provider.strip()
+    spec = _providers.get(provider)
+    if spec is None:
+        raise HTTPException(status_code=400, detail="Unknown download provider")
+    fields = _providers.credential_fields(provider)
+    stored = _providers.provider_credentials(_load_config(), provider)
+    incoming = {str(k): str(v) for k, v in (payload.credentials or {}).items() if isinstance(v, (str, int, float))}
+    if payload.key.strip() and len(fields) == 1:
+        incoming[fields[0].name] = payload.key.strip()
+    creds = dict(stored)
+    for field in fields:
+        value = incoming.get(field.name)
+        if value is None:
+            continue
+        value = value.strip()
+        if field.secret and ("****" in value or not value):
+            continue  # masked/blank → verify the stored secret
+        if value:
+            creds[field.name] = value
+    missing = [field.label for field in fields if not str(creds.get(field.name) or "").strip()]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"{spec.label} {', '.join(missing).lower()} is required")
     try:
-        ok = await asyncio.to_thread(_debrid_verify, provider, key)
+        result = await asyncio.to_thread(_providers.verify, provider, creds)
     except _ProviderHTTPError as exc:
         # A provider saying "bad token" is a key problem (401), not an outage (502).
-        logger.warning("%s verify rejected the key (HTTP %s): %s", provider, exc.status, exc.detail)
+        logger.warning("%s verify rejected the credentials (HTTP %s): %s", provider, exc.status, exc.detail)
         if exc.status in (401, 403):
             raise HTTPException(
                 status_code=401,
-                detail=f"{provider} rejected the API key: {exc.detail or 'not authorised'}",
+                detail=f"{spec.label} rejected the credentials: {exc.detail or 'not authorised'}",
             ) from exc
         if exc.status == 429:
             raise HTTPException(status_code=429,
-                                detail=f"{provider} rate-limited the check — try again in a minute") from exc
+                                detail=f"{spec.label} rate-limited the check — try again in a minute") from exc
         raise HTTPException(status_code=502,
-                            detail=f"{provider} API error (HTTP {exc.status}): {exc.detail or 'no detail'}") from exc
+                            detail=f"{spec.label} API error (HTTP {exc.status}): {exc.detail or 'no detail'}") from exc
     except Exception as exc:
         # Distinguish "provider is down" from "your key is wrong" — the old
         # blanket exception handler reported outages as an expired key.
         logger.warning("%s verify failed: %s", provider, exc, exc_info=True)
-        raise HTTPException(status_code=502, detail=f"Could not reach {provider}: {exc}") from exc
-    if not ok:
-        raise HTTPException(status_code=401, detail=f"{provider} API key is invalid or expired")
-    return {"ok": True, "provider": provider}
+        raise HTTPException(status_code=502, detail=f"Could not reach {spec.label}: {exc}") from exc
+    if not result.get("ok"):
+        raise HTTPException(status_code=401, detail=f"{spec.label} did not accept the credentials")
+    out = {"ok": True, "provider": provider}
+    if result.get("account"):
+        out["account"] = result["account"]
+    return out
+
+
+@router.get("/providers")
+async def list_providers(request: Request):
+    """Provider catalogue for the package UI — never returns a secret."""
+    cfg = _load_config()
+    admin = _is_admin(request)
+    torrent_name, _tc = _providers.torrent_provider(cfg)
+    link_name, _lc = _providers.link_provider(cfg)
+    items = []
+    for spec in _providers.all_specs():
+        creds = _providers.provider_credentials(cfg, spec.id)
+        fields = []
+        for field in spec.credentials:
+            value = str(creds.get(field.name) or "")
+            masked = ("****" + value[-4:]) if len(value) > 6 else "****"
+            fields.append({
+                "name": field.name,
+                "label": field.label,
+                "kind": field.kind,
+                "secret": field.secret,
+                "placeholder": field.placeholder,
+                "set": bool(value),
+                "value": masked if (field.secret and value) else ("" if field.secret else value),
+            })
+        hosts = []
+        if spec.hoster_match == _providers.HOSTER_MATCH_LIST:
+            # First call after boot fetches jdhostingi.txt — never block the loop.
+            hosts = await asyncio.to_thread(_providers.hosters, spec.id)
+        item = {
+            "id": spec.id,
+            "label": spec.label,
+            "kind": spec.kind,
+            "homepage": spec.homepage,
+            "description": spec.description,
+            "capabilities": sorted(spec.capabilities),
+            "slots": _providers.eligible_slots(spec.id),
+            "hoster_match": spec.hoster_match,
+            "hosters": hosts,
+            "credentials": fields,
+        }
+        account = _providers.cached_account(spec.id, creds) if admin else {}
+        if account:
+            item["account"] = account
+        items.append(item)
+    return {
+        "providers": items,
+        "slots": {
+            "torrent": list(_providers.ids_by_capability(_providers.CAP_TORRENTS)),
+            "link": list(_providers.ids_by_capability(_providers.CAP_LINK_UNLOCK)),
+        },
+        "active": {"torrent": torrent_name, "link": link_name},
+    }
 
 
 @router.get("/rss")

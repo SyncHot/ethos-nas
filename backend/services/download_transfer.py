@@ -126,7 +126,7 @@ def check_disk_space(task: dict, cfg: dict) -> str:
 
 def stream_to_file(url: str, state: dict, resume_from: int, stop_event: threading.Event,
                    on_chunk=None, on_open=None, limit_bps: int = 0, global_bps: int = 0,
-                   limit_key: str = "") -> int:
+                   limit_key: str = "", headers: dict = None) -> int:
     """Stream `url` into `state["dest"]`, resuming from `resume_from` bytes on disk.
 
     `state` is a mutable dict holding at least {"dest": str}; callers may change
@@ -140,20 +140,25 @@ def stream_to_file(url: str, state: dict, resume_from: int, stop_event: threadin
     on_open(status, content_length, headers, start_pos) is called before the
     file is opened for each attempt; on_chunk(pos) after every chunk written
     (pos = new absolute file position). Returns the final file size in bytes.
+
+    `headers` carries optional provider-resolved request metadata (Referer,
+    Cookie) — a multihoster link may require them; they never replace the
+    Range/UA headers the engine owns.
     """
     pos = max(0, int(resume_from or 0))
     retries = 0
     last_disk_check = 0.0
+    extra_headers = {str(k): str(v) for k, v in (headers or {}).items() if v}
     # A package limit is shared by every part; a per-task limit spaces only this file.
     own_limiter = shared_limiter(limit_key) if limit_key else RateLimiter()
     while True:
         if stop_event.is_set():
             return pos
-        headers = {"User-Agent": "EthOS-NAS-DownloadStation/2.0", "Accept": "*/*"}
+        request_headers = {"User-Agent": "EthOS-NAS-DownloadStation/2.0", "Accept": "*/*", **extra_headers}
         if pos > 0:
-            headers["Range"] = f"bytes={pos}-"
+            request_headers["Range"] = f"bytes={pos}-"
         try:
-            req = urllib.request.Request(url, headers=headers)
+            req = urllib.request.Request(url, headers=request_headers)
             with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310 — scheme checked by caller
                 status = getattr(resp, "status", 200)
                 start_pos = pos
