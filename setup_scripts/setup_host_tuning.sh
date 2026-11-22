@@ -51,7 +51,8 @@ REPO_DIR="$(dirname "${SCRIPT_DIR}")"
 SRC="${REPO_DIR}/deploy/host-tuning"
 
 ZRAM_CONF="/etc/default/zramswap"
-SYSCTL_CONF="/etc/sysctl.d/99-ethos-memory.conf"
+SYSCTL_CONF="/etc/sysctl.d/99-zz-ethos-memory.conf"
+SYSCTL_LEGACY="/etc/sysctl.d/99-ethos-memory.conf"  # first version; removed on upgrade
 OOMD_DROPIN_DIR="/etc/systemd/system/user@.service.d"
 OOMD_DROPIN="${OOMD_DROPIN_DIR}/10-ethos-oomd.conf"
 
@@ -78,7 +79,7 @@ revert() {
         run swapoff /dev/zram0 || true
         run modprobe -r zram || true
     fi
-    run rm -f "${ZRAM_CONF}" "${SYSCTL_CONF}" "${OOMD_DROPIN}"
+    run rm -f "${ZRAM_CONF}" "${SYSCTL_CONF}" "${SYSCTL_LEGACY}" "${OOMD_DROPIN}"
     run rmdir "${OOMD_DROPIN_DIR}" 2>/dev/null || true
     run systemctl daemon-reload || true
     run sysctl --system >/dev/null || true
@@ -108,6 +109,8 @@ verify() {
     zramctl 2>/dev/null || echo "  (zramctl not available)"
     echo "-- sysctl:"
     sysctl vm.swappiness vm.page-cluster vm.watermark_boost_factor vm.min_free_kbytes 2>/dev/null || true
+    echo "-- swappiness sources (systemd-sysctl applies them in filename order):"
+    grep -H 'swappiness' /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null || true
     echo "-- oomd limit installed for user sessions:"
     grep -E '^ManagedOOMMemoryPressureLimit' "${OOMD_DROPIN}" 2>/dev/null || echo "  (drop-in missing)"
     local uid
@@ -127,7 +130,7 @@ main() {
         return 0
     fi
 
-    for f in "${SRC}/zramswap" "${SRC}/99-ethos-memory.conf" "${SRC}/user@.service.d/10-ethos-oomd.conf"; do
+    for f in "${SRC}/zramswap" "${SRC}/99-zz-ethos-memory.conf" "${SRC}/user@.service.d/10-ethos-oomd.conf"; do
         [ -f "${f}" ] || { echo "error: missing ${f}" >&2; exit 1; }
     done
 
@@ -138,7 +141,13 @@ main() {
     run install -D -m 0644 "${SRC}/zramswap" "${ZRAM_CONF}"
 
     info "installing ${SYSCTL_CONF}"
-    run install -D -m 0644 "${SRC}/99-ethos-memory.conf" "${SYSCTL_CONF}"
+    run install -D -m 0644 "${SRC}/99-zz-ethos-memory.conf" "${SYSCTL_CONF}"
+    # The first version used a name that sorted before 99-swappiness.conf and
+    # was therefore overridden — drop it when upgrading an older install.
+    if [ -f "${SYSCTL_LEGACY}" ]; then
+        info "removing legacy ${SYSCTL_LEGACY}"
+        run rm -f "${SYSCTL_LEGACY}"
+    fi
 
     info "installing ${OOMD_DROPIN}"
     run install -D -m 0644 "${SRC}/user@.service.d/10-ethos-oomd.conf" "${OOMD_DROPIN}"
@@ -153,10 +162,34 @@ main() {
     info "starting zram swap"
     run systemctl daemon-reload
     run systemctl enable zramswap.service
-    run systemctl restart zramswap.service
+    # The package's postinst may have already started the unit with its own
+    # defaults: a plain restart then hits "Device or resource busy" while it
+    # writes comp_algorithm/disksize, silently keeping lz4. Tear the device down
+    # first so the configured algorithm and size always take effect.
+    run systemctl stop zramswap.service || true
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        info "[dry-run] swapoff /dev/zram0; reset /sys/block/zram0"
+    else
+        if swapon --show=NAME --noheadings 2>/dev/null | grep -qx '/dev/zram0'; then
+            swapoff /dev/zram0 || true
+        fi
+        if [ -w /sys/block/zram0/reset ]; then
+            echo 1 > /sys/block/zram0/reset || true
+        fi
+    fi
+    run systemctl start zramswap.service
 
-    if [ "${DRY_RUN}" -eq 0 ] && ! systemctl list-unit-files zramswap.service >/dev/null 2>&1; then
-        echo "warning: zramswap.service not found — check the zram-tools package layout" >&2
+    if [ "${DRY_RUN}" -eq 0 ]; then
+        local want actual
+        want="$(sed -n 's/^ALGO=//p' "${ZRAM_CONF}" | tail -1)"
+        want="${want:-zstd}"
+        actual="$(zramctl --noheadings --output NAME,ALGORITHM 2>/dev/null | awk '$1=="/dev/zram0"{print $2}')"
+        if [ -n "${actual}" ] && [ "${actual}" != "${want}" ]; then
+            echo "warning: zram0 uses '${actual}', expected '${want}' — check /sys/block/zram0/comp_algorithm" >&2
+        fi
+        if ! systemctl list-unit-files zramswap.service >/dev/null 2>&1; then
+            echo "warning: zramswap.service not found — check the zram-tools package layout" >&2
+        fi
     fi
 
     if [ "${DRY_RUN}" -eq 0 ]; then

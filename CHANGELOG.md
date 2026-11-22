@@ -11,6 +11,20 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.24.1] - 2026-11-22
+
+### Fixed
+
+- **`setup_host_tuning.sh` now really switches zram to `zstd`.** The `zram-tools`
+  postinst starts `zramswap.service` with its own defaults, so a plain
+  `systemctl restart` hit `Device or resource busy` while writing
+  `comp_algorithm` and silently left the device on `lz4`. The script stops the
+  unit, swaps off and resets `/dev/zram0` first, then verifies the algorithm.
+- **`vm.swappiness` is no longer overridden.** The sysctl file is installed as
+  `99-zz-ethos-memory.conf`: an older `99-swappiness.conf` (written for the disk
+  swap file) sorted after the previous name and won, leaving swappiness at 10.
+  Re-running the script removes the legacy file.
+
 ## [2.24.0] - 2026-11-22
 
 ### Added

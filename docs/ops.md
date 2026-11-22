@@ -290,12 +290,17 @@ sudo bash setup_scripts/setup_host_tuning.sh --revert    # undo
 | Installed | What it does |
 |---|---|
 | `/etc/default/zramswap` (`deploy/host-tuning/zramswap`) | zram swap: 50 % of RAM, `zstd`, priority 100 — used before `/swap.img`, ~2–4× larger than the RAM it occupies, RAM-speed page-outs instead of disk stalls |
-| `/etc/sysctl.d/99-ethos-memory.conf` | `swappiness=150`, `page-cluster=0`, `watermark_boost_factor=0`, `min_free_kbytes≈1 %` — tuned for zram, not for a slow disk swap |
+| `/etc/sysctl.d/99-zz-ethos-memory.conf` | `swappiness=150`, `page-cluster=0`, `watermark_boost_factor=0`, `min_free_kbytes≈1 %` — tuned for zram, not for a slow disk swap. The `zz-` prefix is deliberate: an older `99-swappiness.conf` (written for the disk swap file) would otherwise win, because systemd-sysctl applies files in filename order |
 | `/etc/systemd/system/user@.service.d/10-ethos-oomd.conf` | raises oomd's user-session pressure limit 50 % → 80 %: still kills on genuine thrashing, not on a busy browser |
 | package `zram-tools` | ships `zramswap.service`; no extra daemon |
 
 This is a **per-host, manual** step like `setup_service.sh` — it is not part of EthOS provisioning
 and adds no sudoers rule.
+
+The script stops and resets `/dev/zram0` before starting the unit: `zram-tools`' postinst already
+starts `zramswap.service` with its own defaults, and a plain `systemctl restart` then fails with
+`Device or resource busy` while writing `comp_algorithm` — leaving the device on `lz4`. After the
+run, `zramctl` must show `zstd`.
 
 **Containers: limit swap too.** A container that only sets `mem_limit` may still fill the host swap
 (docker defaults to `2 × mem_limit`); set `memswap_limit` equal to `mem_limit` so it restarts
