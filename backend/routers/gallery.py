@@ -70,9 +70,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from PIL import Image
 from starlette.background import BackgroundTask
 
@@ -945,8 +945,24 @@ async def gallery_get_config():
     return _public_config(_load_config())
 
 
+class GalleryFolderEntry(BaseModel):
+    """A library folder; extra keys from newer clients are preserved for the
+    settings UI but only `path` is used here."""
+
+    model_config = {"extra": "allow"}
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class GalleryConfigRequest(BaseModel):
+    """Partial config: omit a key to keep the current value."""
+
+    model_config = {"extra": "forbid"}
+    folders: Optional[list[GalleryFolderEntry | str]] = None
+    options: Optional[dict] = None
+
+
 @router.post("/config")
-async def gallery_save_config(payload: dict = Body(...)):
+async def gallery_save_config(payload: GalleryConfigRequest):
     """Save gallery folders and/or display options.
 
     Either key may be omitted to keep the current value. Folder paths are
@@ -955,11 +971,11 @@ async def gallery_save_config(payload: dict = Body(...)):
     """
     cfg = _load_config()
 
-    if "folders" in payload and isinstance(payload["folders"], list):
+    if payload.folders is not None:
         clean = []
         seen = set()
-        for entry in payload["folders"]:
-            raw = entry.get("path") if isinstance(entry, dict) else (entry if isinstance(entry, str) else None)
+        for entry in payload.folders:
+            raw = entry.path if isinstance(entry, GalleryFolderEntry) else entry
             if not raw:
                 continue
             try:
@@ -976,17 +992,17 @@ async def gallery_save_config(payload: dict = Body(...)):
             clean.append({"path": abs_path, "name": os.path.basename(abs_path.rstrip("/")) or "/"})
         cfg["folders"] = clean
 
-    if "options" in payload and isinstance(payload["options"], dict):
+    if payload.options is not None:
         for key in DEFAULT_CONFIG["options"]:
-            if key in payload["options"]:
-                cfg["options"][key] = payload["options"][key]
+            if key in payload.options:
+                cfg["options"][key] = payload.options[key]
 
     _save_config(cfg)
     # Folder set or media scope changed → force rescan so the index matches.
     # Fire-and-forget: a full walk can take minutes on big libraries and must
     # not hold this request open (_run_rescan is idempotent under its lock).
-    if ("folders" in payload and isinstance(payload["folders"], list)
-            or "include_videos" in (payload.get("options") or {})):
+    if (payload.folders is not None
+            or "include_videos" in (payload.options or {})):
         asyncio.get_running_loop().create_task(_run_rescan())
     return {"ok": True, **_public_config(cfg)}
 

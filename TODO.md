@@ -86,9 +86,17 @@ now a 422 instead of a silently ignored key.
 **Verified live.** `""` url → 422 · unknown key → 422 · 9000-char url → 422 · valid url → 200 · empty
 `file_ids` → 422 · unknown provider → 400 · missing key → 400. The SPA sends exactly `{url, name, folder}`
 and `{file_ids: [...]}`, so nothing breaks.
-**Remaining.** `music.py` (11 dict bodies), `gallery.py:874`, `video_station.py` (`set_config`,
-`set_resume`, `tmdb_refresh`), `downloads.save_config` (partial-config body — deliberately permissive), and
-`response_model=` on the main reads.
+**Remaining.** `response_model=` on the big state reads (`/api/music/state`, downloads task lists,
+media library) — deliberately deferred until the P2 router splits move those payloads into services.
+**Landed 2.29.1.** All raw `dict` bodies are typed: `music.py` (12 endpoints — download/url validator,
+batch list, config, state import, radio state, wrapped-or-flat track envelopes, `key`, playlist,
+podcast subscribe), `video_station.py` (`VideoConfigRequest`, `ResumeRequest` accepting numeric
+strings, optional `MetadataRefreshRequest`), `gallery.py` (`GalleryConfigRequest` accepting folders as
+objects or strings) and `downloads.save_config` (`SaveConfigRequest`, partial + `extra="allow"` so
+newer clients keep working). Verified live on an isolated :9003 instance: a typo'd key is 422 for
+music/config/downloads/video/gallery while every client payload the Music, Photos and Video packages
+send still returns 200. `GET /api/music/config` and `/api/music/radio/state` now also declare
+`response_model`.
 
 ### ☑ P1-10 · One error contract across the API — `M`
 
@@ -147,7 +155,7 @@ thumbnails and rescan logic share one file.
 **Done when.** `gallery.py` <500 lines; private vault has its own unit test (encrypt → index → decrypt →
 trash path is `.ethos.enc`).
 
-### ☐ P2-03 · Split `files.py` (~1.95k lines) — `XL`
+### ◐ P2-03 · Split `files.py` (~1.95k lines) — `XL`
 **Problem.** Listing, upload, thumbnails (ffmpeg + Haar face detection), transcode, archive extract,
 universal search and the trash store are one router, and a parallel `files_service.py` re-implements
 favorites/trash/thumb metadata.
@@ -156,6 +164,13 @@ duplicate logic in `backend/services/files_service.py:77,391,450`.
 **Fix.** Extract `services/thumbnails.py`, `services/transcode.py`, `services/trash_service.py`,
 `services/search_service.py`; delete the duplicated implementations (P2-11).
 **Done when.** `files.py` <500 lines; one code path per operation; File Manager tests pass.
+
+**Progress (2.29.1).** `services/search_service.py` extracted: the name walk, skip-list, type/
+size filters, real-mountpoint discovery, default scopes and result merge. `/api/files/search` and
+`/api/files/universal-search` keep their contracts and now call the service; `tests/
+test_search_service.py` covers recursion, skip dirs, filters, truncation and merging. `files.py`
+2269 → 2133 lines. Still inline: thumbnails/transcode pipeline, archive extract and the trash
+store (plus the duplicated `files_service.py` favourites/trash logic).
 
 ### ◐ P2-04 · Split `music.py` (~1.4k) and replace the hand-rolled RSS parser — `L`
 **Problem.** yt-dlp wrappers, the per-user library store, podcast RSS parsing and radio share one router;

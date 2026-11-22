@@ -63,7 +63,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Shared path sanitizer from the File Manager router (delegates to
 # services/path_scope.py, so the caller's identity is enforced here too).
@@ -80,6 +80,35 @@ from backend.services.video_metadata import parse_video_name
 logger = logging.getLogger("ethos-nas.routers.video_station")
 
 router = APIRouter(dependencies=[Depends(path_scope.scope_request)])
+
+
+# ── Request models (TODO.md P1-09) ──────────────────────────────────────────
+
+class VideoConfigRequest(BaseModel):
+    """Library config. Roots/options/tmdb are sanitised by the handler — unknown
+    keys from newer clients are ignored rather than rejected."""
+
+    model_config = {"extra": "ignore"}
+    roots: list[str] = Field(default_factory=list)
+    options: dict = Field(default_factory=dict)
+    tmdb: dict | None = None
+
+
+class ResumeRequest(BaseModel):
+    """Playback position for one file (numbers may arrive as strings)."""
+
+    model_config = {"extra": "forbid"}
+    path: str = Field(min_length=1, max_length=4096)
+    time: float = 0
+    duration: float = 0
+
+
+class MetadataRefreshRequest(BaseModel):
+    """Batch refresh (no path) or a single file; `force` re-queries cache."""
+
+    model_config = {"extra": "forbid"}
+    path: str | None = Field(default=None, max_length=4096)
+    force: bool = False
 
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm", ".flv",
               ".wmv", ".mpg", ".mpeg", ".ts", ".mts", ".3gp"}
@@ -633,9 +662,9 @@ async def get_config() -> dict:
 
 
 @router.post("/config")
-async def set_config(payload: dict = Body(...)) -> dict:
-    roots_in = payload.get("roots") or []
-    options_in = payload.get("options") or {}
+async def set_config(payload: VideoConfigRequest) -> dict:
+    roots_in = payload.roots
+    options_in = payload.options
     roots = []
     for raw in roots_in:
         if not isinstance(raw, str):
@@ -648,7 +677,7 @@ async def set_config(payload: dict = Body(...)) -> dict:
             roots.append(root)
     prev = _load_config()
     cfg = {"roots": roots, "options": _sanitize_options(options_in),
-           "tmdb": _sanitize_tmdb(payload.get("tmdb"), prev.get("tmdb"))}
+           "tmdb": _sanitize_tmdb(payload.tmdb, prev.get("tmdb"))}
     _save_config(cfg)
     return {**cfg, "tmdb": _mask_tmdb(cfg["tmdb"])}
 
@@ -1288,12 +1317,10 @@ async def get_resume_all() -> dict:
 
 
 @router.post("/resume")
-async def set_resume(payload: dict = Body(...)) -> dict:
-    path = payload.get("path") or ""
-    time_ = float(payload.get("time") or 0)
-    duration = float(payload.get("duration") or 0)
-    if not path:
-        raise HTTPException(status_code=400, detail="Missing path")
+async def set_resume(payload: ResumeRequest) -> dict:
+    path = payload.path
+    time_ = payload.time
+    duration = payload.duration
     abs_path = _sanitize(path)
 
     async with _resume_lock:
@@ -1550,7 +1577,7 @@ async def tmdb_test_legacy() -> dict:
 
 @router.post("/tmdb/refresh")
 @router.post("/metadata/refresh")
-async def metadata_refresh(payload: dict = Body(default={})) -> dict:
+async def metadata_refresh(payload: MetadataRefreshRequest | None = Body(default=None)) -> dict:
     """Fetch metadata for the library (batch) or one file (`path`).
 
     Uses the configured provider chain: TMDB when a key is present, otherwise
@@ -1563,8 +1590,8 @@ async def metadata_refresh(payload: dict = Body(default={})) -> dict:
     disabled = _metadata_disabled(cfg)
     if disabled:
         raise HTTPException(status_code=400, detail=disabled)
-    single = payload.get("path") if isinstance(payload, dict) else None
-    force = bool(payload.get("force")) if isinstance(payload, dict) else False
+    single = payload.path if payload else None
+    force = bool(payload.force) if payload else False
 
     async with _metadata_refresh_guard:
         try:

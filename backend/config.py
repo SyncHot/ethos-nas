@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.29.1"
+APP_VERSION = "2.29.2"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.

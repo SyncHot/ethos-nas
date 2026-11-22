@@ -48,7 +48,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from backend.config import settings
@@ -169,6 +169,36 @@ class ReorderRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     order: list[str] = Field(min_length=1, max_length=500)
+
+
+class SaveConfigRequest(BaseModel):
+    """Body of `POST /api/downloads/config` — deliberately partial.
+
+    Every key is independent and only the keys present are applied (the handler
+    merges over the stored config); `extra="allow"` keeps forward compatibility
+    with newer clients, while the known keys are typed so `/docs` is accurate.
+    Range clamping stays in the handler (a value outside the allowed band is
+    clamped, not rejected).
+    """
+
+    model_config = {"extra": "allow"}
+
+    max_concurrent: int | None = None
+    download_dir: str | None = Field(default=None, max_length=4096)
+    auto_download_debrid: bool | None = None
+    auto_retry: bool | None = None
+    retry_max: int | None = None
+    retry_delay: int | None = None
+    duplicate_policy: str | None = None
+    auto_extract: bool | None = None
+    auto_extract_delete: bool | None = None
+    watch_folders: list | None = None
+    watch_enabled: bool | None = None
+    schedule: dict | None = None
+    speed_limit: dict | None = None
+    categories: list | None = None
+    rss_feeds: list | None = None
+    debrid: dict | None = None
 
 
 ALLOWED_SCHEMES = {"http", "https"}
@@ -2670,7 +2700,7 @@ async def get_config(request: Request):
 
 
 @router.post("/config")
-async def save_config(request: Request, payload: dict = Body(...)):
+async def save_config(request: Request, req: SaveConfigRequest):
     """Save the caller's downloads settings.
 
     Per-user fields (download dir, categories, watch folders, RSS, extraction
@@ -2680,6 +2710,8 @@ async def save_config(request: Request, payload: dict = Body(...)):
     """
     is_admin = _is_admin(request)
     cfg = _load_config()
+    # `exclude_unset` keeps the "omitted vs null" semantics the merge relies on.
+    payload = req.model_dump(exclude_unset=True)
     if is_admin and "max_concurrent" in payload:
         try:
             cfg["max_concurrent"] = max(1, min(16, int(payload["max_concurrent"])))

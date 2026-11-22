@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field, model_validator
 
 from backend.config import settings
 from backend.services import (
@@ -57,6 +58,94 @@ DEFAULT_CONFIG = {
     # Where downloaded tracks are stored (NAS-side library)
     "download_dir": str(Path.home() / "Music" / "Ethos"),
 }
+
+
+# ── Request models (TODO.md P1-09) ──────────────────────────────────────────
+# Both clients (the `/music` PWA and the old Android app) send the wrapped
+# `{"track": {...}}` form; the flat form is still accepted by `_norm_track`.
+
+class MusicDownloadRequest(BaseModel):
+    """One track to download — an id, a YouTube URL, or both."""
+
+    model_config = {"extra": "forbid"}
+    video_id: str = Field(default="", max_length=32)
+    url: str = Field(default="", max_length=2048)
+
+    @model_validator(mode="after")
+    def _require_source(self):
+        if not self.video_id.strip() and not self.url.strip():
+            raise ValueError("Podaj video_id lub url")
+        return self
+
+
+class MusicConfigRequest(BaseModel):
+    """Only the library download directory is user-configurable."""
+
+    model_config = {"extra": "forbid"}
+    download_dir: str = Field(default="", max_length=4096)
+
+
+class RadioStateRequest(BaseModel):
+    """Whole radio document (the PWA debounces and sends both lists)."""
+
+    model_config = {"extra": "forbid"}
+    favorites: list[str] = Field(default_factory=list, max_length=2000)
+    recents: list[str] = Field(default_factory=list, max_length=2000)
+
+
+class TrackEnvelope(BaseModel):
+    """A track in wrapped or flat form; fields are normalised by `_norm_track`.
+
+    Unknown keys are allowed so a newer client can add metadata without a
+    server release — the normaliser picks only the fields it knows.
+    """
+
+    model_config = {"extra": "allow"}
+    track: Optional[dict] = None
+
+
+class TrackKeyRequest(BaseModel):
+    """Remove a track by its `id|title` key."""
+
+    model_config = {"extra": "forbid"}
+    key: str = Field(min_length=1, max_length=512)
+
+
+class PlaylistCreateRequest(BaseModel):
+    """Create a playlist; the client may supply the id (web + phone parity)."""
+
+    model_config = {"extra": "forbid"}
+    name: str = Field(default="", max_length=200)
+    id: str = Field(default="", max_length=64)
+
+
+class StateImportRequest(BaseModel):
+    """One-time import of phone-only state. Top-level shape only — the
+    individual tracks/playlists are normalised item by item."""
+
+    model_config = {"extra": "ignore"}
+    liked: list[dict] = Field(default_factory=list, max_length=5000)
+    playlists: list[dict] = Field(default_factory=list, max_length=500)
+    history: list[dict] = Field(default_factory=list, max_length=2000)
+    podcasts: dict = Field(default_factory=dict)
+
+
+class PodcastSubscribeRequest(BaseModel):
+    """`{"podcast": {...}}` (both clients) or a flat podcast object."""
+
+    model_config = {"extra": "allow"}
+    podcast: Optional[dict] = None
+
+
+class RadioStateResponse(BaseModel):
+    favorites: list[str]
+    recents: list[str]
+
+
+class MusicConfigResponse(BaseModel):
+    download_dir: str
+    ffmpeg_available: bool
+    ytdlp_version: Optional[str] = None
 
 
 def _config_store():
@@ -716,10 +805,10 @@ async def stream(request: Request, video_id: str = Query(...)):
 
 
 @router.post("/download")
-async def download(payload: dict):
+async def download(payload: MusicDownloadRequest):
     """Download a track to the NAS music folder (m4a when ffmpeg is present)."""
-    video_id = str(payload.get("video_id") or "").strip()
-    url = str(payload.get("url") or "")
+    video_id = payload.video_id.strip()
+    url = payload.url
     if not video_id and url:
         m = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", url)
         video_id = m.group(1) if m else ""
@@ -740,6 +829,13 @@ async def download(payload: dict):
 # sequential loop without meaningfully loading the uplink.
 DOWNLOAD_CONCURRENCY = 3
 MAX_BATCH_SIZE = 100
+
+
+class MusicBatchDownloadRequest(BaseModel):
+    """Ids for a bulk download; invalid ids are dropped, the rest are capped."""
+
+    model_config = {"extra": "forbid"}
+    video_ids: list[str] = Field(default_factory=list, max_length=MAX_BATCH_SIZE)
 
 _batch_state: Dict[str, object] = {
     "running": False,
@@ -773,7 +869,7 @@ async def _batch_worker(sem: asyncio.Semaphore, video_id: str) -> None:
 
 
 @router.post("/download-batch")
-async def download_batch(payload: dict):
+async def download_batch(payload: MusicBatchDownloadRequest):
     """Queue a bulk download (e.g. an entire playlist) into the NAS library.
 
     Runs up to ``DOWNLOAD_CONCURRENCY`` downloads in parallel and returns
@@ -782,7 +878,7 @@ async def download_batch(payload: dict):
     """
     if _batch_state["running"]:
         raise HTTPException(status_code=409, detail="Inne pobieranie zbiorcze jest już w toku")
-    ids = [str(v).strip() for v in (payload.get("video_ids") or [])]
+    ids = [str(v).strip() for v in payload.video_ids]
     ids = list(dict.fromkeys(i for i in ids if re.fullmatch(r"[A-Za-z0-9_-]{11}", i)))
     if not ids:
         raise HTTPException(status_code=422, detail="Podaj listę video_ids")
@@ -1022,7 +1118,7 @@ async def podcast_catalog(
     }
 
 
-@router.get("/config")
+@router.get("/config", response_model=MusicConfigResponse)
 async def get_config():
     """Music app settings (download dir)."""
     cfg = _load_config()
@@ -1034,10 +1130,10 @@ async def get_config():
 
 
 @router.post("/config")
-async def set_config(payload: dict):
+async def set_config(payload: MusicConfigRequest):
     """Update music settings (only download_dir is user-configurable)."""
     cfg = _load_config()
-    new_dir = str(payload.get("download_dir") or "").strip()
+    new_dir = payload.download_dir.strip()
     if new_dir:
         # Absolute-path requirement, symlink resolution and the caller's scope
         # all live in path_scope.sanitize(); a non-admin cannot point the
@@ -1266,23 +1362,23 @@ async def state_get(request: Request):
 
 
 @router.put("/state")
-async def state_put(payload: dict, request: Request):
+async def state_put(payload: StateImportRequest, request: Request):
     """Merge the client's state into the server document. Server data wins per
     section — used for one-time import of data that previously lived only on the
     phone (library.json / podcasts.json). Safe when both Android stores import
     concurrently: each fills only what is still missing."""
     uid, _ = _user_state(request)
-    liked_in = [t for t in (_norm_track(t) for t in (payload.get("liked") or [])) if t]
+    liked_in = [t for t in (_norm_track(t) for t in payload.liked) if t]
     playlists_in = []
-    for pl in (payload.get("playlists") or []):
+    for pl in payload.playlists:
         if not isinstance(pl, dict):
             continue
         pid = str(pl.get("id") or "") or uuid.uuid4().hex[:12]
         tracks = [_norm_track(t) for t in (pl.get("tracks") or [])]
         playlists_in.append({"id": pid, "name": str(pl.get("name") or "Playlist"),
                              "tracks": [t for t in tracks if t]})
-    hist_in = [t for t in (_norm_track(t) for t in (payload.get("history") or [])) if t][:HISTORY_CAP]
-    pc_in = payload.get("podcasts") or {}
+    hist_in = [t for t in (_norm_track(t) for t in payload.history) if t][:HISTORY_CAP]
+    pc_in = payload.podcasts
     subs_in = [p for p in (_norm_podcast(p) for p in ((pc_in or {}).get("subscribed") or [])) if p]
     episodes_in: dict = {}
     for pid, eps in ((pc_in or {}).get("episodes") or {}).items():
@@ -1335,7 +1431,7 @@ def _clean_radio_ids(values: Any, cap: int) -> List[str]:
     return out
 
 
-@router.get("/radio/state")
+@router.get("/radio/state", response_model=RadioStateResponse)
 async def radio_state_get(request: Request):
     """Favourite + recently played station ids for the current user."""
     _, state = _user_state(request)
@@ -1347,12 +1443,12 @@ async def radio_state_get(request: Request):
 
 
 @router.put("/radio/state")
-async def radio_state_put(payload: dict, request: Request):
+async def radio_state_put(payload: RadioStateRequest, request: Request):
     """Replace the user's radio state (clients debounce and send the whole doc)."""
     uid, _ = _user_state(request)
     radio = {
-        "favorites": _clean_radio_ids((payload or {}).get("favorites"), RADIO_FAVORITES_CAP),
-        "recents": _clean_radio_ids((payload or {}).get("recents"), RADIO_RECENTS_CAP),
+        "favorites": _clean_radio_ids(payload.favorites, RADIO_FAVORITES_CAP),
+        "recents": _clean_radio_ids(payload.recents, RADIO_RECENTS_CAP),
     }
     async with _lib_lock:
         states = _load_states()
@@ -1364,13 +1460,13 @@ async def radio_state_put(payload: dict, request: Request):
 
 
 @router.post("/liked")
-async def liked_add(payload: dict, request: Request):
+async def liked_add(payload: TrackEnvelope, request: Request):
     """Add a track to liked (idempotent — dedup by id|title).
 
     The "Polubione" playlist is updated in the same write, so the phone
     downloads the track like any other playlist entry.
     """
-    track = _norm_track(_track_from_payload(payload))
+    track = _norm_track(_track_from_payload(payload.model_dump()))
     if not track:
         raise HTTPException(status_code=422, detail="Brak poprawnego utworu")
     uid, st = _user_state(request)
@@ -1386,11 +1482,9 @@ async def liked_add(payload: dict, request: Request):
 
 
 @router.delete("/liked")
-async def liked_remove(payload: dict, request: Request):
+async def liked_remove(payload: TrackKeyRequest, request: Request):
     """Remove a track from liked (by id|title key), also from "Polubione"."""
-    key = str((payload or {}).get("key") or "")
-    if not key:
-        raise HTTPException(status_code=422, detail="Brak klucza utworu")
+    key = payload.key
     uid, st = _user_state(request)
     async with _lib_lock:
         states = _load_states()
@@ -1444,12 +1538,12 @@ async def shared_playlist(owner: str = Query(...), id: str = Query(...)) -> dict
 
 
 @router.post("/playlists")
-async def playlist_create(payload: dict, request: Request):
+async def playlist_create(payload: PlaylistCreateRequest, request: Request):
     """Create a playlist. Body: {name, id?}. The client may supply its own id so the
     same playlist keeps one identity across web + Android; a server id is generated
     when omitted or when the supplied id already exists."""
-    name = str((payload or {}).get("name") or "").strip() or "Nowa playlista"
-    wanted_id = str((payload or {}).get("id") or "").strip()
+    name = payload.name.strip() or "Nowa playlista"
+    wanted_id = payload.id.strip()
     uid, st = _user_state(request)
     async with _lib_lock:
         states = _load_states()
@@ -1497,9 +1591,9 @@ async def playlist_delete(pid: str, request: Request):
 
 
 @router.put("/playlists/{pid}/tracks")
-async def playlist_track_add(pid: str, payload: dict, request: Request):
+async def playlist_track_add(pid: str, payload: TrackEnvelope, request: Request):
     """Add a track to a playlist (idempotent — dedup by id|title)."""
-    track = _norm_track(_track_from_payload(payload))
+    track = _norm_track(_track_from_payload(payload.model_dump()))
     if not track:
         raise HTTPException(status_code=422, detail="Brak poprawnego utworu")
     uid, st = _user_state(request)
@@ -1518,11 +1612,9 @@ async def playlist_track_add(pid: str, payload: dict, request: Request):
 
 
 @router.delete("/playlists/{pid}/tracks")
-async def playlist_track_remove(pid: str, payload: dict, request: Request):
+async def playlist_track_remove(pid: str, payload: TrackKeyRequest, request: Request):
     """Remove a track from a playlist (by id|title key)."""
-    key = str((payload or {}).get("key") or "")
-    if not key:
-        raise HTTPException(status_code=422, detail="Brak klucza utworu")
+    key = payload.key
     uid, st = _user_state(request)
     async with _lib_lock:
         states = _load_states()
@@ -1539,9 +1631,9 @@ async def playlist_track_remove(pid: str, payload: dict, request: Request):
 
 
 @router.post("/history")
-async def history_add(payload: dict, request: Request):
+async def history_add(payload: TrackEnvelope, request: Request):
     """Record a played track (newest first, capped). Idempotent per key."""
-    track = _norm_track(_track_from_payload(payload))
+    track = _norm_track(_track_from_payload(payload.model_dump()))
     if not track:
         raise HTTPException(status_code=422, detail="Brak poprawnego utworu")
     uid, st = _user_state(request)
@@ -1559,9 +1651,11 @@ async def history_add(payload: dict, request: Request):
 
 
 @router.post("/podcasts/subscribe")
-async def podcast_subscribe(payload: dict, request: Request):
+async def podcast_subscribe(payload: PodcastSubscribeRequest, request: Request):
     """Add a podcast subscription (dedup by feed URL)."""
-    pod = _norm_podcast(payload.get("podcast") if isinstance(payload, dict) else payload)
+    raw = payload.model_dump()
+    inner = raw.get("podcast")
+    pod = _norm_podcast(inner if isinstance(inner, dict) else raw)
     if not pod:
         raise HTTPException(status_code=422, detail="Brak poprawnego podcastu")
     uid, st = _user_state(request)

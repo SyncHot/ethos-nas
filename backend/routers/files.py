@@ -61,6 +61,7 @@ from backend.services import json_store
 from backend.services import package_client
 from backend.services import path_scope
 from backend.services import pressure_guard
+from backend.services import search_service
 from backend.services import system_deps
 from backend.services import task_registry
 from backend.services import trash_service
@@ -1851,63 +1852,8 @@ async def upload_file(
 
 
 # ── Search ───────────────────────────────────────────────────────────────────
-
-#: Directories never worth crawling on a NAS search (VCS metadata, dependency
-#: trees, caches, virtualenvs). They dominate the walk time and almost never
-#: hold the file the user is looking for.
-_SEARCH_SKIP_DIRS = {
-    ".git", ".hg", ".svn", "node_modules", "__pycache__", ".cache",
-    ".npm", ".yarn", ".gradle", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-    ".venv", "venv", "site-packages", ".tox", ".next", ".nuxt", "dist",
-}
-
-
-def _walk_search(root_path: str, term: str, limit: int,
-                 exts: set[str] | None = None, min_size: int = 0) -> tuple[list[dict], bool]:
-    """Recursively collect items whose names contain term (case-insensitive).
-
-    With ``exts`` set, only regular files with a matching extension are
-    returned; with ``min_size`` > 0, smaller files are skipped. When either
-    filter is active, directories are excluded from the results.
-    Well-known heavy directories (``_SEARCH_SKIP_DIRS``) are not descended into.
-    """
-    results = []
-    truncated = False
-    filtered = exts is not None or min_size > 0
-    for dirpath, dirnames, filenames in os.walk(root_path):
-        dirnames[:] = [d for d in dirnames if d not in _SEARCH_SKIP_DIRS]
-        names = sorted(filenames) if filtered else sorted(filenames + dirnames)
-        for name in names:
-            if term not in name.lower():
-                continue
-            full = os.path.join(dirpath, name)
-            try:
-                st = os.stat(full)
-            except OSError:
-                continue
-            is_dir = os.path.isdir(full)
-            if filtered and is_dir:
-                continue
-            size = 0 if is_dir else st.st_size
-            if exts is not None:
-                e = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-                if e not in exts:
-                    continue
-            if min_size > 0 and size < min_size:
-                continue
-            results.append({
-                "name": name,
-                "path": full,
-                "is_dir": is_dir,
-                "size": size,
-                "modified": st.st_mtime,
-            })
-            if len(results) >= limit:
-                truncated = True
-                break
-        if truncated:
-            break
-    return results, truncated
+# The walk, the extension catalogue and the default scopes live in
+# services/search_service.py (P2-03); the endpoints keep auth + path scope.
 
 
 @router.get("/search")
@@ -1929,90 +1875,19 @@ async def search_files(
     term = q.strip().lower()
     if not term:
         return {"query": q, "root": root_path, "results": [], "truncated": False}
-    results, truncated = await asyncio.to_thread(_walk_search, root_path, term, limit)
+    results, truncated = await asyncio.to_thread(search_service.walk_search, root_path, term, limit)
     return {"query": q, "root": root_path, "results": results, "truncated": truncated}
 
 
 # ── Universal Search (global, multi-root) ───────────────────────────────────
 
-#: File-type filters for universal search → allowed extensions.
-SEARCH_TYPE_EXTS: dict[str, set[str]] = {
-    "images": {"jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "heic", "avif", "tiff", "tif"},
-    "video": {"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "3gp", "ts", "m2ts"},
-    "audio": {"mp3", "ogg", "oga", "flac", "wav", "aac", "m4a", "opus", "wma", "mid", "midi"},
-    "docs": {"pdf", "doc", "docx", "odt", "txt", "md", "rtf", "xls", "xlsx", "ods", "csv",
-             "ppt", "pptx", "odp", "epub", "html", "htm"},
-    "archives": {"zip", "tar", "gz", "tgz", "bz2", "tbz", "xz", "txz", "7z", "rar", "zst", "lz4"},
-    "code": {"py", "js", "ts", "jsx", "tsx", "c", "cpp", "cc", "h", "hpp", "java", "go",
-             "rs", "rb", "php", "sh", "bash", "sql", "json", "yaml", "yml", "toml",
-             "xml", "css", "html", "htm", "vue", "svelte"},
-}
-
-#: Filesystems that never hold user data — excluded from auto search scopes.
-_PSEUDO_FSTYPES = {
-    "tmpfs", "squashfs", "overlay", "proc", "procfs", "sysfs", "devtmpfs",
-    "devpts", "cgroup", "cgroup2", "securityfs", "debugfs", "tracefs", "pstore",
-    "bpf", "configfs", "fusectl", "mqueue", "hugetlbfs", "ramfs", "autofs",
-    "binfmt_misc", "nsfs", "efivarfs", "iso9660",
-}
-
-
-def _real_mountpoints() -> list[str]:
-    """Readable real (non-pseudo) mountpoints, sorted and deduped."""
-    try:
-        import psutil
-        parts = psutil.disk_partitions(all=False)
-    except Exception:  # pragma: no cover — psutil missing or platform quirk
-        return []
-    out: list[str] = []
-    for p in parts:
-        if p.fstype in _PSEUDO_FSTYPES:
-            continue
-        mp = p.mountpoint
-        try:
-            if not os.path.isdir(mp) or not os.access(mp, os.R_OK):
-                continue
-        except OSError:
-            continue
-        out.append(mp)
-    return sorted(set(out))
-
-
-def _default_search_roots() -> list[dict]:
-    """Default universal-search scopes for the current identity.
-
-    Admins get /home plus the real data mounts; every other account gets its
-    own home plus the shared /mnt and /media mounts. Nested duplicates are
-    dropped (shallowest wins) so results are not counted twice. The root
-    filesystem itself is never a default scope — searching it means crawling
-    the entire disk and must be an explicit admin choice.
-    """
-    username, role = path_scope.current_identity()
-    kept: list[str] = []
-    for mp in _real_mountpoints():  # sorted → parents precede children
-        if mp == "/":
-            continue
-        if any(mp.startswith(k + os.sep) for k in kept):
-            continue
-        kept.append(mp)
-    if role == "admin":
-        roots = [{"path": "/home", "label": "Home"}]
-    else:
-        home = path_scope.home_dir(username)
-        roots = [{"path": home, "label": "Home"}] if home else []
-    for mp in kept:
-        if mp.startswith(("/mnt/", "/media/")):
-            label = os.path.basename(mp.rstrip("/")) or mp
-            roots.append({"path": mp, "label": f"{label} ({mp})"})
-    return roots
-
 
 @router.get("/search-roots")
 async def get_search_roots() -> dict:
     """Sensible search scopes for the caller (admin also gets `/`)."""
-    roots = _default_search_roots()
+    roots = search_service.default_search_roots()
     _username, role = path_scope.current_identity()
-    if role == "admin" and "/" in _real_mountpoints():
+    if role == "admin" and "/" in search_service.real_mountpoints():
         roots.append({"path": "/", "label": "Entire filesystem (/)"})
     return {"roots": roots}
 
@@ -2037,13 +1912,13 @@ async def universal_search(
         return {"query": q, "type": file_type, "roots": [], "skipped_roots": [],
                 "total": 0, "results": []}
 
-    exts = SEARCH_TYPE_EXTS.get(file_type) if file_type != "all" else None
+    exts = search_service.type_extensions(file_type)
     min_size = int(min_size_mb * 1024 * 1024)
 
     if roots:
         raw_roots = [r.strip() for r in roots.split(",") if r.strip()]
     else:
-        raw_roots = [r["path"] for r in _default_search_roots()]
+        raw_roots = [r["path"] for r in search_service.default_search_roots()]
 
     valid: list[str] = []
     skipped: list[dict] = []
@@ -2063,21 +1938,10 @@ async def universal_search(
             skipped.append({"root": raw, "reason": "not a directory"})
 
     outcomes = await asyncio.gather(
-        *[asyncio.to_thread(_walk_search, r, term, limit, exts, min_size) for r in valid]
+        *[asyncio.to_thread(search_service.walk_search, r, term, limit, exts, min_size) for r in valid]
     ) if valid else []
 
-    root_stats: list[dict] = []
-    merged: list[dict] = []
-    for root, (res, trunc) in zip(valid, outcomes, strict=True):
-        root_stats.append({"root": root, "ok": True, "count": len(res), "truncated": trunc})
-        for item in res:
-            item["root"] = root
-        merged.extend(res)
-
-    merged.sort(key=lambda x: x.get("modified", 0), reverse=True)
-    total_cap = 2000
-    if len(merged) > total_cap:
-        merged = merged[:total_cap]
+    merged, root_stats = search_service.merge_results(zip(valid, outcomes, strict=True))
 
     return {
         "query": q,

@@ -11,6 +11,23 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.29.2] - 2026-11-22
+
+### Fixed
+
+- **Invalid request bodies are rejected with a 422 that names the field**, instead of a
+  silently ignored key. Covered: Music (download, batch download, config, state import,
+  radio state, liked/playlist/history tracks, podcast subscribe), Video Station
+  (config, resume, metadata refresh), Gallery folders/options and the download settings
+  (partial config stays partial). Every payload the bundled Music, Photos and Video apps
+  send keeps working unchanged.
+
+### Changed
+
+- **File search moved out of the router** into `services/search_service.py` (name walk,
+  skip list, type/size filters, real-mount discovery, default scopes, result merge), with
+  `tests/test_search_service.py`. First slice of the `files.py` split; no API change.
+
 ## [2.29.1] - 2026-11-22
 
 ### Fixed
