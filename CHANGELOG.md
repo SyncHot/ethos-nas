@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.12.1] - 2026-11-22
+
+### Fixed
+
+- **Download Manager: Resume works after the download folder changes.** Tasks
+  queued under an old path (for example `/home/qb-admin/Downloads`) are moved
+  into the configured download directory when nothing has been downloaded yet,
+  instead of failing with `[Errno 13] Permission denied`.
+
 ## [2.12.0] - 2026-11-22
 
 ### Added

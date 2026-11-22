@@ -2016,6 +2016,76 @@ async def pause_task(task_id: str):
     return _public(t)
 
 
+def _usable_parent(path: str) -> bool:
+    """True when the service user can create ``path`` (its parents included)."""
+    probe = os.path.abspath(path)
+    while not os.path.exists(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    return os.path.isdir(probe) and os.access(probe, os.W_OK)
+
+
+def _rebase_task_to_download_dir(t: dict, cfg: dict) -> bool:
+    """Re-root a not-yet-started task under the current download directory.
+
+    ``download_dir`` is a user setting, but a task stores the absolute path it
+    was created with. After the folder is changed (or an old qBittorrent path
+    like ``/home/qb-admin/Downloads`` is imported), Resume used to fail with a
+    bare ``[Errno 13] Permission denied`` because the background worker runs as
+    the EthOS service user. When nothing has been downloaded yet, move the task
+    to the configured folder (keeping its category subfolder and name).
+    """
+    if t.get("status") not in ("waiting", "paused", "error"):
+        return False
+    if int(t.get("downloaded") or 0) > 0:
+        return False
+    path = str(t.get("path") or "").strip()
+    dl_dir = os.path.abspath(str(cfg.get("download_dir") or ""))
+    if not path or not dl_dir:
+        return False
+    path = os.path.abspath(path)
+    try:
+        if os.path.commonpath([path, dl_dir]) == dl_dir:
+            return False  # already inside the configured folder
+    except ValueError:
+        return False
+    # debrid tasks store the task folder; http/file tasks store the file itself.
+    root = path if t.get("kind") in ("debrid", "debrid_link") else os.path.dirname(path)
+    if _usable_parent(root):
+        return False  # deliberately outside download_dir and writable
+    category = str(t.get("category") or t.get("_qb_category") or "").strip()
+    base = dl_dir
+    if category:
+        safe = os.path.basename(category.replace("\\", "/"))
+        if safe and safe not in (".", ".."):
+            base = os.path.join(dl_dir, safe)
+    if t.get("kind") == "debrid_link":
+        new_path = base
+    else:
+        new_path = os.path.join(base, os.path.basename(path) or str(t.get("name") or "download"))
+    old_root = root
+    t["path"] = new_path
+    for f in t.get("_files") or []:
+        dest = str(f.get("dest") or "").strip()
+        if not dest:
+            continue
+        if t.get("kind") == "debrid":
+            try:
+                rel = os.path.relpath(dest, old_root)
+            except ValueError:
+                rel = os.path.basename(dest)
+            f["dest"] = os.path.join(new_path, rel)
+        else:
+            f["dest"] = os.path.join(new_path, os.path.basename(dest))
+    logger.info(
+        "Downloads: task %s destination moved to %s (old path not writable by the service user)",
+        t.get("id"), new_path,
+    )
+    return True
+
+
 @router.post("/tasks/{task_id}/resume")
 async def resume_task(task_id: str):
     t = _find(task_id)
@@ -2023,6 +2093,7 @@ async def resume_task(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     if t["status"] not in ("paused", "error"):
         return _public(t)
+    _rebase_task_to_download_dir(t, _load_config())
     t["status"] = "waiting"
     t["error"] = ""
     t["_retry_count"] = 0
@@ -2375,10 +2446,12 @@ async def pause_all():
 async def resume_all():
     """Resume every paused task (bulk toolbar action)."""
     n = 0
+    cfg = _load_config()
     for t in _tasks:
         if not _owned(t):
             continue
         if t["status"] == "paused":
+            _rebase_task_to_download_dir(t, cfg)
             t["status"] = "waiting"
             t["error"] = ""
             t["_retry_count"] = 0
@@ -2446,11 +2519,13 @@ async def clear_failed():
 async def retry_failed():
     """Re-queue every failed task (manual "Retry all failed")."""
     retried = 0
+    cfg = _load_config()
     for t in _tasks:
         if not _owned(t):
             continue
         if t["status"] != "error":
             continue
+        _rebase_task_to_download_dir(t, cfg)
         t["status"] = "waiting"
         t["error"] = ""
         t["speed"] = 0
