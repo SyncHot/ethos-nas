@@ -100,7 +100,11 @@ if systemctl list-unit-files ethos-nas.service --no-legend 2>/dev/null | grep -q
     echo "ERROR: an ethos-nas systemd unit already exists; refusing to overwrite it." >&2
     exit 1
 fi
-if command -v fuser >/dev/null 2>&1 && fuser 9000/tcp >/dev/null 2>&1; then
+# Image builds run in a chroot that shares the *host's* network namespace, so a
+# NAS already listening on :9000 (or the build host itself) makes this a false
+# positive. ethos-os-release sets ETHOS_SKIP_PORT_CHECK=1 for its build chroot.
+if [ "${ETHOS_SKIP_PORT_CHECK:-}" != "1" ] \
+        && command -v fuser >/dev/null 2>&1 && fuser 9000/tcp >/dev/null 2>&1; then
     echo "ERROR: port 9000 is already in use; stop or reconfigure that service, then retry." >&2
     exit 1
 fi

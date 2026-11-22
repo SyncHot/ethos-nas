@@ -11,6 +11,16 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.28.4] - 2026-11-22
+
+### Fixed
+
+- **`install.sh` can install inside an image build chroot.** The port-9000 guard
+  refused to continue when a NAS was already listening on the build host — the
+  chroot shares its network namespace, so the check was always a false positive
+  (the arm64/rpi image build died on it). `ETHOS_SKIP_PORT_CHECK=1` skips the
+  guard; `ethos-os-release` sets it for the build chroot.
+
 ## [2.28.3] - 2026-11-22
 
 ### Fixed
