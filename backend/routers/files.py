@@ -56,9 +56,11 @@ from backend.models import (
     FavoriteRequest, FileContentRequest, FileExtractRequest, FilePathRequest, FileRenameRequest,
     MkdirRequest, TrashRestoreRequest, VideoCoverRequest,
 )
+from backend.services import child_limits
 from backend.services import json_store
 from backend.services import package_client
 from backend.services import path_scope
+from backend.services import pressure_guard
 from backend.services import system_deps
 from backend.services import task_registry
 from backend.services import trash_service
@@ -483,6 +485,9 @@ def _queue_video_thumb(abs_path: str) -> bool:
         return True
     if len(_VIDEO_THUMB_INFLIGHT) >= _VIDEO_THUMB_QUEUE_MAX:
         return False
+    if not pressure_guard.heavy_work_allowed():
+        # Low-memory window: do not start new ffmpeg runs; the grid polls again.
+        return False
     task = task_registry.spawn(_generate_video_master(abs_path), name="video-thumb")
     if task is None:
         return False
@@ -557,7 +562,8 @@ def _grab_cover_frame_sync(abs_path: str, t: float, out_file: Path, left_half: b
     if left_half:
         cmd += ["-vf", "crop=iw/2:ih:0:0"]
     cmd += ["-vframes", "1", "-q:v", "2", "-f", "image2", "-y", str(out_file)]
-    subprocess.run(cmd, capture_output=True, timeout=60)
+    subprocess.run(child_limits.wrap(cmd, mem_mb=settings.CHILD_THUMB_MEM_LIMIT_MB, nice=0),
+                   capture_output=True, timeout=60)
 
 
 def _probe_duration(abs_path: str) -> float:
@@ -737,16 +743,20 @@ def _extract_video_frame(abs_path: str, size: int, cache_file: Path, face_crop: 
             if tmp_file.exists():
                 tmp_file.unlink()
             proc = subprocess.run(
-                list(_ffmpeg_thumb_prefix()) + prefix_args + [
-                    "-map", "0:v:0", "-an", "-sn", "-dn",
-                    "-vframes", "1",
-                    "-vf", f"scale={size}:-2",
-                    # explicit static encoder: ffmpeg 8's webp muxer defaults to
-                    # libwebp_anim, which fails on single-frame output.
-                    "-c:v", "libwebp",
-                    "-f", "webp",
-                    "-y", str(tmp_file),
-                ],
+                child_limits.wrap(
+                    list(_ffmpeg_thumb_prefix()) + prefix_args + [
+                        "-map", "0:v:0", "-an", "-sn", "-dn",
+                        "-vframes", "1",
+                        "-vf", f"scale={size}:-2",
+                        # explicit static encoder: ffmpeg 8's webp muxer defaults to
+                        # libwebp_anim, which fails on single-frame output.
+                        "-c:v", "libwebp",
+                        "-f", "webp",
+                        "-y", str(tmp_file),
+                    ],
+                    mem_mb=settings.CHILD_THUMB_MEM_LIMIT_MB,
+                    nice=0,  # the prefix already runs `nice -n 19`
+                ),
                 capture_output=True, timeout=max(5, int(min(timeout, remaining))),
             )
         except subprocess.TimeoutExpired:

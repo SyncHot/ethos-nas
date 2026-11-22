@@ -286,6 +286,9 @@ def _incoming_grants(username: str) -> list[dict]:
     grants = [g for g in _grants() if _recipient_ok(g, username)]
     with _CACHE_LOCK:
         _INCOMING_CACHE[username] = (now + CACHE_TTL, grants)
+        if len(_INCOMING_CACHE) > 64:
+            for stale in [k for k, v in _INCOMING_CACHE.items() if v[0] <= now]:
+                _INCOMING_CACHE.pop(stale, None)
     return grants
 
 
@@ -303,6 +306,11 @@ def _resource_paths(owner: str, kind: str, resource: str) -> frozenset[str]:
     frozen = frozenset(resolved)
     with _CACHE_LOCK:
         _PATH_CACHE[key] = (now + CACHE_TTL, frozen)
+        # Keyed by (owner, kind, resource) — one entry per shared root ever
+        # looked at; sweep the expired ones so it cannot grow forever.
+        if len(_PATH_CACHE) > 256:
+            for stale in [k for k, v in _PATH_CACHE.items() if v[0] <= now]:
+                _PATH_CACHE.pop(stale, None)
     return frozen
 
 

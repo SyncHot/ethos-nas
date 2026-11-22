@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.22.0"
+APP_VERSION = "2.23.0"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -224,6 +224,34 @@ class Settings:
     # Temperature warning threshold (°C) for any sensor; recovery is fixed at
     # warn − 5°C (health_monitor_service.TEMP_HYSTERESIS_C).
     TEMP_WARN_CELSIUS: float = float(os.getenv("ETHOS_TEMP_WARN_CELSIUS", "85"))
+    # Swap warning threshold (percent of swap used) for the health monitor.
+    SWAP_WARN_PERCENT: float = float(os.getenv("ETHOS_SWAP_WARN_PERCENT", "50"))
+    SWAP_RECOVER_PERCENT: float = float(os.getenv("ETHOS_SWAP_RECOVER_PERCENT", "40"))
+
+    # ── Memory-pressure guard (services/pressure_guard.py) ──────────────────
+    # A 15 s sampler turns "the box is nearly out of memory" into a pause of
+    # heavy background work *before* systemd-oomd/the kernel pick a victim.
+    PRESSURE_CHECK_INTERVAL: float = float(os.getenv("ETHOS_PRESSURE_CHECK_INTERVAL", "15"))
+    # PSI source; tests point this at a fixture file.
+    PRESSURE_FILE: str = os.getenv("ETHOS_PRESSURE_FILE", "/proc/pressure/memory")
+    # Soft pressure: log only. Hard: heavy work refuses to start until it clears.
+    PRESSURE_SOFT_AVAILABLE_PCT: float = float(
+        os.getenv("ETHOS_PRESSURE_SOFT_AVAILABLE_PCT", "8"))
+    PRESSURE_HARD_AVAILABLE_PCT: float = float(
+        os.getenv("ETHOS_PRESSURE_HARD_AVAILABLE_PCT", "4"))
+    PRESSURE_SOFT_PSI_SOME: float = float(os.getenv("ETHOS_PRESSURE_SOFT_PSI_SOME", "25"))
+    PRESSURE_HARD_PSI_FULL: float = float(os.getenv("ETHOS_PRESSURE_HARD_PSI_FULL", "10"))
+    # How long a queued render may wait for pressure to clear before failing.
+    PRESSURE_WAIT_SECONDS: int = int(os.getenv("ETHOS_PRESSURE_WAIT_SECONDS", "300"))
+
+    # ── Child process limits (services/child_limits.py) ─────────────────────
+    # RLIMIT_AS (MiB) applied to spawned media processes so a runaway encode
+    # fails cleanly instead of being the kernel's OOM victim. 0 disables.
+    CHILD_RENDER_MEM_LIMIT_MB: int = int(os.getenv("ETHOS_RENDER_MEM_LIMIT_MB", "3072"))
+    CHILD_PROBE_MEM_LIMIT_MB: int = int(os.getenv("ETHOS_PROBE_MEM_LIMIT_MB", "1024"))
+    CHILD_THUMB_MEM_LIMIT_MB: int = int(os.getenv("ETHOS_THUMB_MEM_LIMIT_MB", "512"))
+    # nice level for background media work (0 = do not renice).
+    CHILD_NICE: int = int(os.getenv("ETHOS_CHILD_NICE", "10"))
 
     # ── Network throughput history (services/net_stats_service.py) ───────────
     # How often the sampler records total RX/TX counters (seconds).

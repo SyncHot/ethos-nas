@@ -276,6 +276,18 @@ async def lifespan(app: FastAPI):
     from backend.services.task_registry import spawn as _spawn_task
     _spawn_task(_package_runtime.autostart_all(), name="package-autostart")
 
+    # Memory-pressure guard (services/pressure_guard.py): turns "the box is
+    # nearly out of memory" into a pause of heavy work before systemd-oomd or
+    # the kernel picks a victim.
+    from backend.services import pressure_guard as _pressure_guard
+    from backend.services import startup_guard as _startup_guard
+    await _pressure_guard.start()
+    # One stats snapshot for every /ws/stats client instead of one per tab.
+    from backend.routers.system import start_stats_sampler as _start_stats_sampler
+    await _start_stats_sampler()
+    # Report a previous run that did not stop cleanly (killed / power loss).
+    _startup_guard.check_previous_run()
+
     _warn_insecure_config()
 
     logger.info("=" * 60)
@@ -296,6 +308,10 @@ async def lifespan(app: FastAPI):
     await _video_hls.MANAGER.stop_all()
     from backend.services import video_render as _video_render
     await _video_render.MANAGER.stop_all()
+    from backend.services import pressure_guard as _pressure_guard_stop
+    await _pressure_guard_stop.stop()
+    from backend.routers.system import stop_stats_sampler as _stop_stats_sampler
+    await _stop_stats_sampler()
     _teardown_log_broadcaster()
     await stop_backup_scheduler()
     await stop_download_engine()
@@ -314,6 +330,10 @@ async def lifespan(app: FastAPI):
     _stopped_recs = stop_all_recordings()
     if _stopped_recs:
         logger.info("Surveillance: %d recording(s) stopped", _stopped_recs)
+    # Last: a clean stop removes the marker, so the next start does not report
+    # a kill (services/startup_guard.py).
+    from backend.services import startup_guard as _startup_guard_done
+    _startup_guard_done.mark_clean()
     logger.info("EthOS NAS shutting down")
 
 

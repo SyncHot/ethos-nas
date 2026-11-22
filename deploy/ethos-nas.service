@@ -6,6 +6,11 @@
 Description=EthOS NAS - self-hosted NAS management UI (FastAPI on :9000)
 After=network-online.target docker.service
 Wants=network-online.target docker.service
+# A crash loop must not burn the box: after 10 starts in 10 minutes systemd
+# gives up and the unit stays failed (the Health Monitor reports failed units)
+# instead of restarting forever like an unguarded `Restart=always`.
+StartLimitIntervalSec=600
+StartLimitBurst=10
 
 [Service]
 Type=simple
@@ -15,6 +20,25 @@ WorkingDirectory=__ETHOS_INSTALL_DIR__
 ExecStart=__ETHOS_INSTALL_DIR__/.venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 9000 --timeout-graceful-shutdown 10
 Restart=always
 RestartSec=3
+# Memory bounds (services/pressure_guard.py, docs/ops.md §8):
+#   MemoryMin keeps the NAS resident while other units (VS Code, browsers,
+#     containers) fight for RAM;
+#   MemoryHigh throttles *reclaim* instead of letting the kernel pick us as the
+#     OOM victim — there is deliberately no MemoryMax, which would make the
+#     kernel kill this very cgroup;
+#   oomd skips us: systemd-oomd is enabled on Ubuntu and kills whole cgroups
+#     at 50 % pressure (user@.service is explicitly kill-eligible).
+#     `avoid` is only valid on ManagedOOMPreference= — the ManagedOOM*
+#     settings accept auto|kill, and `auto` would make us a candidate again.
+MemoryMin=512M
+MemoryHigh=1536M
+ManagedOOMPreference=avoid
+OOMPolicy=stop
+# Many sockets (WebSockets, streams) + file handles per package build.
+LimitNOFILE=65535
+# glibc keeps one malloc arena per thread; this service runs 40+ threads and
+# the arenas inflate RSS without improving throughput.
+Environment=MALLOC_ARENA_MAX=2
 # Stop path (2026-11-22 incident): `mixed` SIGTERMs only the main process, so
 # supervised package services and ffmpeg renders keep running until the app's
 # own teardown stops them instead of being killed and respawned mid-stop. The

@@ -319,13 +319,29 @@ def _collect_temps() -> list[dict]:
 
 
 def _collect_memory() -> dict:
-    """Current RAM usage snapshot; degrades to zeros rather than raising."""
+    """Current RAM/swap usage + PSI stalls; degrades to zeros rather than raising."""
     try:
         mem = psutil.virtual_memory()
+        swap = psutil.swap_memory()
     except Exception as exc:  # noqa: BLE001 — health check must never crash the loop
         logger.debug("virtual_memory failed: %s", exc)
-        return {"percent": 0.0, "used": 0, "total": 0}
-    return {"percent": round(mem.percent, 1), "used": mem.used, "total": mem.total}
+        return {"percent": 0.0, "used": 0, "total": 0, "swap_percent": 0.0,
+                "swap_used": 0, "swap_total": 0, "psi_some": 0.0, "psi_full": 0.0}
+    try:
+        from backend.services.pressure_guard import read_psi
+        psi_some, psi_full = read_psi()
+    except Exception:  # noqa: BLE001 — PSI is optional (not every kernel/container)
+        psi_some = psi_full = 0.0
+    return {
+        "percent": round(mem.percent, 1),
+        "used": mem.used,
+        "total": mem.total,
+        "swap_percent": round(float(swap.percent), 1),
+        "swap_used": int(swap.used),
+        "swap_total": int(swap.total),
+        "psi_some": psi_some,
+        "psi_full": psi_full,
+    }
 
 
 def collect_snapshot() -> dict:
@@ -385,6 +401,9 @@ _CONFIG_SPEC: dict[str, tuple[float, float]] = {
     "disk_recover_percent": (0, 100),
     "memory_warn_percent": (1, 100),
     "memory_recover_percent": (0, 100),
+    "swap_warn_percent": (1, 100),
+    "swap_recover_percent": (0, 100),
+    "psi_full_warn": (1, 100),
     "temp_warn_celsius": (40, 125),           # below/above real silicon ranges
     "alert_cooldown_seconds": (60, 604800),   # up to 7 days
     "check_interval_seconds": (30, 86400),    # up to 24 h
@@ -408,6 +427,7 @@ _KEY_SMART_ATTRS = (
 _WARN_RECOVER_PAIRS = (
     ("disk_warn_percent", "disk_recover_percent"),
     ("memory_warn_percent", "memory_recover_percent"),
+    ("swap_warn_percent", "swap_recover_percent"),
 )
 
 
@@ -454,6 +474,9 @@ def _defaults() -> dict:
         "disk_recover_percent": settings.DISK_RECOVER_PERCENT,
         "memory_warn_percent": settings.MEMORY_WARN_PERCENT,
         "memory_recover_percent": settings.MEMORY_RECOVER_PERCENT,
+        "swap_warn_percent": settings.SWAP_WARN_PERCENT,
+        "swap_recover_percent": settings.SWAP_RECOVER_PERCENT,
+        "psi_full_warn": settings.PRESSURE_HARD_PSI_FULL,
         "temp_warn_celsius": settings.TEMP_WARN_CELSIUS,
         "alert_cooldown_seconds": settings.HEALTH_ALERT_COOLDOWN,
         "check_interval_seconds": settings.HEALTH_CHECK_INTERVAL,
@@ -616,6 +639,51 @@ def run_check() -> dict:
             if emit_event("info", title, msg, source="health"):
                 emitted.append(title)
             del alerts[mkey]
+
+        # ── Swap exhaustion ────────────────────────────────────────────────
+        # Swap ~100% means the kernel has nowhere to page out: the next
+        # allocation spike becomes an OOM kill (systemd-oomd or the kernel).
+        swap_pct = float(mem.get("swap_percent") or 0.0)
+        skey = "swap"
+        entry = alerts.get(skey)
+        if swap_pct >= cfg["swap_warn_percent"]:
+            if entry is None or _cooldown_elapsed(entry, now, cooldown):
+                title = f"Swap at {int(swap_pct)}%"
+                msg = (f"{_fmt_bytes(mem.get('swap_used', 0))} of "
+                       f"{_fmt_bytes(mem.get('swap_total', 0))} swap in use — the box "
+                       "has no free RAM left to page out.")
+                if emit_event("warning", title, msg, source="health"):
+                    emitted.append(title)
+                alerts[skey] = {"state": "alerting",
+                                "last_alert_at": now.isoformat(timespec="seconds")}
+        elif entry is not None and swap_pct < cfg["swap_recover_percent"]:
+            title = "Swap back to normal"
+            msg = (f"Swap usage dropped to {int(swap_pct)}% "
+                   f"(was ≥{cfg['swap_warn_percent']:g}%).")
+            if emit_event("info", title, msg, source="health"):
+                emitted.append(title)
+            del alerts[skey]
+
+        # ── Memory stalls (PSI) ─────────────────────────────────────────────
+        # systemd-oomd acts on sustained pressure, not on a single spike.
+        psi_full = float(mem.get("psi_full") or 0.0)
+        pkey = "psi:memory"
+        entry = alerts.get(pkey)
+        if psi_full >= cfg["psi_full_warn"]:
+            if entry is None or _cooldown_elapsed(entry, now, cooldown):
+                title = f"Memory stalls (PSI {psi_full:g}%)"
+                msg = ("Processes spend that share of their time waiting on memory "
+                       "reclaim — systemd-oomd starts killing services at this point.")
+                if emit_event("error", title, msg, source="health"):
+                    emitted.append(title)
+                alerts[pkey] = {"state": "alerting",
+                                "last_alert_at": now.isoformat(timespec="seconds")}
+        elif entry is not None and psi_full < cfg["psi_full_warn"] / 2:
+            title = "Memory stalls cleared"
+            msg = f"PSI full dropped to {psi_full:g}%."
+            if emit_event("info", title, msg, source="health"):
+                emitted.append(title)
+            del alerts[pkey]
 
         # ── Temperature sensors ────────────────────────────────────────
         temp_warn = cfg["temp_warn_celsius"]

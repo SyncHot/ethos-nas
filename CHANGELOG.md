@@ -11,6 +11,36 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.23.0] - 2026-11-22
+
+### Added
+
+- **EthOS gets out of the way of the OOM killer.** A memory-pressure guard reads
+  `/proc/pressure/memory`, available RAM and swap; on hard pressure offline video
+  downloads, video thumbnails, package installs, new downloads and music batch
+  jobs pause and the Notification Center says why (recovery resumes them). Every
+  ffmpeg/ffprobe child now runs with an address-space cap (3 GiB render, 1 GiB
+  probe/camera, 512 MiB thumbnails) and a lower priority, so a runaway encode
+  fails with a clear error instead of being the kernel's victim.
+- **Memory guards in the service unit**: `MemoryMin=512M` keeps the NAS resident,
+  `MemoryHigh=1536M` throttles reclaim, `ManagedOOMPreference=avoid` keeps
+  `systemd-oomd` (active on Ubuntu, kills cgroups at 50 % pressure) away from us,
+  `OOMPolicy=stop` plus `StartLimitBurst=10` turn a crash into one deterministic
+  restart instead of a loop, and `MALLOC_ARENA_MAX=2` trims the RSS of a
+  40-thread process.
+- **Why did it die?** A marker file now records every start and is removed only
+  by a clean stop, so a killed run (OOM, SIGKILL, power loss) is reported once in
+  the Notification Center at the next boot.
+- **System → Status** shows swap and the pressure level; the health monitor
+  alerts on swap exhaustion and on sustained memory stalls (PSI); `/ws/stats`
+  feeds every open dashboard from one shared sampler instead of one psutil
+  snapshot per tab every two seconds.
+
+### Changed
+
+- Swap, sharing and music stream caches now drop expired entries instead of
+  growing with every distinct path/track (guarded by a test).
+
 ## [2.22.0] - 2026-11-22
 
 ### Added

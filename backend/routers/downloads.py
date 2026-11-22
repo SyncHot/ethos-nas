@@ -53,7 +53,7 @@ from pydantic import BaseModel, Field
 
 from backend.config import settings
 from backend.routers.auth import require_admin
-from backend.services import path_scope, user_data
+from backend.services import path_scope, pressure_guard, user_data
 from backend.services import rss_service
 from backend.services.bencode import parse_magnet as _parse_magnet
 from backend.services.bencode import parse_torrent as _parse_torrent
@@ -1824,6 +1824,9 @@ async def add_task(payload: AddTaskRequest):
     raw_url = payload.url.strip()
     if not raw_url:
         raise HTTPException(status_code=400, detail="URL is required")
+    if not pressure_guard.heavy_work_allowed():
+        raise HTTPException(status_code=503, detail="The NAS is low on memory — try again in a moment",
+                            headers={"Retry-After": "30"})
 
     cfg = _load_config()
     folder = (payload.folder or "").strip()
@@ -1963,6 +1966,9 @@ async def add_torrent(files: list[UploadFile] = File(...), folder: str = ""):
     """
     cfg = _load_config()
     provider, torrent_creds = _providers.torrent_provider(cfg)
+    if not pressure_guard.heavy_work_allowed():
+        raise HTTPException(status_code=503, detail="The NAS is low on memory — try again in a moment",
+                            headers={"Retry-After": "30"})
     if not provider or not _providers.credentials_complete(provider, torrent_creds):
         raise HTTPException(
             status_code=400,

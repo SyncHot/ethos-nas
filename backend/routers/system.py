@@ -38,6 +38,26 @@ stats_ws_router = APIRouter()
 
 _boot_time: float = psutil.boot_time()
 
+# One shared sampler feeds every /ws/stats client. Before this, each open tab
+# ran a full psutil snapshot in a thread every STATS_INTERVAL — four dashboards
+# meant eight snapshots per second for identical data.
+_stats_cache: dict = {"at": 0.0, "data": None}
+_stats_task: Optional[asyncio.Task] = None
+
+
+def _cgroup_memory() -> Optional[dict]:
+    """Memory of the unit's own cgroup (v2), if the host exposes it."""
+    try:
+        rel = Path("/proc/self/cgroup").read_text(encoding="utf-8").strip()
+        rel = rel.split("::")[-1].lstrip("/")
+        base = Path("/sys/fs/cgroup") / rel
+        return {
+            "current": int((base / "memory.current").read_text(encoding="utf-8").strip()),
+            "peak": int((base / "memory.peak").read_text(encoding="utf-8").strip()),
+        }
+    except (OSError, ValueError):
+        return None
+
 
 def _uptime_seconds() -> int:
     """Return seconds since system boot."""
@@ -78,6 +98,20 @@ def collect_system_stats() -> dict:
         "available": mem.available,
         "percent": mem.percent,
     }
+
+    swap = psutil.swap_memory()
+    stats["swap"] = {
+        "total": swap.total,
+        "used": swap.used,
+        "free": swap.free,
+        "percent": swap.percent,
+    }
+    try:
+        from backend.services import pressure_guard
+        stats["pressure"] = pressure_guard.snapshot()
+    except Exception:  # noqa: BLE001 — a stats read must never fail on this
+        logger.debug("Pressure snapshot failed", exc_info=True)
+    stats["cgroup"] = _cgroup_memory()
 
     disk = psutil.disk_usage("/")
     stats["disk"] = {
@@ -130,13 +164,48 @@ async def ws_stats(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
         while True:
-            data = await asyncio.to_thread(collect_system_stats)
+            data = _stats_cache.get("data")
+            stale = (data is None
+                     or _time.monotonic() - float(_stats_cache.get("at") or 0.0)
+                     > 3 * max(0.5, settings.STATS_INTERVAL))
+            if stale:
+                # Sampler not running (tests, early startup): compute directly.
+                data = await asyncio.to_thread(collect_system_stats)
             await websocket.send_json(data)
             await asyncio.sleep(settings.STATS_INTERVAL)
     except WebSocketDisconnect:
         logger.info("Stats WebSocket disconnected")
     except Exception as exc:
         logger.error("Stats WebSocket error: %s", exc)
+
+
+async def _stats_loop() -> None:
+    """Refresh the shared snapshot for every connected client."""
+    while True:
+        try:
+            data = await asyncio.to_thread(collect_system_stats)
+            _stats_cache.update({"at": _time.monotonic(), "data": data})
+        except Exception:  # noqa: BLE001 — the sampler must outlive one bad read
+            logger.error("System stats sampler failed", exc_info=True)
+        await asyncio.sleep(max(0.5, settings.STATS_INTERVAL))
+
+
+async def start_stats_sampler() -> None:
+    global _stats_task
+    from backend.services import task_registry
+    if _stats_task is None or _stats_task.done():
+        _stats_task = task_registry.spawn(_stats_loop(), name="system-stats-sampler")
+
+
+async def stop_stats_sampler() -> None:
+    global _stats_task
+    task, _stats_task = _stats_task, None
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass  # cancelled on purpose during teardown — nothing to report
 
 
 # ── Lifecycle endpoints ──────────────────────────────────────────────────────
@@ -194,6 +263,14 @@ async def _stop_children_before_restart() -> None:
             logger.info("Pre-restart: stopped %d camera recording(s)", stopped)
     except Exception:
         logger.error("Pre-restart recording stop failed", exc_info=True)
+    # os.execv never runs the lifespan teardown — clear the unclean-stop marker
+    # ourselves so the next image does not report a kill (services/startup_guard.py).
+    try:
+        from backend.services import startup_guard
+
+        startup_guard.mark_clean()
+    except Exception:
+        logger.debug("Could not clear the startup marker", exc_info=True)
 
 
 async def _perform_restart() -> None:

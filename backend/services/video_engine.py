@@ -18,6 +18,9 @@ import logging
 import os
 import time
 
+from backend.config import settings
+from backend.services import child_limits
+
 logger = logging.getLogger("ethos-nas.services.video_engine")
 
 BROWSER_AUDIO_OK = {"aac", "mp3", "opus"}
@@ -456,7 +459,8 @@ class HardwareProbe:
         """Run a command; return ``(returncode, stdout, stderr_tail)``."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                *child_limits.wrap(cmd, mem_mb=settings.CHILD_PROBE_MEM_LIMIT_MB),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
         except Exception as exc:  # pragma: no cover - spawn failures are environmental
             return None, "", f"spawn failed: {exc}"

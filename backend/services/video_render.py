@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from backend.config import settings
-from backend.services import json_store, shutdown_state, task_registry
+from backend.services import child_limits, json_store, pressure_guard, shutdown_state, task_registry
 from backend.services.video_engine import TranscodeLimiter
 
 logger = logging.getLogger("ethos-nas.services.video_render")
@@ -314,6 +314,8 @@ class RenderManager:
         """Queue a render, or reuse the copy already made (or running) for it."""
         if shutdown_state.is_set():
             raise RenderBusy("The server is shutting down — try again after the restart")
+        if not pressure_guard.heavy_work_allowed():
+            raise RenderBusy("The NAS is low on memory — try again in a moment")
         lock = self._ensure_lock()
         async with lock:
             self.sweep_locked()
@@ -384,13 +386,19 @@ class RenderManager:
                 # Shutdown began while this job waited for the renderer slot:
                 # do not spawn a process the unit stop is about to kill.
                 raise asyncio.CancelledError
+            if not await pressure_guard.wait_until_ok():
+                # Hard memory pressure did not clear while this job waited for
+                # the single renderer slot — fail cleanly instead of adding a
+                # multi-GiB encoder to a box that is already out of RAM.
+                raise RenderBusy("The NAS is low on memory — the export did not start")
             cmd = cmd_factory(str(part))
             job.status = "rendering"
             job.started_at = time.time()
             logger.info("Render start | id=%s q=%s mode=%s input=%s",
                         job.id, job.quality, job.mode, abs_path)
             proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                *child_limits.wrap(cmd, mem_mb=settings.CHILD_RENDER_MEM_LIMIT_MB),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
             self._procs[job.id] = proc
             drain = asyncio.create_task(self._drain(proc.stderr, stderr_tail))

@@ -70,7 +70,8 @@ from pydantic import BaseModel
 from backend.config import settings
 from backend.routers.files import _sanitize, _sanitize_read
 from backend.services import (
-    path_scope, shutdown_state, task_registry, user_data, video_engine, video_hls, video_render,
+    child_limits, path_scope, shutdown_state, task_registry, user_data, video_engine, video_hls,
+    video_render,
 )
 from backend.services.metadata import service as metadata_service
 from backend.services.metadata.base import MetadataConfigError
@@ -870,7 +871,8 @@ async def transcode(
 
     try:
         proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            *child_limits.wrap(cmd, mem_mb=settings.CHILD_RENDER_MEM_LIMIT_MB),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     except Exception as exc:
         await video_engine.LIMITER.release()
         logger.error("Transcode spawn failed | input=%s: %s", abs_path, exc)

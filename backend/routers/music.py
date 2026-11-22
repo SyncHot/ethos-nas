@@ -43,8 +43,8 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from backend.config import settings
 from backend.services import (
-    music_search, package_client, path_scope, shutdown_state, sharing_resources, sharing_service,
-    user_data,
+    music_search, package_client, path_scope, pressure_guard, shutdown_state, sharing_resources,
+    sharing_service, user_data,
 )
 
 logger = logging.getLogger("ethos-nas.routers.music")
@@ -428,6 +428,11 @@ def _resolve_stream(video_id: str) -> Tuple[str, str]:
     # ext=mp4: android client serves combined A/V MP4 (AAC audio) — still fine
     ctype = f"audio/{'mp4' if info['ext'] in ('m4a', 'aac', 'mp4') else 'webm'}"
     _stream_cache[video_id] = (url, ctype, now + STREAM_CACHE_TTL_SEC)
+    if len(_stream_cache) > 256:
+        # One entry per distinct track played; drop the expired ones before the
+        # dict grows with the whole history (memory-bounds guard test).
+        for stale in [k for k, v in _stream_cache.items() if v[2] <= now]:
+            _stream_cache.pop(stale, None)
     return url, ctype
 
 
@@ -749,6 +754,11 @@ _batch_state: Dict[str, object] = {
 async def _batch_worker(sem: asyncio.Semaphore, video_id: str) -> None:
     async with sem:
         item = _batch_state["items"][video_id]  # type: ignore[index]
+        if not await pressure_guard.wait_until_ok():
+            item["status"] = "failed"
+            item["error"] = "The NAS is low on memory — try again later"
+            _batch_state["failed"] += 1
+            return
         item["status"] = "downloading"
         try:
             result = await asyncio.to_thread(_download_sync, video_id)

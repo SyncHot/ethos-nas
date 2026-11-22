@@ -244,6 +244,36 @@ real box with a share edit and a media copy before it ships (TODO.md P5-01).
 Safe additions that were considered: `PrivateTmp=yes` (transcodes already live in `DATA_DIR`),
 `LimitNOFILE=65535`, `Restart=always` (already set).
 
+### 8.1 Resource limits actually shipped
+
+| Setting | Value | Why |
+|---|---|---|
+| `KillMode` / `TimeoutStopSec` | `mixed` / 30 s | SIGTERM reaches only the main process; children are stopped by the app's teardown, and a stuck connection cannot hold the unit past 30 s (see `docs/updates.md`) |
+| `MemoryMin` | 512 M | the NAS stays resident while other units (VS Code, containers) reclaim |
+| `MemoryHigh` | 1536 M | throttles reclaim; deliberately **no** `MemoryMax` (the kernel would kill this cgroup) |
+| `ManagedOOMPreference` | `avoid` | `systemd-oomd` is enabled on Ubuntu and kills whole cgroups at 50 % pressure; `avoid` keeps the NAS out of the candidate set (the `ManagedOOM*` settings only accept `auto|kill`) |
+| `OOMPolicy` | `stop` | after a real OOM kill the unit restarts deterministically (and `StartLimit*` stops a loop) |
+| `StartLimitIntervalSec` / `StartLimitBurst` | 600 s / 10 | a broken release cannot restart-loop forever |
+| `LimitNOFILE` | 65535 | WebSockets, streams, package builds |
+| `MALLOC_ARENA_MAX` | 2 | 40+ threads × glibc arenas inflate RSS |
+
+Inside the app: `services/pressure_guard.py` watches `/proc/pressure/memory`, MemAvailable and
+swap; on **hard** pressure offline renders, video thumbnails, package installs, new downloads and
+music batch jobs pause and the Notification Center says why. `services/child_limits.py` caps each
+ffmpeg/ffprobe child (RLIMIT_AS: render 3 GiB, probe/camera 1 GiB, thumbnails 512 MiB) and nices
+background work, so a runaway encode fails cleanly instead of becoming the kernel's OOM victim.
+
+Checks:
+
+```bash
+systemctl show ethos-nas -p MemoryCurrent -p MemoryPeak -p ManagedOOMPreference -p Result
+cat /proc/pressure/memory; grep -E 'MemAvailable|SwapFree' /proc/meminfo
+journalctl -k -b | grep -iE 'oom|killed process'; journalctl -u systemd-oomd --since -1d
+```
+
+An unclean stop (killed or power loss) is reported once in the Notification Center at the next
+start (`services/startup_guard.py`); a clean restart removes the marker and stays quiet.
+
 ---
 
 ## 9. Secrets

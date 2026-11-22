@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 from PIL import Image, ImageChops
 
 from backend.config import settings
+from backend.services import child_limits
 from backend.services.notifications_service import emit_event
 
 logger = logging.getLogger("ethos-nas.services.camera_service")
@@ -137,7 +138,8 @@ def _ffmpeg_grab(url: str, out_path: Path, scale: Optional[str] = None, timeout:
         cmd += ["-vf", f"scale={scale}"]
     cmd += ["-frames:v", "1", "-q:v", "4", "-y", str(out_path)]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(child_limits.wrap(cmd, mem_mb=settings.CHILD_THUMB_MEM_LIMIT_MB),
+                           capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
             return False, (r.stderr or "ffmpeg failed").strip().splitlines()[-1][:300]
         return True, ""
@@ -157,7 +159,9 @@ def _live_stream(url: str):
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
     cmd += _url_input_args(url)
     cmd += ["-i", url, "-an", "-f", "mjpeg", "-q:v", "6", "-r", "5", "pipe:1"]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(
+        child_limits.wrap(cmd, mem_mb=settings.CHILD_THUMB_MEM_LIMIT_MB),
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     def gen():
         buf = b""
@@ -609,7 +613,9 @@ def start_recording(cam_id: str) -> dict:
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
                 "-g", "50", "-movflags", "+faststart", "-y", str(out)]
         try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            proc = subprocess.Popen(
+                child_limits.wrap(cmd, mem_mb=settings.CHILD_PROBE_MEM_LIMIT_MB),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as exc:
             raise CameraError(f"Failed to start ffmpeg: {exc}") from exc
         _RECORD_PROCS[cam_id] = proc

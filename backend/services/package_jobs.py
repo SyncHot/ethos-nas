@@ -12,6 +12,7 @@ import time
 import uuid
 from typing import Awaitable, Callable
 
+from backend.services import pressure_guard
 from backend.services.package_schema import PackageError
 from backend.services.task_registry import spawn
 
@@ -48,6 +49,11 @@ def create(kind: str, package_id: str) -> dict:
     with _LOCK:
         if package_id in _ACTIVE_PACKAGES:
             raise PackageError(f"Another operation is already running for {package_id}", 409)
+        if not pressure_guard.heavy_work_allowed():
+            # Building a venv / pulling images is the heaviest thing the core
+            # does; refuse while the box is under hard memory pressure.
+            raise PackageError(
+                "The NAS is low on memory — try again in a moment", 503)
         job_id = f"job_{uuid.uuid4().hex[:12]}"
         plan = STEP_PLANS.get(kind, ())
         job = {
