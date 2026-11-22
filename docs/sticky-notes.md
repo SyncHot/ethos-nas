@@ -6,7 +6,9 @@ core desktop widget: the UI ships as a native package window and the notes live 
 package's private Python service.
 
 Package repo: `~/apps/compose/ethos-packages/ethos-sticky-notes` ·
-Package id: `ethos-sticky-notes` · Version: 1.0.0 · `min_ethos_version: 2.0.0`
+Package id: `ethos-sticky-notes` · Version: 2.0.0 · `min_ethos_version: 2.14.1`
+
+See [`docs/notes-pwa.md`](notes-pwa.md) for the installable mobile capture app.
 
 ## File map
 

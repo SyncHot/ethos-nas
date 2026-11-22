@@ -11,6 +11,29 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.14.1] - 2026-11-22
+
+### Added
+
+- **Sticky Notes 2.0: checklist tasks and reminders.** Notes can become
+  checklists with togglable items, due dates and reminders. Search across notes
+  and items, pin important notes, archive the rest, and pick one of five colors.
+  The package now ships a private venv with Web Push support (VAPID), so a due
+  reminder reaches the device even when the tab is closed.
+- **A right-edge Sticky Notes ribbon.** Pin the package and enable “Show
+  ribbon” in its Settings to get a collapsible tab with quick note/task capture,
+  checklist toggles and a jump to the full app. The ribbon reserves a 44 px
+  desktop gutter, so icons shift instead of hiding underneath it; it is hidden
+  on narrow screens where the mobile app takes over.
+- **Installable `/notes` app for phones.** A standalone quick-capture page with
+  its own manifest, icons, New note / New task shortcuts and a share target.
+  Writes work offline through a bounded queue and replay automatically; the page
+  reuses the desktop session and offers the same reminders through Web Push.
+- **`ui.ribbon` for pinned native packages.** The package schema validates a
+  `ui.ribbon` entry, the core mounts it in a single `#ethos-ribbon-host`, and
+  `ctx.setDesktopGutter()` lets a package reserve desktop space. Sticky Notes is
+  the reference implementation. Requires Sticky Notes 2.0.0 (EthOS 2.14.1+).
+
 ## [2.14.0] - 2026-11-22
 
 ### Added
