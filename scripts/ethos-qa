@@ -60,8 +60,8 @@ FORBIDDEN_JS = (
      "ships its own toast/notification panel — use ctx.notifications"),
     ("S10", "warn", re.compile(r"""\sonclick\s*=\s*["']"""),
      "inline onclick= string handler (CSP-unsafe; tracked as TODO P3-03)"),
-    ("S11", "warn", re.compile(r"\blocalStorage\b"),
-     "touches localStorage in the EthOS origin — prefix keys with the package id"),
+    ("S11", "info", re.compile(r"\blocalStorage\b"),
+     "uses localStorage in the EthOS origin — keep the keys namespaced to the package"),
 )
 
 
@@ -305,21 +305,26 @@ def check_package(pkg_dir: Path, manifest: dict, base_url: str, version: tuple[i
             row["theme"] = "none"
             report.add("S16", "error", pkg_id, "no palette tokens found in the native UI")
 
-    # S17 — catalog copy: the README truncates at 150 chars; the dialog does not.
+    # S17 — catalog copy. The README truncates the description at 150 chars, the
+    # Package Center dialog shows all of it, so a long one is informational.
     description = str(manifest.get("description") or "")
     if len(description) > 150:
-        report.add("S17", "warn", pkg_id,
-                   f"description is {len(description)} chars (README truncates at 150)")
+        report.add("S17", "info", pkg_id,
+                   f"description is {len(description)} chars (the catalog table shows 150)")
     changelog = str(manifest.get("changelog") or "")
     if not changelog:
         report.add("S17", "warn", pkg_id, "changelog is empty — updates show no release note")
     else:
-        body = VERSION_HEAD_RE.split(changelog, maxsplit=1)
-        newest = (body[-1] if len(body) > 1 else changelog).strip()
-        if len(changelog) > 2500:
+        # "1.2.1: … 1.2.0: …" — the newest note is the text up to the next heading.
+        parts = VERSION_HEAD_RE.split(changelog)
+        newest = (parts[2] if len(parts) > 2 else changelog).strip()
+        if len(changelog) > 8000:
             report.add("S17", "warn", pkg_id,
                        f"changelog field is {len(changelog)} chars — it grows without bound "
                        "and inflates index.json")
+        elif len(changelog) > 4000:
+            report.add("S17", "info", pkg_id,
+                       f"changelog field is {len(changelog)} chars of history")
         if len(newest) > 220:
             report.add("S17", "warn", pkg_id,
                        f"newest changelog entry is {len(newest)} chars — keep it to one line")

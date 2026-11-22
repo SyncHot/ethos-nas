@@ -49,9 +49,9 @@ scheme · `S17` catalog copy · `S18` language · `A01–A06` live API/health/lo
 |---|---|---|---|---|---|---|
 | `backup-manager` | 1.0.3 | native | — | own tokens (26) + dark | 0 | 0 |
 | `domains` | 1.2.2 | native | 8093 | own tokens (28) + dark | 15 | 0 |
-| `download-manager` | 1.1.0 | native | — | own tokens (26) + dark | 49 | 0 |
+| `download-manager` | 1.1.1 | native | — | own tokens (26) + dark | 49 | 0 |
 | `ethos-antivirus` | 2.1.6 | native | 8092 | own tokens (28) + dark | 0 | 0 |
-| `ethos-books` | 1.2.0 | native | 8089 | own tokens (21) + dark | 67 | 0 |
+| `ethos-books` | 1.2.1 | native | 8089 | own tokens (21) + dark | 67 | 0 |
 | `ethos-cleaner` | 1.0.1 | native | — | host tokens (46) | 13 | 0 |
 | `ethos-docker` | 1.0.5 | native | — | own tokens (21) + dark | 52 | 0 |
 | `ethos-editor` | 1.0.1 | native | — | literal palette (80 colours) | 226 | 0 |
@@ -66,12 +66,12 @@ scheme · `S17` catalog copy · `S18` language · `A01–A06` live API/health/lo
 | `ethos-rss` | 1.0.1 | window | 8085 | — | 0 | 0 |
 | `ethos-shares` | 1.3.0 | native | — | own tokens (23) + dark | 37 | 0 |
 | `ethos-sticky-notes` | 2.0.0 | native | 8099 | own tokens (42) + dark | 38 | 0 |
-| `ethos-surveillance` | 2.0.0 | native | — | own tokens (24) + dark | 28 | 0 |
-| `ethos-sync` | 1.0.1 | window | 8384 | — | 0 | 0 |
+| `ethos-surveillance` | 2.0.1 | native | — | own tokens (24) + dark | 28 | 0 |
+| `ethos-sync` | 1.0.2 | window | 8384 | — | 0 | 0 |
 | `ethos-video` | 2.3.1 | native | — | own tokens (16) + dark | 83 | 0 |
 | `ethos-welcome` | 1.0.4 | window | 8090 | — | 0 | 0 |
 | `tic-tac-toe` | 2.1.1 | native | — | own tokens (15) + dark | 0 | 0 |
-| `vmm` | 1.2.0 | native | 8095 | own tokens (16) + dark | 0 | 0 |
+| `vmm` | 1.2.1 | native | 8095 | own tokens (16) + dark | 0 | 0 |
 
 UI sweep: **18/18 native windows render**, no uncaught page error, no unexpected console error,
 every window painted in light **and** dark, no iframe for native modules, and — after `ethos-music`
@@ -134,10 +134,12 @@ the "native module must be self-contained" rule, keeps the core's design system 
 
 ## P2 — inconsistency / polish
 
-- **Catalog copy.** 45 S17 warnings: `vmm` (3298 chars), `download-manager` (3482), `ethos-video`
-  (2708) keep the whole history in one paragraph, so the newest note is buried and `index.json`
-  grows; 21 descriptions exceed the 150 chars the README shows. Cap the newest entry at one line and
-  keep history in the package README.
+- **Catalog copy.** Fixed for the five offenders (`vmm`, `ethos-books`, `download-manager`,
+  `ethos-surveillance`, `ethos-sync`, `b1bc084`): the newest note is one sentence now, because that
+  is what Package Center shows on an update. The first measurement of this was wrong — the checker
+  parsed "the rest of the changelog" as the newest entry, so the totals (2.7–3.5 KB) looked like one
+  entry; the real entries were 240–430 chars. Long **descriptions** are informational: the catalog
+  table shows 150 chars, the dialog shows all of it.
 - **Theme scheme drift.** `ethos-cleaner`, `ethos-git-diff`, `ethos-kanban`, `ethos-photos` style
   themselves with the core's `--text-1/--surface-*` variables; `ethos-editor` uses literals. All of
   them follow light/dark correctly, but a redesign has to touch a different vocabulary in each app.

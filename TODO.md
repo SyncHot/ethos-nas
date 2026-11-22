@@ -545,10 +545,13 @@ same hook definition now.
 P3-10) and the module uses 80 literal colours. Tokenise into the module, then delete from the core.
 Overlaps P3-04.
 
-### ☐ Q-05 · Package changelog fields grow without bound — `S`
-`vmm` 3.3 KB, `download-manager` 3.5 KB, `ethos-video` 2.7 KB in `index.json`, newest entry buried.
-Cap the newest entry at one line; keep history in each package README. 21 descriptions also exceed
-the 150 chars the catalog table shows (`S17`).
+### ☑ Q-05 · One-line release notes — `S`
+The newest changelog entry is what Package Center shows on an update; `vmm` (430 chars),
+`ethos-books` (411), `download-manager` (346), `ethos-surveillance` (339) and `ethos-sync` (241)
+buried it in prose. Compressed to one sentence each (`b1bc084`): vmm 1.2.1, ethos-books 1.2.1,
+download-manager 1.1.1, ethos-surveillance 2.0.1, ethos-sync 1.0.2. `S17` now measures the newest
+entry correctly (the first version reported the whole history as one entry) and treats a long
+description as `info`, since only the catalog table truncates it.
 
 ### ☐ Q-06 · Theme vocabulary drift — `M`
 `ethos-cleaner`, `ethos-git-diff`, `ethos-kanban`, `ethos-photos` use the core's `--text-1/--surface-*`
