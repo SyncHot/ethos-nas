@@ -11,6 +11,17 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.13.1] - 2026-11-22
+
+### Fixed
+
+- **10-bit HEVC movies play in the web player again.** VA-API hardware decode
+  fed 10-bit frames straight into `h264_vaapi`, which only accepts 8-bit nv12;
+  ffmpeg exited with “No usable encoding profile found”, HLS returned 502 and the
+  legacy fallback failed with the same error (“The stream could not be played”).
+  The hardware path now converts with `scale_vaapi=…:format=nv12`, and HLS
+  retries once with libx264 if a hardware encoder still rejects a specific file.
+
 ## [2.13.0] - 2026-11-22
 
 ### Added

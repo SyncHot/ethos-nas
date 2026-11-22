@@ -919,10 +919,11 @@ async def start_hls(payload: HlsRequest) -> dict:
             abs_path, info, encoder, engine_status.get("device"),
         )
 
-    def _factory(out_dir: str) -> list[str]:
+    def _factory(out_dir: str, use_encoder: str | None = encoder,
+                 use_decode_hw: bool = decode_hw) -> list[str]:
         return video_engine.build_hls_cmd(
-            FFMPEG_BIN, abs_path, info, start, encoder, mode, payload.a, quality,
-            audio_bitrate, out_dir, decode_hw=decode_hw,
+            FFMPEG_BIN, abs_path, info, start, use_encoder, mode, payload.a, quality,
+            audio_bitrate, out_dir, decode_hw=use_decode_hw,
             device=engine_status.get("device"), loglevel=settings.FFMPEG_LOGLEVEL,
         )
 
@@ -935,7 +936,39 @@ async def start_hls(payload: HlsRequest) -> dict:
         raise HTTPException(status_code=429, detail=str(exc),
                             headers={"Retry-After": "5"}) from exc
     except video_hls.HlsStartError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        # A hardware probe can pass globally while a specific file fails (e.g.
+        # 10-bit HEVC on h264_vaapi). Retry once with software so the browser
+        # gets a stream instead of a dead player.
+        msg = str(exc).lower()
+        hw_failure = encoder in ("vaapi", "qsv") and any(marker in msg for marker in (
+            "no usable encoding profile", "error while opening encoder",
+            "function not implemented", "hwupload", "device creation failed",
+        ))
+        if hw_failure:
+            logger.warning(
+                "Hardware encode failed | owner=%s encoder=%s input=%s — retrying with libx264: %s",
+                user_data.current_username(), encoder, abs_path, exc,
+            )
+            encoder = "libx264"
+            decode_hw = False
+            try:
+                session = await _HLS.start(
+                    user_data.current_username(), abs_path,
+                    lambda out_dir: _factory(out_dir, "libx264", False),
+                    mode=mode, encoder="libx264", decode_hw=False,
+                )
+            except video_hls.HlsLimitError as retry_exc:
+                raise HTTPException(status_code=429, detail=str(retry_exc),
+                                    headers={"Retry-After": "5"}) from retry_exc
+            except video_hls.HlsStartError as retry_exc:
+                logger.error("HLS software fallback failed | owner=%s input=%s: %s",
+                             user_data.current_username(), abs_path, retry_exc)
+                raise HTTPException(status_code=502, detail=str(retry_exc)) from retry_exc
+        else:
+            logger.error("HLS start failed | owner=%s mode=%s encoder=%s decode=%s "
+                         "input=%s: %s", user_data.current_username(), mode, encoder or "none",
+                         "hw" if decode_hw else "sw", abs_path, exc)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
         "session": session.sid,
         "playlist": f"/api/videos/hls/{session.sid}/index.m3u8",

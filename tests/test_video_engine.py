@@ -29,6 +29,9 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 HEVC = {"width": 3840, "height": 2160, "video_codec": "hevc", "audio_codec": "eac3",
         "audio_tracks": [{"codec": "eac3", "language": "eng"},
                          {"codec": "aac", "language": "pol"}]}
+HEVC_10BIT = {"width": 1920, "height": 1080, "pix_fmt": "yuv420p10le",
+              "video_codec": "hevc", "audio_codec": "eac3",
+              "audio_tracks": [{"codec": "eac3", "language": "eng"}]}
 H264 = {"width": 1920, "height": 1080, "video_codec": "h264", "audio_codec": "aac",
         "audio_tracks": [{"codec": "aac", "language": "eng"}]}
 H264_AC3 = {"width": 1920, "height": 1080, "video_codec": "h264", "audio_codec": "ac3",
@@ -62,8 +65,18 @@ def test_video_args() -> None:
         HEVC, "transcode", "vaapi", "balanced", decode_hw=True, device="/dev/dri/renderD128")
     check("VA-API decode pins the device", "-vaapi_device" in pre and "/dev/dri/renderD128" in pre)
     check("VA-API decode uses -hwaccel vaapi", "-hwaccel" in pre and "vaapi" in pre)
-    check("VA-API GPU downscale", "scale_vaapi=w=-2:h=1080" in filters, str(filters))
+    check("VA-API GPU downscale",
+          any(f.startswith("scale_vaapi=w=-2:h=1080") for f in filters), str(filters))
+    check("VA-API decode forces nv12 for H.264",
+          any("format=nv12" in f for f in filters), str(filters))
     check("VA-API encoder selected", "h264_vaapi" in video)
+
+    pre, video, filters = ve.build_video_args(
+        HEVC_10BIT, "transcode", "vaapi", "balanced", decode_hw=True,
+        device="/dev/dri/renderD128")
+    check("10-bit HEVC decode is converted to nv12",
+          filters == ["scale_vaapi=format=nv12"], str(filters))
+    check("10-bit HEVC still uses h264_vaapi", "h264_vaapi" in video)
 
     pre, video, filters = ve.build_video_args(
         HEVC, "transcode", "vaapi", "balanced", decode_hw=False, device="/dev/dri/renderD128")

@@ -122,8 +122,13 @@ def build_video_args(
             pre += ["-vaapi_device", device]
         if decode_hw and device:
             pre += ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi"]
+            # h264_vaapi only accepts 8-bit nv12. 10-bit HEVC sources otherwise
+            # fail with "No usable encoding profile found" (seen on a real
+            # 10-bit BD-Rip), so always force the encoder input format.
             if downscale:
-                filters.append(f"scale_vaapi=w=-2:h={max_height}")
+                filters.append(f"scale_vaapi=w=-2:h={max_height}:format=nv12")
+            else:
+                filters.append("scale_vaapi=format=nv12")
         else:
             if downscale:
                 filters.append(f"scale=-2:{max_height}")
