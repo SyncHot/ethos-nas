@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T17:45:56+00:00",
+  "generated_at": "2026-11-22T19:09:58+00:00",
   "latest": {
-    "version": "2.28.6",
-    "git_sha": "d25660c",
-    "git_sha_full": "d25660c05dd0d5a7e220d1fc40add9ddd76896d1",
-    "build": 194,
-    "released_at": "2026-11-22T17:45:56+00:00",
-    "notes": "Package Center shows when a package had to move to another port and can repair a port lost to another container."
+    "version": "2.28.7",
+    "git_sha": "6df20fb",
+    "git_sha_full": "6df20fb15560d35c82985f767cec77f1785f65bb",
+    "build": 207,
+    "released_at": "2026-11-22T19:09:58+00:00",
+    "notes": "Core apps: Storage and SMART refresh themselves, Sharing can start a new share, Shared Links shows the public URL"
   },
   "releases": [
+    {
+      "version": "2.28.7",
+      "git_sha": "6df20fb",
+      "git_sha_full": "6df20fb15560d35c82985f767cec77f1785f65bb",
+      "build": 207,
+      "released_at": "2026-11-22T19:09:58+00:00",
+      "notes": "Core apps: Storage and SMART refresh themselves, Sharing can start a new share, Shared Links shows the public URL"
+    },
     {
       "version": "2.28.6",
       "git_sha": "d25660c",
@@ -201,14 +209,6 @@
       "build": 140,
       "released_at": "2026-11-22T13:13:00+00:00",
       "notes": "Videos: new 480p · tiny download version, now the default — plus working delete for active downloads, no poster flicker and no lingering Tasks row."
-    },
-    {
-      "version": "2.18.1",
-      "git_sha": "29c2490",
-      "git_sha_full": "29c2490541a4d1e0d84d65540f79b4652559f0a3",
-      "build": 138,
-      "released_at": "2026-11-22T13:07:38+00:00",
-      "notes": "Music: Polubione is a normal playlist (liked tracks download to the phone) and downloads resync when the app returns to the foreground"
     }
   ]
 }
