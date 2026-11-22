@@ -1,0 +1,163 @@
+/* EthOS — unified task progress panel (core/progress.js).
+ *
+ * One stylesheet for every surface that can start a task: the desktop shell
+ * (index.html) and the standalone phone apps (/notes, /videos, /music) share
+ * this file instead of each page shipping its own copy. Colours come from
+ * tokens.css; page-specific placement (for example above a bottom nav) stays
+ * in the page's own stylesheet.
+ */
+
+.task-progress-panel {
+    position: fixed;
+    bottom: 60px;
+    right: 16px;
+    width: 360px;
+    background: var(--surface-0);
+    border: 1.5px solid var(--border);
+    border-radius: 14px;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+    display: flex;
+    flex-direction: column;
+    z-index: 9989;
+    overflow: hidden;
+    animation: taskPanelIn 0.2s ease-out;
+}
+.task-progress-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    background: var(--surface-1);
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-1);
+}
+.task-progress-title { display: flex; align-items: center; gap: 8px; }
+.task-progress-close {
+    background: none; border: none;
+    color: var(--text-3);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 0 4px;
+    transition: color 0.15s;
+}
+.task-progress-close:hover { color: var(--text-1); }
+.task-progress-body { max-height: 320px; overflow-y: auto; padding: 8px 0; }
+.task-progress-item {
+    padding: 14px 18px;
+    transition: all 0.2s ease-out;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+}
+.task-progress-body > .task-progress-item:last-child { border-bottom: none; }
+.task-progress-item:hover { background: rgba(91, 154, 255, 0.06); }
+.task-progress-item-inline { padding: 4px 0 2px; border-bottom: none; }
+.task-progress-item-inline:hover { background: none; }
+.task-progress-bar-track {
+    height: 5px;
+    background: var(--surface-2);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+.task-progress-bar {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.6s ease-out;
+    background: linear-gradient(90deg, var(--accent), rgba(59, 130, 246, 0.7));
+}
+.task-progress-bar-track.is-indeterminate .task-progress-bar {
+    width: 35% !important;
+    opacity: 0.75;
+    animation: taskIndeterminate 1.2s ease-in-out infinite;
+}
+.task-progress-item.is-done .task-progress-bar {
+    background: linear-gradient(90deg, #22c55e, rgba(34, 197, 94, 0.7)) !important;
+}
+.task-progress-item.is-failed .task-progress-bar {
+    background: linear-gradient(90deg, #ef4444, rgba(239, 68, 68, 0.7)) !important;
+}
+.task-progress-item.is-cancelled .task-progress-bar {
+    background: linear-gradient(90deg, #94a3b8, rgba(148, 163, 184, 0.7)) !important;
+}
+.task-progress-label {
+    font-size: 12px;
+    color: var(--text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 6px;
+    display: block;
+    font-family: 'JetBrains Mono', monospace, sans-serif;
+}
+.task-progress-item.is-failed .task-progress-label {
+    color: #fca5a5;
+    white-space: normal;
+    padding-right: 4px;
+}
+.task-progress-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-1);
+}
+.task-progress-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-progress-pct { flex: none; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.task-progress-summary {
+    margin-left: auto;
+    margin-right: 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-3);
+    white-space: nowrap;
+}
+.task-progress-header-actions { display: flex; align-items: center; gap: 2px; flex: none; }
+.task-progress-clear {
+    background: none; border: none;
+    color: var(--text-3);
+    font-size: 15px;
+    cursor: pointer;
+    padding: 0 4px;
+    transition: color 0.15s;
+}
+.task-progress-clear:hover { color: #22c55e; }
+.task-progress-log {
+    display: block;
+    font-size: 11px;
+    color: var(--text-3);
+    margin-top: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.task-progress-error { font-size: 12px; color: #fca5a5; margin-top: 6px; white-space: normal; }
+.task-progress-retry {
+    margin-top: 8px;
+    padding: 4px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-1);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+}
+.task-progress-retry:hover { border-color: var(--accent); color: var(--accent); }
+.task-progress-item.is-done .task-progress-retry,
+.task-progress-item.is-cancelled .task-progress-retry { display: none; }
+
+:root.light .task-progress-header { color: #1e293b; }
+
+@keyframes taskPanelIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: none; }
+}
+@keyframes taskIndeterminate {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(300%); }
+}

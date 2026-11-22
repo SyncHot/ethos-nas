@@ -152,7 +152,6 @@
         :root.light .dd-item:hover { background: rgba(37,99,235,0.08); color: #1e293b; }
         :root.light .desktop-icon:hover { background: rgba(37,99,235,0.10); }
         :root.light .notification-drawer-header { color: #1e293b; }
-        :root.light .task-progress-header { color: #1e293b; }
         :root.light .unified-confirm-title { color: #1e293b; }
         :root.light .notif-action-btn:hover { color: #1e293b; background: rgba(37,99,235,0.12); }
 
@@ -1003,40 +1002,8 @@
             .notification-drawer { bottom: 0; width: 100vw; }
         }
 
-        /* ── Unified task progress panel (core/progress.js) ───────────────── */
-        .task-progress-panel { position: fixed; bottom: 60px; right: 16px; width: 360px; background: var(--surface-0); border: 1.5px solid var(--border); border-radius: 14px; box-shadow: 0 24px 64px rgba(0,0,0,0.6); display: flex; flex-direction: column; z-index: 9989; overflow: hidden; animation: fadeIn 0.2s ease-out; }
-        .task-progress-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; background: var(--surface-1); border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 700; color: var(--text-1); }
-        .task-progress-title { display: flex; align-items: center; gap: 8px; }
-        .task-progress-close { background: none; border: none; color: var(--text-3); font-size: 20px; cursor: pointer; padding: 0 4px; transition: color 0.15s; }
-        .task-progress-close:hover { color: var(--text-1); }
-        .task-progress-body { max-height: 320px; overflow-y: auto; padding: 8px 0; }
-        .task-progress-item { padding: 14px 18px; transition: all 0.2s ease-out; border-bottom: 1px solid var(--border); position: relative; }
-        .task-progress-body > .task-progress-item:last-child { border-bottom: none; }
-        .task-progress-item:hover { background: rgba(91,154,255,0.06); }
-        .task-progress-item-inline { padding: 4px 0 2px; border-bottom: none; }
-        .task-progress-item-inline:hover { background: none; }
-        .task-progress-bar-track { height: 5px; background: var(--surface-2); border-radius: 3px; overflow: hidden; margin-top: 8px; }
-        .task-progress-bar { height: 100%; border-radius: 3px; transition: width 0.6s ease-out; background: linear-gradient(90deg, var(--accent), rgba(59,130,246,0.7)); }
-        .task-progress-bar-track.is-indeterminate .task-progress-bar { width: 35% !important; opacity: .75; animation: taskIndeterminate 1.2s ease-in-out infinite; }
-        .task-progress-item.is-done .task-progress-bar { background: linear-gradient(90deg, #22c55e, rgba(34,197,94,0.7)) !important; }
-        .task-progress-item.is-failed .task-progress-bar { background: linear-gradient(90deg, #ef4444, rgba(239,68,68,0.7)) !important; }
-        .task-progress-item.is-cancelled .task-progress-bar { background: linear-gradient(90deg, #94a3b8, rgba(148,163,184,0.7)) !important; }
-        .task-progress-label { font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 6px; display: block; font-family: 'JetBrains Mono', monospace, sans-serif; }
-        .task-progress-item.is-failed .task-progress-label { color: #fca5a5; white-space: normal; padding-right: 4px; }
-        .task-progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 600; color: var(--text-1); }
-        .task-progress-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .task-progress-pct { flex: none; font-variant-numeric: tabular-nums; color: var(--text-2); }
-        .task-progress-summary { margin-left: auto; margin-right: 8px; font-size: 11px; font-weight: 600; color: var(--text-3); white-space: nowrap; }
-        .task-progress-header-actions { display: flex; align-items: center; gap: 2px; flex: none; }
-        .task-progress-clear { background: none; border: none; color: var(--text-3); font-size: 15px; cursor: pointer; padding: 0 4px; transition: color 0.15s; }
-        .task-progress-clear:hover { color: #22c55e; }
-        .task-progress-log { display: block; font-size: 11px; color: var(--text-3); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .task-progress-error { font-size: 12px; color: #fca5a5; margin-top: 6px; white-space: normal; }
-        .task-progress-retry { margin-top: 8px; padding: 4px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-1); font-size: 11px; font-weight: 600; cursor: pointer; transition: border-color 0.15s, color 0.15s; }
-        .task-progress-retry:hover { border-color: var(--accent); color: var(--accent); }
-        .task-progress-item.is-done .task-progress-retry,
-        .task-progress-item.is-cancelled .task-progress-retry { display: none; }
-        @keyframes taskIndeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+        /* ── Unified task progress panel: /static/css/progress.css ────────── */
+        /* Shared with the standalone PWAs — do not copy the rules back here. */
 
         /* ── File Manager upload status chip (status bar) ─────────────────── */
         .fm-status-upload { color: var(--accent); cursor: pointer; font-variant-numeric: tabular-nums; }
@@ -2813,6 +2780,7 @@
     <!-- Shared core app shell (docs/app-ui.md). Loaded after the desktop styles
          so the .ui-* component layer can rely on the theme tokens above. -->
     <link rel="stylesheet" href="/static/css/ethos-ui.css">
+    <link rel="stylesheet" href="/static/css/progress.css">
     <link rel="stylesheet" href="/static/css/ribbon-host.css">
 </head>
 <body>

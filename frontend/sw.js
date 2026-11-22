@@ -24,7 +24,7 @@
  * activate.
  */
 
-const CACHE_VERSION = 'ethos-shell-v8';
+const CACHE_VERSION = 'ethos-shell-v9';
 const MEDIA_CACHE = 'ethos-media-v1';
 const MEDIA_PREFIX = '/__media/';
 const BOOKS_CACHE = 'ethos-books-v1';
@@ -78,6 +78,7 @@ const SHELL_URLS = [
     '/static/core/error-reporter.js',
     '/static/core/notification-center.js',
     '/static/core/progress.js',
+    '/static/css/progress.css',
     '/static/core/utils.js',
     '/static/core/icons.js',
     '/static/core/poller.js',
