@@ -36,7 +36,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from backend.config import settings
-from backend.services import json_store, task_registry
+from backend.services import json_store, shutdown_state, task_registry
 from backend.services.video_engine import TranscodeLimiter
 
 logger = logging.getLogger("ethos-nas.services.video_render")
@@ -312,6 +312,8 @@ class RenderManager:
                     audio_idx: int, source_key: str, cmd_factory,
                     mode: str = "transcode", note: str = "") -> RenderJob:
         """Queue a render, or reuse the copy already made (or running) for it."""
+        if shutdown_state.is_set():
+            raise RenderBusy("The server is shutting down — try again after the restart")
         lock = self._ensure_lock()
         async with lock:
             self.sweep_locked()
@@ -378,6 +380,10 @@ class RenderManager:
             if job.status == "cancelled":
                 # Cancelled while waiting in the queue — never start ffmpeg.
                 return
+            if shutdown_state.is_set():
+                # Shutdown began while this job waited for the renderer slot:
+                # do not spawn a process the unit stop is about to kill.
+                raise asyncio.CancelledError
             cmd = cmd_factory(str(part))
             job.status = "rendering"
             job.started_at = time.time()
@@ -393,7 +399,8 @@ class RenderManager:
             drain.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await drain
-            if job.status == "cancelled":
+            if job.status == "cancelled" or shutdown_state.is_set():
+                # Deliberate stop (cancel or shutdown) — not a failure, no event.
                 return
             if proc.returncode != 0 or not part.is_file() or part.stat().st_size == 0:
                 raise RenderError(
@@ -595,15 +602,18 @@ class RenderManager:
         return self.sweep_locked()
 
     async def stop_all(self) -> None:
+        # Mark first: `_run` re-checks the job status and the shutdown flag after
+        # the process exits, so a deliberate stop must not become a failure with
+        # a Notification Center toast on every restart.
+        for job in list(self._jobs.values()):
+            if job.active:
+                job.status = "cancelled"
+                job.error = "Interrupted by shutdown"
+                job.finished_at = time.time()
         for job_id, proc in list(self._procs.items()):
             if proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
-            job = self._jobs.get(job_id)
-            if job and job.active:
-                job.status = "failed"
-                job.error = "Interrupted by shutdown"
-                job.finished_at = time.time()
         for task in list(self._tasks.values()):
             if not task.done():
                 task.cancel()

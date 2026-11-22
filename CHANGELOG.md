@@ -11,6 +11,18 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.20.2] - 2026-11-22
+
+### Fixed
+
+- **A core update no longer ends in a hard kill.** The service now stops within a
+  few seconds: systemd signals only the main process, the app itself stops
+  package services and video renders, and uvicorn waits at most 10 s for open
+  streams (music playback, camera live view, transcoding) instead of hanging
+  until the 90 s deadline. Previously the unit reported `Failed with result
+  'timeout'`, a queued video export was restarted only to be killed again, and
+  the update card was left showing a running job (`stale update job`).
+
 ## [2.20.1] - 2026-11-22
 
 ### Changed

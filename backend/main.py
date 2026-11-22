@@ -282,6 +282,20 @@ async def lifespan(app: FastAPI):
     logger.info("EthOS NAS starting on %s:%s", settings.HOST, settings.PORT)
     logger.info("=" * 60)
     yield
+    # Signal shutdown first and stop every child process right away: uvicorn
+    # only reaches this teardown once all connections have drained, and a
+    # long-lived stream (music proxy, camera MJPEG, transcode) used to keep the
+    # process busy past systemd's deadline. The flag also stops the package
+    # supervisor from respawning children and the render queue from starting a
+    # new ffmpeg (services/shutdown_state.py).
+    from backend.services import shutdown_state as _shutdown_state
+    _shutdown_state.request()
+    from backend.services import package_runtime as _package_runtime_stop
+    await _package_runtime_stop.shutdown_all()
+    from backend.services import video_hls as _video_hls
+    await _video_hls.MANAGER.stop_all()
+    from backend.services import video_render as _video_render
+    await _video_render.MANAGER.stop_all()
     _teardown_log_broadcaster()
     await stop_backup_scheduler()
     await stop_download_engine()
@@ -293,12 +307,6 @@ async def lifespan(app: FastAPI):
     await stop_update_checker()
     await stop_os_update_checker()
     await stop_os_image_checker()
-    from backend.services import package_runtime as _package_runtime_stop
-    await _package_runtime_stop.shutdown_all()
-    from backend.services import video_hls as _video_hls
-    await _video_hls.MANAGER.stop_all()
-    from backend.services import video_render as _video_render
-    await _video_render.MANAGER.stop_all()
     from backend.services.camera_service import stop_all_recordings
     from backend.services.task_registry import shutdown as shutdown_tasks
     await shutdown_tasks()

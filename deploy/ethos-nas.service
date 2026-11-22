@@ -12,9 +12,17 @@ Type=simple
 User=ethos-nas
 Group=ethos-nas
 WorkingDirectory=__ETHOS_INSTALL_DIR__
-ExecStart=__ETHOS_INSTALL_DIR__/.venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 9000
+ExecStart=__ETHOS_INSTALL_DIR__/.venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 9000 --timeout-graceful-shutdown 10
 Restart=always
 RestartSec=3
+# Stop path (2026-11-22 incident): `mixed` SIGTERMs only the main process, so
+# supervised package services and ffmpeg renders keep running until the app's
+# own teardown stops them instead of being killed and respawned mid-stop. The
+# app then has 10 s to drain connections (`--timeout-graceful-shutdown`) and the
+# lifespan stops children right away; anything still alive after TimeoutStopSec
+# is a genuine hang and is SIGKILLed.
+KillMode=mixed
+TimeoutStopSec=30
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/etc/ethos-nas/ethos.env
 # The account is a *system* user, so `useradd --system` created no home and

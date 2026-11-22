@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from backend.config import settings
-from backend.services import log_service, packages_store
+from backend.services import log_service, packages_store, shutdown_state
 from backend.services.package_schema import PackageError
 from backend.services.notifications_service import emit_event
 
@@ -411,6 +411,11 @@ async def _supervise(pkg_id: str) -> None:
             reader.cancel()
         if handle.stopping or _HANDLES.get(pkg_id) is not handle:
             return
+        if shutdown_state.is_set():
+            # SIGTERM/teardown killed the child on purpose — restarting it here
+            # would resurrect a process the unit stop is about to SIGKILL.
+            logger.info("%s: service exited during shutdown — not restarting", pkg_id)
+            return
         _HANDLES.pop(pkg_id, None)
         _clear_pidfile(pkg_id)
 
@@ -448,6 +453,8 @@ async def _supervise(pkg_id: str) -> None:
 async def start(pkg_id: str, record: Optional[dict] = None, job_id: Optional[str] = None,
                 *, supervise: bool = True) -> dict:
     """Launch the package service and wait until its health endpoint answers."""
+    if shutdown_state.is_set():
+        raise PackageError("The server is shutting down", 503)
     record = record or _runtime_record(pkg_id)
     if is_running(pkg_id):
         return {"package": pkg_id, "status": "running", "port": _service_port(record)}
@@ -536,11 +543,14 @@ async def restart(pkg_id: str) -> dict:
 
 async def shutdown_all() -> None:
     """Stop every supervised service and any stale process left by a restart."""
-    for pkg_id in list(_HANDLES):
-        try:
-            await stop(pkg_id)
-        except Exception:
-            logger.error("Could not stop package service %s", pkg_id, exc_info=True)
+    # Concurrently: sequential stops wait STOP_TIMEOUT each, which can push the
+    # whole teardown past systemd's TimeoutStopSec on a slow box.
+    pkg_ids = list(_HANDLES)
+    results = await asyncio.gather(*(stop(pkg_id) for pkg_id in pkg_ids),
+                                   return_exceptions=True)
+    for pkg_id, result in zip(pkg_ids, results):
+        if isinstance(result, BaseException):
+            logger.error("Could not stop package service %s", pkg_id, exc_info=result)
     # No handle but a live process: only possible after os.execv / a crash.
     for record in packages_store.load_installed():
         if str(record.get("runtime") or "compose") != "venv":

@@ -96,7 +96,7 @@ Notification Center.
 
 The helper re-execs itself once into a transient `systemd-run --scope` unit
 (`ETHOS_UPDATE_SCOPED=1`), so the `systemctl restart` it performs cannot kill it
-mid-job (the unit runs with `KillMode=control-group`). An older helper lived in
+mid-job (the unit runs with `KillMode=mixed`). An older helper lived in
 the unit cgroup, was killed at its own `restart` step and left `job.json` at
 `running` forever — every later update then answered 409 “already running”. The
 backend now treats a `restart`/`verify` job older than the current process (or
@@ -106,6 +106,13 @@ restart is enough to clear an already-stuck install; no state file surgery.
 
 Limits (deliberate):
 
+- **Restart is bounded.** The unit stops with `KillMode=mixed` + `TimeoutStopSec=30`
+  and uvicorn runs with `--timeout-graceful-shutdown 10`; the lifespan sets
+  `services/shutdown_state.py` first, so package services, ffmpeg renders and
+  long-lived streams (music proxy, camera MJPEG, transcodes) end promptly. A
+  restart therefore costs a few seconds — the 2026-11-22 update hung for the
+  full 90 s default and was SIGKILLed (a music stream kept uvicorn draining while
+  the supervisor respawned packages and the render queue started a new ffmpeg).
 - Git checkouts only. Tarball/artifact installs are refused with a clear error.
 - Code and dependencies roll back; **JSON stores do not**. A release that
   migrated a store needs the pre-update snapshot restored manually

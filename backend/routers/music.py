@@ -43,7 +43,8 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from backend.config import settings
 from backend.services import (
-    music_search, package_client, path_scope, sharing_resources, sharing_service, user_data,
+    music_search, package_client, path_scope, shutdown_state, sharing_resources, sharing_service,
+    user_data,
 )
 
 logger = logging.getLogger("ethos-nas.routers.music")
@@ -663,6 +664,10 @@ async def stream(request: Request, video_id: str = Query(...)):
                     chunk = await asyncio.to_thread(upstream.read, 262144)
                     if not chunk:
                         break
+                    if shutdown_state.is_set():
+                        # Server stopping: end the body instead of reconnecting;
+                        # the player resumes with a range request afterwards.
+                        return
                     yield chunk
                     sent += len(chunk)
             except (OSError, urllib.error.URLError) as exc:
@@ -1801,6 +1806,8 @@ async def episode_audio(request: Request, url: str = Query(...)):
                 chunk = await asyncio.to_thread(upstream.read, 262144)
                 if not chunk:
                     break
+                if shutdown_state.is_set():
+                    break  # server stopping — close the body, never hold the unit open
                 sent += len(chunk)
                 if sent > EPISODE_AUDIO_MAX_BYTES:
                     logger.warning("music: episode audio truncated at %d bytes: %s",

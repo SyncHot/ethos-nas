@@ -69,7 +69,9 @@ from pydantic import BaseModel
 # services/path_scope.py, so the caller's identity is enforced here too).
 from backend.config import settings
 from backend.routers.files import _sanitize, _sanitize_read
-from backend.services import path_scope, task_registry, user_data, video_engine, video_hls, video_render
+from backend.services import (
+    path_scope, shutdown_state, task_registry, user_data, video_engine, video_hls, video_render,
+)
 from backend.services.metadata import service as metadata_service
 from backend.services.metadata.base import MetadataConfigError
 from backend.services.video_metadata import parse_video_name
@@ -885,6 +887,8 @@ async def transcode(
                     chunk = await proc.stdout.read(1 << 16)
                     if not chunk:
                         break
+                    if shutdown_state.is_set():
+                        break  # unit stopping — close the body, kill ffmpeg below
                     yield chunk
                 await proc.wait()
         finally:

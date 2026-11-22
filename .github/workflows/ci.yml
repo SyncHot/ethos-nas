@@ -53,6 +53,7 @@ jobs:
           for t in tests/test_stores.py \
                    tests/test_store_migrations.py \
                    tests/test_task_registry.py \
+                   tests/test_graceful_shutdown.py \
                    tests/test_retention.py \
                    tests/test_trash_service.py \
                    tests/test_trash_multiuser_api.py \

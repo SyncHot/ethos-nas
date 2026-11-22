@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from backend.services import camera_discovery as cd
 from backend.services import camera_service as cs
+from backend.services import shutdown_state
 from backend.services.camera_service import CameraError
 
 logger = logging.getLogger("ethos-nas.routers.surveillance")
@@ -129,8 +130,17 @@ async def live(cam_id: str) -> StreamingResponse:
         stream = cs.live_stream(cam_id)  # generator of multipart parts (bytes)
     except CameraError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    def _frames():
+        # A never-ending MJPEG body would otherwise keep uvicorn draining past
+        # the unit's stop deadline (services/shutdown_state.py).
+        for part in stream:
+            if shutdown_state.is_set():
+                break
+            yield part
+
     return StreamingResponse(
-        stream,
+        _frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
