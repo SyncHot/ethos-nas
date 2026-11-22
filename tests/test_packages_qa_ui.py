@@ -73,6 +73,34 @@ PROBE = """
 }
 """
 
+NAV_PROBE = """
+(id) => {
+    const win = document.querySelector('[data-testid="window-' + id + '"]');
+    const root = win && win.querySelector('.window-body');
+    if (!root) return [];
+    const nodes = root.querySelectorAll(
+        'nav button, [role="tab"], [data-tab], [class*="nav-item"], [class*="side"] button');
+    return [...new Set(nodes)].map((el, i) => ({
+        i,
+        label: (el.dataset.testid || el.textContent || '').trim().slice(0, 28),
+    })).slice(0, 10);
+}
+"""
+
+NAV_CLICK = """
+([id, index]) => {
+    const win = document.querySelector('[data-testid="window-' + id + '"]');
+    const root = win && win.querySelector('.window-body');
+    if (!root) return false;
+    const nodes = [...new Set(root.querySelectorAll(
+        'nav button, [role="tab"], [data-tab], [class*="nav-item"], [class*="side"] button'))];
+    const el = nodes[index];
+    if (!el || el.disabled) return false;
+    el.click();
+    return true;
+}
+"""
+
 
 def free_port() -> int:
     with socket.socket() as sock:
@@ -178,6 +206,7 @@ def main() -> int:
             console_errors: list[str] = []
             page.on("pageerror", lambda exc: page_errors.append(str(exc)))
             page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+            click_nav = os.environ.get("ETHOS_QA_CLICK_NAV", "1") != "0"
             page.goto(base)
             page.wait_for_function("typeof window.openApp === 'function'", timeout=20000)
             theme = os.environ.get("ETHOS_QA_THEME", "light")
@@ -185,7 +214,7 @@ def main() -> int:
                 page.evaluate("() => { document.documentElement.classList.remove('light');"
                               "               document.documentElement.classList.add('dark'); }")
 
-            print(f"\n{'package':24}{'painted':9}{'text':7}{'testids':9}{'buttons':9}root")
+            print(f"\n{'package':24}{'painted':9}{'text':7}{'testids':7}{'hooks':10}{'views':6}root")
             for pkg in seeded:
                 app_id = f"pkg-{pkg['id']}"
                 page_errors.clear()
@@ -203,14 +232,28 @@ def main() -> int:
                 except Exception as exc:  # noqa: BLE001 - a timeout is a finding
                     probe = {"empty": True, "error": str(exc).splitlines()[0][:120]}
 
+                # Walk every rail/tab view: a view that throws on render is a real defect
+                # and the first screen never shows it.
+                views = 0
+                if click_nav and not probe.get("empty"):
+                    for item in page.evaluate(NAV_PROBE, app_id):
+                        if page.evaluate(NAV_CLICK, [app_id, item["i"]]):
+                            views += 1
+                            page.wait_for_timeout(350)
+
                 expected_proxy = pkg["service"]
+                # 503 is "the service or host tool behind this view is not available here"
+                # (no package services, no Samba on a throwaway instance) — informational.
+                unavailable = [e for e in console_errors if "503" in e]
                 real_console = [e for e in console_errors
-                                if not (expected_proxy and ("503" in e or "Failed to load resource" in e))]
+                                if "503" not in e
+                                and not (expected_proxy and "Failed to load resource" in e)]
                 painted = bool(probe.get("painted"))
                 text_len = int(probe.get("textLen") or 0)
                 print(f"{pkg['id']:24}{str(painted):9}{text_len:<7}"
                       f"{str(probe.get('testids', '-')):>7}  "
                       f"{str(probe.get('hooked', 0)) + '/' + str(probe.get('buttons', 0)):9}"
+                      f"{views:<6}"
                       f"{str(probe.get('rootClass') or probe.get('error') or '-')[:40]}")
 
                 if page_errors:
@@ -223,6 +266,9 @@ def main() -> int:
                         failures += 1
                     findings.append({"id": pkg["id"], "level": level, "kind": "console",
                                      "detail": real_console[:3]})
+                if unavailable:
+                    findings.append({"id": pkg["id"], "level": "info", "kind": "unavailable",
+                                     "detail": unavailable[:2]})
                 if probe.get("empty"):
                     failures += 1
                     findings.append({"id": pkg["id"], "level": "error", "kind": "no-content",

@@ -33,7 +33,8 @@ ETHOS_QA_SHOTS=/tmp/qa-shots .venv/bin/python tests/test_packages_qa_ui.py
 ```
 
 `--live` adds read-only host checks (`ss`, `docker ps`); `ETHOS_QA_THEME=dark` re-runs the UI sweep
-in the dark palette. Neither tool installs, starts, stops or uninstalls anything.
+in the dark palette, and `ETHOS_QA_CLICK_NAV=0` keeps it to the first screen (by default it clicks
+every rail/tab view of every window). Neither tool installs, starts, stops or uninstalls anything.
 
 Findings are `error` (contract broken), `warn` (defect or drift) or `info` (needs a human eye — for
 example a listening port whose owner cannot be read without root).
@@ -75,7 +76,9 @@ scheme · `S17` catalog copy · `S18` language · `A01–A06` live API/health/lo
 
 UI sweep: **18/18 native windows render**, no uncaught page error, no unexpected console error,
 every window painted in light **and** dark, no iframe for native modules, and — after `ethos-music`
-1.0.3 — **every window exposes a stable hook** on its interactive elements.
+1.0.3 — **every window exposes a stable hook** on its interactive elements. The sweep then walks
+**every rail/tab view** (66 switches across the 18 windows): no view throws, no view renders blank.
+A `503` is reported as `info` — on a throwaway instance the package services and Samba are absent.
 
 ## P1 — visible defect, fix next
 
