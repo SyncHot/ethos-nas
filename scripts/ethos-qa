@@ -457,15 +457,21 @@ def _request(base: str, path: str, token: str = "", method: str = "GET") -> tupl
         req.add_header("Authorization", "Bearer " + token)
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            body = resp.read()
-            return resp.status, (json.loads(body) if body else {})
+            return resp.status, _decode(resp.read())
     except urllib.error.HTTPError as exc:
-        try:
-            return exc.code, json.loads(exc.read() or b"{}")
-        except (ValueError, OSError):
-            return exc.code, {}
+        return exc.code, _decode(exc.read())
     except OSError as exc:
         return 0, {"error": str(exc)}
+
+
+def _decode(body: bytes) -> object:
+    """JSON when the endpoint answers JSON — a native UI asset is JavaScript."""
+    if not body:
+        return {}
+    try:
+        return json.loads(body)
+    except ValueError:
+        return {"raw": body[:200].decode(errors="replace")}
 
 
 def _login(base: str, username: str, password: str) -> str:
@@ -503,7 +509,7 @@ def command_api(args: argparse.Namespace) -> int:
     print(f"ethos-qa api — {len(items)} installed package(s) at {base}")
 
     report = Report()
-    print(f"\n{'package':24}{'installed':11}{'runtime':9}{'status':10}{'health':10}ui")
+    print(f"\n{'package':24}{'installed':11}{'runtime':9}{'status':16}{'health':10}ui")
     for pkg in sorted(items, key=lambda p: str(p.get("id"))):
         pkg_id = str(pkg.get("id"))
         code, state = _request(base, f"/api/packages/{pkg_id}/status", token)
@@ -512,8 +518,10 @@ def command_api(args: argparse.Namespace) -> int:
             state = {}
         health = str(state.get("health") or state.get("state") or "-")
         containers = state.get("containers") or []
+        runtime = str(pkg.get("runtime") or ("venv" if pkg.get("python")
+                                           else "compose" if pkg.get("compose") else "files"))
         print(f"{pkg_id:24}{str(pkg.get('version') or '-'):11}"
-              f"{str(pkg.get('runtime') or 'compose'):9}{str(state.get('status') or '-'):10}"
+              f"{runtime:9}{str(state.get('status') or '-'):16}"
               f"{health:10}{str((pkg.get('ui') or {}).get('mode') or '-')}")
         if health == "unhealthy" or any(c.get("health") == "unhealthy" for c in containers
                                         if isinstance(c, dict)):
