@@ -1139,11 +1139,47 @@ def _current_username(request: Request) -> str:
     return payload.get("username") or "default"
 
 
+def _favorite_on_unmounted_media(path: str) -> bool:
+    """True when a *missing* favorite sits on removable media that is offline.
+
+    A folder under /mnt or /media is not a dead link while its volume is
+    unplugged: the entry is kept and reported ``exists: false``. Once the
+    volume is mounted again, a missing folder underneath it has really been
+    deleted and gets pruned with the rest.
+    """
+    if not any(path == root or path.startswith(root + "/") for root in ("/mnt", "/media")):
+        return False
+    probe = os.path.dirname(path)
+    while probe and probe != "/":
+        if os.path.exists(probe):
+            return not os.path.ismount(probe)
+        probe = os.path.dirname(probe)
+    return True
+
+
+def _prune_missing_favorites(data: dict, user: str) -> list[str]:
+    """Drop starred folders that no longer exist (offline volumes are kept)."""
+    if not isinstance(data, dict):
+        return []
+    paths = [p for p in (data.get(user) or []) if isinstance(p, str)]
+    kept = [p for p in paths if os.path.isdir(p) or _favorite_on_unmounted_media(p)]
+    dropped = len(paths) - len(kept)
+    if dropped:
+        logger.info("Pruned %d missing favorite(s) for %s", dropped, user)
+        data[user] = kept
+    return kept
+
+
 @router.get("/favorites")
 async def list_favorites(request: Request) -> dict:
-    """List starred folders for the current user."""
+    """List starred folders for the current user (dead links are pruned)."""
     user = _current_username(request)
-    paths = _load_favorites().get(user, [])
+    paths = [p for p in (_load_favorites().get(user) or []) if isinstance(p, str)]
+    # Stale entries accumulate when folders are deleted outside the UI (another
+    # app, SSH, a removed share), so reconcile on read — a cheap isdir() per
+    # star — instead of showing phantom folders in the sidebar forever.
+    if any(not os.path.isdir(p) and not _favorite_on_unmounted_media(p) for p in paths):
+        paths = _FAVORITES_STORE.update(lambda data: _prune_missing_favorites(data, user))
     favorites = [
         {"path": p, "name": os.path.basename(p.rstrip("/")) or p, "exists": os.path.isdir(p)}
         for p in paths

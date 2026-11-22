@@ -176,8 +176,11 @@ function _fmFavoritesHtml(activePath) {
     if (_fmFavorites.length === 0) return '<div class="fm-sidebar-item fm-empty">Right-click a folder → Add to Favorites</div>';
     return _fmFavorites.map(f => {
         const active = f.path === activePath ? 'active' : '';
+        // The API prunes deleted folders; the only `exists:false` entries left
+        // are favorites on removable media whose volume is currently offline.
         const missing = f.exists === false ? 'fm-fav-missing' : '';
-        return `<div class="fm-sidebar-item ${active} ${missing}" data-path="${escapeAttr(f.path)}" onclick="fmNavigateTo('${safeJsStr(f.path)}')" title="${escapeAttr(f.path)}${f.exists === false ? ' (missing)' : ''}"><span class="fm-sidebar-icon" style="background:rgba(245,181,63,0.14);color:#f5b53f;">${svgIcon(FM_STAR_PATH, 16)}</span><span>${escapeHtml(f.name)}</span></div>`;
+        const offline = f.exists === false ? ' (not mounted)' : '';
+        return `<div class="fm-sidebar-item ${active} ${missing}" data-path="${escapeAttr(f.path)}" onclick="fmNavigateTo('${safeJsStr(f.path)}')" title="${escapeAttr(f.path)}${offline}"><span class="fm-sidebar-icon" style="background:rgba(245,181,63,0.14);color:#f5b53f;">${svgIcon(FM_STAR_PATH, 16)}</span><span>${escapeHtml(f.name)}</span></div>`;
     }).join('');
 }
 
@@ -1833,6 +1836,7 @@ function _fmRefreshAfterDelete(root, state) {
     state.selected.clear();
     _fmUpdateSelectionStatus(root, state);
     _silentRefetch(root);
+    fmLoadFavorites();  // a deleted folder must also leave the Favorites sidebar
 }
 
 /**
