@@ -92,6 +92,7 @@ from backend.services.download_config import (
 from backend.services import download_providers as _providers
 from backend.services import download_retry as _retry_policy
 from backend.services import download_schedule as _schedule_policy
+from backend.services import watch_folders
 
 DATA_DIR = settings.DATA_DIR
 TASKS_FILE = DATA_DIR / "downloads_tasks.json"
@@ -1454,13 +1455,6 @@ _failed_torrents: set = set()  # filenames that failed to parse (log dedupe)
 _pending_pumps: set = set()  # fire-and-forget _pump task refs (GC guard)
 
 
-def _remember(bucket: set, value: str, cap: int = 5000) -> None:
-    """Add to a dedupe set while keeping it bounded (the watch loop is long-lived)."""
-    bucket.add(value)
-    if len(bucket) > cap:
-        for extra in list(bucket)[: len(bucket) - cap]:
-            bucket.discard(extra)
-
 def _schedule_pump(loop: asyncio.AbstractEventLoop) -> None:
     """Queue `_pump` on the event loop from a worker thread, holding a task ref
     so the fire-and-forget coroutine cannot be garbage-collected mid-run."""
@@ -1477,60 +1471,36 @@ def _schedule_pump(loop: asyncio.AbstractEventLoop) -> None:
 def _watch_scan_once(cfg: dict, loop: asyncio.AbstractEventLoop, entry: dict) -> None:
     """One pass over one watch folder; queue a task for each new .torrent."""
     wf = (entry.get("folder") or "").strip()
-    if not wf or not os.path.isdir(wf):
-        return
     provider, creds = _providers.torrent_provider(cfg)
     if not provider or not _providers.credentials_complete(provider, creds):
         return  # nothing to do — leave files for a later pass
     # A blank per-entry destination means "save into the watched folder itself"
     # (qBittorrent-style), not the global default download dir.
     dest_dir = (entry.get("destination") or "").strip() or wf
-    try:
-        entries = sorted(os.listdir(wf))
-    except OSError as exc:
-        logger.warning("Watch folder unreadable (%s): %s", wf, exc)
-        return
-    for fname in entries:
-        if not fname.lower().endswith(".torrent"):
-            continue
-        fpath = os.path.join(wf, fname)
-        try:
-            with open(fpath, "rb") as fh:
-                data = fh.read()
-            info = _parse_torrent(data)
-        except (ValueError, OSError) as exc:
-            if fname not in _failed_torrents:
-                logger.warning("Watch folder: skipping %s (%s)", fname, exc)
-                _remember(_failed_torrents, fname)
-            continue
-        if info["hash"] in _seen_torrents:
-            continue
-        name = os.path.basename(info["name"].replace("\\", "/")).strip() or f"torrent-{info['hash'][:12]}"
-        task = _make_debrid_task(dest_dir, info["magnet"], name, size=info["size"])
-        # Hold the lock across append+persist so a concurrent save cannot drop
-        # the new task. Use the UNLOCKED writer here: threading.Lock is not
-        # reentrant, and _save_tasks() would deadlock this thread while still
-        # holding the lock (which then wedges every later save on the loop).
+
+    def _build_task(info: dict) -> dict:
+        name = os.path.basename(str(info.get("name") or "").replace("\\", "/")).strip()
+        name = name or f"torrent-{str(info.get('hash') or '')[:12]}"
+        return _make_debrid_task(dest_dir, info["magnet"], name, size=info.get("size") or 0)
+
+    def _enqueue(task: dict, _info_hash: str) -> None:
+        # Hold the lock across append+persist so a concurrent save cannot drop the
+        # new task. Use the UNLOCKED writer here: threading.Lock is not reentrant,
+        # and _save_tasks() would deadlock this thread while still holding the lock.
         with _save_lock:
             _tasks.append(task)
-            _remember(_seen_torrents, info["hash"])
             _write_tasks_file()
-        # Move out of the scan root so it isn't re-queued on restart.
-        try:
-            proc = os.path.join(wf, ".processed")
-            os.makedirs(proc, exist_ok=True)
-            dest = os.path.join(proc, fname)
-            if os.path.exists(dest):
-                base, ext = os.path.splitext(fname)
-                n = 1
-                while os.path.exists(os.path.join(proc, f"{base}.{n}{ext}")):
-                    n += 1
-                dest = os.path.join(proc, f"{base}.{n}{ext}")
-            shutil.move(fpath, dest)
-        except OSError as exc:
-            logger.warning("Watch folder: could not move %s to .processed (%s)", fname, exc)
-        logger.info("Watch folder: queued %s (%s)", fname, info["hash"][:12])
-        _schedule_pump(loop)
+
+    watch_folders.scan_folder(
+        wf,
+        parse_torrent=_parse_torrent,
+        build_task=_build_task,
+        enqueue=_enqueue,
+        seen=_seen_torrents,
+        failed=_failed_torrents,
+        logger=logger,
+        on_queued=lambda: _schedule_pump(loop),
+    )
 
 
 def _watch_loop(loop: asyncio.AbstractEventLoop) -> None:

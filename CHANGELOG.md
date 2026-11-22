@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.29.5] - 2026-11-22
+
+### Changed
+
+- **The watch-folder scan pass moved into `services/watch_folders.py`**: torrent iteration,
+  bounded infohash/filename dedupe and the move into `.processed/` (unique names on collision)
+  are now unit-tested (`tests/test_watch_folders.py`); the router still owns the scanner
+  thread, the per-user path scope and task persistence. No behaviour or API change.
+
 ## [2.29.4] - 2026-11-22
 
 ### Changed
