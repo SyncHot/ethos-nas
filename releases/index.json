@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T12:46:11+00:00",
+  "generated_at": "2026-11-22T12:52:52+00:00",
   "latest": {
-    "version": "2.16.0",
-    "git_sha": "d607b82",
-    "git_sha_full": "d607b821201b1e51e719fcaa3699563a9d9ce20d",
-    "build": 131,
-    "released_at": "2026-11-22T12:46:11+00:00",
-    "notes": "Videos: queue many downloads, choose Original/1080p/720p (default in Settings) and the NAS prepares them one by one — the queue survives a reload and Original copies the video instead of re-encoding it."
+    "version": "2.17.0",
+    "git_sha": "d6d8f0d",
+    "git_sha_full": "d6d8f0d7aad8bb11fcef426e2c3567ee7e27a5cf",
+    "build": 133,
+    "released_at": "2026-11-22T12:52:52+00:00",
+    "notes": "Music: the phone player is now the installable /music web app with offline playlist downloads; the Android APK is retired"
   },
   "releases": [
+    {
+      "version": "2.17.0",
+      "git_sha": "d6d8f0d",
+      "git_sha_full": "d6d8f0d7aad8bb11fcef426e2c3567ee7e27a5cf",
+      "build": 133,
+      "released_at": "2026-11-22T12:52:52+00:00",
+      "notes": "Music: the phone player is now the installable /music web app with offline playlist downloads; the Android APK is retired"
+    },
     {
       "version": "2.16.0",
       "git_sha": "d607b82",
@@ -201,14 +209,6 @@
       "build": 73,
       "released_at": "2026-11-20T15:51:28+00:00",
       "notes": "Libraries: per-user gallery, music, video and editor state"
-    },
-    {
-      "version": "2.6.4",
-      "git_sha": "091c2dd",
-      "git_sha_full": "091c2dd756835ae468fde0992238e7151a2690dd",
-      "build": 71,
-      "released_at": "2026-11-20T15:29:36+00:00",
-      "notes": "Security: per-user filesystem scope — non-admins are limited to their own home, /mnt and /media"
     }
   ]
 }
