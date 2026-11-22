@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T22:45:12+00:00",
+  "generated_at": "2026-11-22T22:47:50+00:00",
   "latest": {
-    "version": "2.30.2",
-    "git_sha": "9b4c797",
-    "git_sha_full": "9b4c79733e2b1282806409bae80e8631105e9e68",
-    "build": 242,
-    "released_at": "2026-11-22T22:45:12+00:00",
-    "notes": "Download Station RSS scanner moved into services/download_rss.py; same API; new scanner test."
+    "version": "2.30.3",
+    "git_sha": "a94a2ac",
+    "git_sha_full": "a94a2ac030f6187a8d9138608b634675d3a8a5f9",
+    "build": 245,
+    "released_at": "2026-11-22T22:47:50+00:00",
+    "notes": "GET /api/music/state now declares MusicLibraryState (documented library sections, free-form tracks, extra sections preserved)."
   },
   "releases": [
+    {
+      "version": "2.30.3",
+      "git_sha": "a94a2ac",
+      "git_sha_full": "a94a2ac030f6187a8d9138608b634675d3a8a5f9",
+      "build": 245,
+      "released_at": "2026-11-22T22:47:50+00:00",
+      "notes": "GET /api/music/state now declares MusicLibraryState (documented library sections, free-form tracks, extra sections preserved)."
+    },
     {
       "version": "2.30.2",
       "git_sha": "9b4c797",
@@ -201,14 +209,6 @@
       "build": 172,
       "released_at": "2026-11-22T16:13:29+00:00",
       "notes": "Cameras: single-stream cameras record continuously over one RTSP session"
-    },
-    {
-      "version": "2.25.1",
-      "git_sha": "61c806c",
-      "git_sha_full": "61c806c315fed26fca6fed521121db16c677602f",
-      "build": 170,
-      "released_at": "2026-11-22T16:01:53+00:00",
-      "notes": "Cameras: stream passwords are no longer written to ffmpeg logs"
     }
   ]
 }
