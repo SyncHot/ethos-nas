@@ -108,7 +108,16 @@ export function showAlert(title, message) {
             title,
             bodyHtml: `<p class="ethos-modal-message">${escapeHtml(message)}</p>`,
             footerHtml: `<button class="ethos-modal-btn ethos-modal-btn-primary" data-testid="ethos-modal-ok" autofocus>OK</button>`,
-            onKeydown(e, close) { if (e.key === 'Enter') { e.preventDefault(); close(); resolve(true); _resolveCurrent = null; } },
+            onKeydown(e) {
+                if (e.key === 'Enter') {
+                    // Close without the dismiss resolver — `close()` would resolve
+                    // the pending promise with null before the real value below.
+                    e.preventDefault();
+                    _closeModal();
+                    resolve(true);
+                    _resolveCurrent = null;
+                }
+            },
         });
         const okBtn = _activeModal.querySelector('[data-testid="ethos-modal-ok"]');
         if (okBtn) okBtn.onclick = () => { _closeModal(); resolve(true); _resolveCurrent = null; };
@@ -141,8 +150,15 @@ export function showConfirm(title, message, onConfirm, onCancel) {
             footerHtml: `
                 <button class="ethos-modal-btn ethos-modal-btn-ghost" data-testid="ethos-modal-cancel">${escapeHtml(cancelLabel)}</button>
                 <button class="ethos-modal-btn ${danger ? 'ethos-modal-btn-danger' : 'ethos-modal-btn-primary'}" data-testid="ethos-modal-ok">${escapeHtml(confirmLabel)}</button>`,
-            onKeydown(e, close) {
-                if (e.key === 'Enter') { e.preventDefault(); close(); resolve(true); _resolveCurrent = null; if (confirmCb) confirmCb(); }
+            onKeydown(e) {
+                if (e.key === 'Enter') {
+                    // Resolve `true` directly; `close()` would resolve null first.
+                    e.preventDefault();
+                    _closeModal();
+                    resolve(true);
+                    _resolveCurrent = null;
+                    if (confirmCb) confirmCb();
+                }
             },
         });
         const okBtn = _activeModal.querySelector('[data-testid="ethos-modal-ok"]');
@@ -171,11 +187,15 @@ export function showPrompt(title, message, defaultValue, callback) {
             footerHtml: `
                 <button class="ethos-modal-btn ethos-modal-btn-ghost" data-testid="ethos-modal-cancel">Cancel</button>
                 <button class="ethos-modal-btn ethos-modal-btn-primary" data-testid="ethos-modal-ok">OK</button>`,
-            onKeydown(e, close) {
+            onKeydown(e) {
                 if (e.key === 'Enter') {
+                    // Submit the typed value — `close()` resolves null, which made
+                    // Enter dismiss “New Folder” without creating anything.
                     e.preventDefault();
                     const val = _activeModal.querySelector('[data-testid="ethos-modal-input"]')?.value || '';
-                    close(); resolve(val); _resolveCurrent = null;
+                    _closeModal();
+                    resolve(val);
+                    _resolveCurrent = null;
                     if (cb) cb(val);
                 }
             },

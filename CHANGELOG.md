@@ -11,6 +11,14 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.12.3] - 2026-11-22
+
+### Fixed
+
+- **Enter confirms dialogs again.** Pressing Enter in New Folder, New File, prompt
+  and confirmation dialogs now submits the typed value or the action instead of
+  closing the dialog and silently doing nothing. Escape still cancels.
+
 ## [2.12.2] - 2026-11-22
 
 ### Fixed
