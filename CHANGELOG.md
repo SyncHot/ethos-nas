@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.30.3] - 2026-11-22
+
+### Added
+
+- **`GET /api/music/state` is now a modelled response** (`MusicLibraryState`): the five
+  top-level sections of the per-user library document (`liked`, `playlists`, `history`,
+  `podcasts`, `radio`) are documented in `/docs`, track dicts stay free-form and unknown
+  extra sections are preserved. Same JSON on the wire.
+
 ## [2.30.2] - 2026-11-22
 
 ### Changed

@@ -98,6 +98,14 @@ music/config/downloads/video/gallery while every client payload the Music, Photo
 send still returns 200. `GET /api/music/config` and `/api/music/radio/state` now also declare
 `response_model`.
 
+**Progress (2.30.3).** `GET /api/music/state` declares `response_model=MusicLibraryState`: the five
+top-level sections (`liked`, `playlists`, `history`, `podcasts`, `radio`) are a documented contract,
+track dicts stay free-form (`_norm_track` evolves them without a migration) and unknown extra
+sections are preserved (`extra="allow"`). Verified live on an isolated instance: a liked-track write
+round-trips through the modelled read, keys unchanged, `/openapi.json` 200. Downloads task items and
+media-library rows intentionally stay unmodelled — their payloads carry package/provider-specific
+keys the UI reads dynamically, so a model there would document a shape the code does not own.
+
 ### ☑ P1-10 · One error contract across the API — `M`
 
 ### ☑ P1-11 · Fix silent upload overwrite and abandoned chunks — `S`
