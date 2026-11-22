@@ -58,7 +58,7 @@ scheme · `S17` catalog copy · `S18` language · `A01–A06` live API/health/lo
 | `ethos-editor` | 1.0.1 | native | — | literal palette (80 colours) | 226 | 0 |
 | `ethos-git` | 1.0.1 | window | 3005 | — | 0 | 0 |
 | `ethos-git-diff` | 1.0.1 | native | — | host tokens (18) | 34 | 0 |
-| `ethos-kanban` | 1.0.2 | native | 8098 | host tokens (34) | 36 | 12 |
+| `ethos-kanban` | 1.0.3 | native | 8098 | host tokens (34) | 36 | 0 |
 | `ethos-media-enhance` | 1.0.2 | engine | 8097 | — | 0 | 0 |
 | `ethos-monitor` | 1.0.1 | window | 3091 | — | 0 | 0 |
 | `ethos-music` | 1.0.3 | native | — | own tokens (17) + dark | 7 | 0 |
@@ -148,7 +148,11 @@ the "native module must be self-contained" rule, keeps the core's design system 
 - **Theme scheme drift.** `ethos-cleaner`, `ethos-git-diff`, `ethos-kanban`, `ethos-photos` style
   themselves with the core's `--text-1/--surface-*` variables; `ethos-editor` uses literals. All of
   them follow light/dark correctly, but a redesign has to touch a different vocabulary in each app.
-- **Inline handlers.** `onclick="…"` strings: `ethos-photos` 61, `ethos-kanban` 12 (`TODO` P3-03).
+- **Inline handlers.** `ethos-kanban` 1.0.3 replaced its 12 `onclick`/`onchange`/`ondblclick`
+  attributes with one delegated listener (`data-kanban-act` / `data-kanban-arg`, ids escaped as HTML
+  attributes instead of JavaScript inside an attribute). `ethos-photos` still has 61 (`TODO` P3-03);
+  the same pattern applies, and its handlers can be verified the same way — stub the
+  `window._kanban*`-style targets and assert the dispatcher calls them with the right id.
 - **localStorage in the shared origin.** 7 packages store under `ethos_*`/`em_*` keys; verify every
   key carries the package prefix so two apps can never collide.
 - **Opening Code Editor spawns a host shell.** Rendering the window immediately starts a host
@@ -158,6 +162,14 @@ the "native module must be self-contained" rule, keeps the core's design system 
   dialog have no previews. The UI sweep already produces them — publish a few per package.
 - **Legacy exceptions** stay as documented: `ethos-welcome` (static page), `tic-tac-toe` (single
   card), `ethos-video` (cinema). They are audited for correctness only, never restyled.
+
+## Verifying a refactor without the service
+
+A package service is not running on a throwaway instance, so a "create a board" flow cannot be
+exercised. Instead, stub the action targets and click the real markup:
+`window._kanbanNewBoard = (...a) => log.push(...)` for every action, then click each button and
+assert the call and its argument. This proves the dispatcher, the escaping and the event type
+(`click` vs `dblclick` vs `change`) without any backend.
 
 ## Waivers
 
