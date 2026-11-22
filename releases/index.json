@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T13:00:52+00:00",
+  "generated_at": "2026-11-22T13:07:38+00:00",
   "latest": {
-    "version": "2.18.0",
-    "git_sha": "070524a",
-    "git_sha_full": "070524a03eec3a0dc3a6f496f1c39edb50afb1db",
-    "build": 135,
-    "released_at": "2026-11-22T13:00:52+00:00",
-    "notes": "Videos: Select many films at once (phone and desktop) and download them in one go using your default version."
+    "version": "2.18.1",
+    "git_sha": "29c2490",
+    "git_sha_full": "29c2490541a4d1e0d84d65540f79b4652559f0a3",
+    "build": 138,
+    "released_at": "2026-11-22T13:07:38+00:00",
+    "notes": "Music: Polubione is a normal playlist (liked tracks download to the phone) and downloads resync when the app returns to the foreground"
   },
   "releases": [
+    {
+      "version": "2.18.1",
+      "git_sha": "29c2490",
+      "git_sha_full": "29c2490541a4d1e0d84d65540f79b4652559f0a3",
+      "build": 138,
+      "released_at": "2026-11-22T13:07:38+00:00",
+      "notes": "Music: Polubione is a normal playlist (liked tracks download to the phone) and downloads resync when the app returns to the foreground"
+    },
     {
       "version": "2.18.0",
       "git_sha": "070524a",
@@ -201,14 +209,6 @@
       "build": 77,
       "released_at": "2026-11-20T16:09:26+00:00",
       "notes": "Packages: compose binds limited to the package's own files"
-    },
-    {
-      "version": "2.6.6",
-      "git_sha": "0f07f64",
-      "git_sha_full": "0f07f646524be2728dfde09b29648035dd1d0acc",
-      "build": 75,
-      "released_at": "2026-11-20T16:05:20+00:00",
-      "notes": "Downloads: per-user queues, folders, categories and qBittorrent scope"
     }
   ]
 }
