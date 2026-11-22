@@ -11,6 +11,21 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.24.0] - 2026-11-22
+
+### Added
+
+- **Optional host memory tuning: `setup_scripts/setup_host_tuning.sh`.** On boxes
+  where the 4 GiB swap file fills up completely, this installs zram swap (50 %
+  of RAM, zstd), sysctl values tuned for compressed swap, and raises
+  `systemd-oomd`'s user-session pressure limit from 50 % to 80 % so a busy
+  browser/editor is no longer killed while RAM is still reclaimable. Supports
+  `--dry-run` and `--revert`; it is a manual, administrator-run step (no
+  sudoers rule, not part of provisioning).
+- **Swap-aware container limits.** Documented and applied for `flaresolverr`:
+  `memswap_limit` must equal `mem_limit`, otherwise a container's memory limit
+  still allows it to fill the host swap (docker defaults to 2× RAM).
+
 ## [2.23.1] - 2026-11-22
 
 ### Fixed

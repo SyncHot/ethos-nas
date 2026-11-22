@@ -1,0 +1,18 @@
+# zram swap for an EthOS NAS box — installed to /etc/default/zramswap by
+# setup_scripts/setup_host_tuning.sh (zram-tools package).
+#
+# Why: on a 16 GiB box shared with VS Code, Home Assistant and containers the
+# 4 GiB /swap.img fills up completely, the kernel has nowhere to page out and
+# the next allocation spike becomes an OOM kill (systemd-oomd or the kernel).
+# zram trades a little CPU for compressed RAM-backed swap that is ~2-4x larger
+# than the space it occupies and orders of magnitude faster than a disk swap
+# file (a 100 % full disk swap makes every reclaim a disk stall).
+#
+# 50 % of RAM keeps ~8 GiB of zram on 16 GiB, leaving the rest to the system.
+# /swap.img stays as a last-resort fallback (priority -1 < 100 = used second).
+
+# zstd compresses best for mixed Python/Chrome workloads at a low CPU cost.
+ALGO=zstd
+PERCENT=50
+# Higher than the automatic priority of /swap.img, so zram is swapped to first.
+PRIORITY=100

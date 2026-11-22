@@ -274,6 +274,48 @@ journalctl -k -b | grep -iE 'oom|killed process'; journalctl -u systemd-oomd --s
 An unclean stop (killed or power loss) is reported once in the Notification Center at the next
 start (`services/startup_guard.py`); a clean restart removes the marker and stays quiet.
 
+### 8.2 Host memory tuning (zram + oomd) — optional, administrator-run
+
+The app protects itself; the host needs two decisions of its own. On this class of box the disk
+swap file (`/swap.img`, 4 GiB) was **100 % full** while `systemd-oomd` was active with Ubuntu's
+default *kill at 50 % pressure* for `user@.service` — so a browser/editor session (and anything in
+its cgroup) could be killed while RAM was still reclaimable.
+
+```bash
+sudo bash setup_scripts/setup_host_tuning.sh --dry-run   # preview
+sudo bash setup_scripts/setup_host_tuning.sh             # install / update
+sudo bash setup_scripts/setup_host_tuning.sh --revert    # undo
+```
+
+| Installed | What it does |
+|---|---|
+| `/etc/default/zramswap` (`deploy/host-tuning/zramswap`) | zram swap: 50 % of RAM, `zstd`, priority 100 — used before `/swap.img`, ~2–4× larger than the RAM it occupies, RAM-speed page-outs instead of disk stalls |
+| `/etc/sysctl.d/99-ethos-memory.conf` | `swappiness=150`, `page-cluster=0`, `watermark_boost_factor=0`, `min_free_kbytes≈1 %` — tuned for zram, not for a slow disk swap |
+| `/etc/systemd/system/user@.service.d/10-ethos-oomd.conf` | raises oomd's user-session pressure limit 50 % → 80 %: still kills on genuine thrashing, not on a busy browser |
+| package `zram-tools` | ships `zramswap.service`; no extra daemon |
+
+This is a **per-host, manual** step like `setup_service.sh` — it is not part of EthOS provisioning
+and adds no sudoers rule.
+
+**Containers: limit swap too.** A container that only sets `mem_limit` may still fill the host swap
+(docker defaults to `2 × mem_limit`); set `memswap_limit` equal to `mem_limit` so it restarts
+instead of evicting the box. Applied example (`~/apps/compose/prowlarr/docker-compose.yaml`):
+
+```yaml
+    mem_limit: 3g
+    memswap_limit: 3g
+```
+
+Verify:
+
+```bash
+swapon --show                 # /dev/zram0 PRIO 100 + /swap.img
+zramctl                       # compression ratio / used
+sysctl vm.swappiness vm.page-cluster
+systemctl show user@1000.service -p ManagedOOMMemoryPressureLimit
+docker inspect <name> --format '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}}'
+```
+
 ---
 
 ## 9. Secrets
