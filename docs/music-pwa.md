@@ -75,6 +75,16 @@ seeks natively and the service worker keeps its “no `/api/*`, no `Range`” ru
 Videos use Cache Storage + a synthesized `206` handler because a film is one big
 file; a track is a few megabytes and IDB is the simpler, safer fit.
 
+**Resumable transfers.** Both audio proxies forward `Range`, so an interrupted
+track continues where it stopped: every attempt stores its bytes as one
+`blobs` record (`<key>#part:<n>`) and the row keeps the part sizes, the next
+attempt asks for `bytes=<done>-`, and the pieces are concatenated with
+`new Blob([…])` once the last byte arrives (references only, no copy). A reload,
+an expired YouTube stream URL or a dropped connection resumes; a `200` (proxy
+stripped the Range) or `416` (upstream changed) restarts the track cleanly, and
+two attempts without progress fail the row so the queue cannot spin. Partial
+records are removed on completion, delete and cancellation.
+
 | Download source | Endpoint |
 |---|---|
 | track already in the NAS library | `/api/music/library-file` (finite file) |
@@ -92,7 +102,7 @@ non-audio content types, caps the payload at 400 MiB and writes nothing to disk.
 | progress repaint | at most 4×/s per track |
 | pause threshold | usage > 92 % of `storage.estimate().quota` |
 | persistence | `navigator.storage.persist()` on start |
-| interrupted download | re-queued on the next start (no byte resume) |
+| interrupted download | resumed with `Range: bytes=<done>-` (partial chunks in `blobs`) |
 
 Progress uses the global `core/progress.js` task panel; a full disk pauses the
 queue and emits one Notification Center warning instead of failing every track.
@@ -149,7 +159,7 @@ queue and emits one Notification Center warning instead of failing every track.
 ## Tests
 
 ```bash
-.venv/bin/python tests/test_music_pwa.py            # Playwright: login, search, auto-download, offline playback
+.venv/bin/python tests/test_music_pwa.py            # Playwright: login, search, auto-download, resumable transfer, offline playback
 .venv/bin/python tests/test_music_liked_playlist.py # like ↔ „Polubione” playlist mirroring + legacy migration
 .venv/bin/python tests/test_music_episode_proxy.py  # SSRF guard, redirects, Range, size cap, retired APK
 .venv/bin/python tests/test_pwa_assets.py           # manifest, icons, public paths, worker precache
@@ -173,6 +183,8 @@ queue and emits one Notification Center warning instead of failing every track.
 - [x] Search paging + kept filters, radio recents, Media Session position scrubber
 - [x] Downloads: pinned manuals survive a sync, in-flight cancel, cover after slot, delete wins races
 - [x] Shared progress panel (`frontend/static/css/progress.css`) on `/music`
+- [x] Resumable downloads — a cut stream or reload continues with
+  `Range: bytes=<done>-` (partial chunks in IndexedDB)
 - [x] Docs, guards and CHANGELOG updated
 - [ ] Optional: per-row cancel button and pause/resume directly in Pobrane
 - [ ] Optional: engine/yt-dlp update + About card in Settings; swipe-down player

@@ -309,6 +309,9 @@ function enqueue(item, { pinned = false } = {}) {
         track: item.track,
         status: 'queued',
         bytes: existing?.bytes || 0,
+        // Partial chunks of an interrupted attempt stay valid: a retry resumes
+        // from the last stored byte instead of fetching the track again.
+        parts: existing?.parts || [],
         pinned: pinned || !!existing?.pinned,
         error: '',
         added_at: existing?.added_at || Date.now(),
@@ -374,15 +377,15 @@ async function runDownload({ key, track, kind }) {
     _controllers.set(key, controller);
     _runIds.set(key, runId);
     try {
-        const { blob, type } = await fetchBlob(src, (done, total) => {
+        const { blob, type } = await downloadAudio(key, src, controller.signal, (done, total) => {
             if (_cancelled.has(key)) return;
             // A 4 MB track yields ~64 chunks; painting the badges on every one
             // of them keeps the main thread busy for no benefit.
             const now = Date.now();
             if (now - (_lastProgress.get(key) || 0) < PROGRESS_MS) return;
             _lastProgress.set(key, now);
-            upsert({ ..._index.get(key), bytes: done, bytes_total: total || row.bytes_total || 0 });
-        }, controller.signal);
+            upsert({ ..._index.get(key), bytes: done, bytes_total: total || _index.get(key)?.bytes_total || 0 });
+        });
         if (_cancelled.has(key)) return;          // deleted while the bytes streamed in
         // Audio first, cover later: the slot must be free for the next track
         // as soon as the bytes are stored, not after a thumbnail round-trip.
@@ -393,6 +396,7 @@ async function runDownload({ key, track, kind }) {
             status: 'done',
             bytes: blob.size,
             bytes_total: blob.size,
+            parts: [],
             error: '',
             completed_at: Date.now(),
         });
@@ -455,38 +459,195 @@ async function storeCover(key, track) {
     } catch { /* covers are optional */ }
 }
 
-async function fetchBlob(src, onProgress, signal) {
-    const res = await apiFetch(src, { signal });
+// ── resumable transfer ────────────────────────────────────────────────────
+//
+// Partial audio is stored as one IndexedDB record per attempt
+// (`<key>#part:<n>`) and the row keeps the part sizes, so a reload, a dropped
+// connection or an expired YouTube URL continues with `Range: bytes=<done>-`
+// instead of fetching the track again. Tracks are a few MB, so the parts are
+// concatenated with `new Blob([...])` (references, no copy).
+
+const PART_SUFFIX = '#part:';
+
+function partKey(key, index) { return `${key}${PART_SUFFIX}${index}`; }
+
+/** `<total>` from `Content-Range: bytes 100-199/4000000`. */
+function contentRangeTotal(header) {
+    const match = /^bytes\s+\d+-\d+\/(\d+)$/i.exec(String(header || '').trim());
+    return match ? Number(match[1]) || 0 : 0;
+}
+
+/** Recorded parts that are still in IndexedDB and still contiguous (0..n-1). */
+async function usableParts(key, recorded) {
+    const list = Array.isArray(recorded) ? recorded : [];
+    const out = [];
+    for (const entry of list) {
+        const index = Number(entry?.index);
+        const bytes = Number(entry?.bytes);
+        if (index !== out.length || !(bytes > 0)) break;   // no gaps allowed
+        let record = null;
+        try { record = await dbGet(BLOBS, partKey(key, index)); } catch { record = null; }
+        if (!record?.audio) break;
+        out.push({ index, bytes });
+    }
+    return out;
+}
+
+async function discardParts(key, parts) {
+    for (const part of (Array.isArray(parts) ? parts : [])) {
+        try { await dbDel(BLOBS, partKey(key, Number(part.index))); } catch { /* ignore */ }
+    }
+}
+
+/** Concatenate the stored parts plus the freshly fetched tail into one blob. */
+async function assembleAudio(key, parts, tail, type) {
+    const blobs = [];
+    for (const part of parts) {
+        let record = null;
+        try { record = await dbGet(BLOBS, partKey(key, part.index)); } catch { record = null; }
+        if (record?.audio) blobs.push(record.audio);
+    }
+    if (tail) blobs.push(tail);
+    return new Blob(blobs, { type });
+}
+
+/** Remember the bytes that did arrive, so the retry resumes exactly there. */
+async function keepPartial(key, parts, blob, bytes, total, type) {
+    const index = parts.length;
+    await dbPut(BLOBS, { key: partKey(key, index), audio: blob, thumb: null, type });
+    const next = [...parts, { index, bytes }];
+    const row = _index.get(key);
+    if (row) {
+        upsert({
+            ...row,
+            parts: next,
+            bytes: next.reduce((sum, part) => sum + part.bytes, 0),
+            bytes_total: total || row.bytes_total || 0,
+        });
+        await dbPut(ROWS, _index.get(key));
+    }
+    return next;
+}
+
+/**
+ * Download one track, resuming from the bytes already on disk. Up to three
+ * attempts while progress is being made; a server that ignores `Range`
+ * (or answers `416`) restarts the track cleanly.
+ */
+async function downloadAudio(key, src, signal, onProgress) {
+    let parts = await usableParts(key, _index.get(key)?.parts);
+    let lastError = null;
+    let best = parts.reduce((sum, part) => sum + part.bytes, 0);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (_cancelled.has(key)) throw new DOMException('Aborted', 'AbortError');
+        const offset = parts.reduce((sum, part) => sum + part.bytes, 0);
+        let result;
+        try {
+            result = await fetchBlob(src, onProgress, signal, offset);
+        } catch (error) {
+            if (error?.name === 'AbortError' || _cancelled.has(key)) throw error;
+            if (offset > 0 && Number(error?.status) === 416) {
+                // The upstream (or the resolved stream URL) changed size.
+                await discardParts(key, parts);
+                parts = [];
+                lastError = error;
+                continue;
+            }
+            if (error?.partial && error.partialBytes > 0) {
+                try {
+                    parts = await keepPartial(key, parts, error.partial, error.partialBytes,
+                        error.total, error.type || 'audio/mpeg');
+                } catch (storeError) {
+                    logWarn('Music partial not saved', `${key}: ${storeError}`);
+                }
+            }
+            lastError = error;
+            const moved = parts.reduce((sum, part) => sum + part.bytes, 0);
+            if (moved <= best) throw error;    // nothing new arrived — give up
+            best = moved;
+            continue;
+        }
+        if (offset > 0 && !result.ranged) {
+            // A proxy dropped the Range header: this body is the whole file.
+            await discardParts(key, parts);
+            parts = [];
+        }
+        const written = offset > 0 && result.ranged ? offset + result.blob.size : result.blob.size;
+        if (result.total && written < result.total) {
+            // Stream closed early but the bytes are durable — retry and resume.
+            parts = await keepPartial(key, parts, result.blob, result.blob.size,
+                result.total, result.type);
+            lastError = new Error('Przerwane pobieranie — wznawiam');
+            best = parts.reduce((sum, part) => sum + part.bytes, 0);
+            continue;
+        }
+        const blob = await assembleAudio(key, parts, result.blob, result.type);
+        await discardParts(key, parts);
+        return { blob, type: result.type, total: result.total };
+    }
+    throw lastError || new Error('Pobieranie nie powiodło się');
+}
+
+/**
+ * Fetch audio from `offset` onwards. Both proxies (`/api/music/stream` and
+ * `/api/music/episode-audio`) forward `Range`, so a 206 body starts exactly
+ * where the stored parts end.
+ */
+async function fetchBlob(src, onProgress, signal, offset = 0) {
+    const res = await apiFetch(src, {
+        signal,
+        ...(offset > 0 ? { headers: { Range: `bytes=${offset}-` } } : {}),
+    });
     if (!res.ok) {
         let detail = '';
         try {
             const payload = await res.clone().json();
             detail = payload?.detail || payload?.error || '';
         } catch { /* non-JSON error body */ }
-        throw new Error(detail || `HTTP ${res.status}`);
+        const error = new Error(detail || `HTTP ${res.status}`);
+        error.status = res.status;
+        throw error;
     }
     const type = (res.headers.get('content-type') || 'audio/mpeg').split(';')[0];
-    const total = Number(res.headers.get('content-length')) || 0;
+    const ranged = res.status === 206;
+    let total = ranged ? contentRangeTotal(res.headers.get('content-range')) : 0;
+    if (!total) {
+        const length = Number(res.headers.get('content-length')) || 0;
+        if (length) total = ranged ? length + offset : length;
+    }
     const chunks = [];
     let done = 0;
-    if (res.body?.getReader) {
-        const reader = res.body.getReader();
-        for (;;) {
-            const { value, done: finished } = await reader.read();
-            if (finished) break;
-            if (value) {
-                chunks.push(value);
-                done += value.length;
-                onProgress(done, total);
+    try {
+        if (res.body?.getReader) {
+            const reader = res.body.getReader();
+            for (;;) {
+                const { value, done: finished } = await reader.read();
+                if (finished) break;
+                if (value) {
+                    chunks.push(value);
+                    done += value.length;
+                    onProgress(offset + done, total);
+                }
             }
+        } else {
+            const buffer = await res.arrayBuffer();
+            chunks.push(new Uint8Array(buffer));
+            done = buffer.byteLength;
+            onProgress(offset + done, total || offset + done);
         }
-    } else {
-        const buffer = await res.arrayBuffer();
-        chunks.push(new Uint8Array(buffer));
-        done = buffer.byteLength;
-        onProgress(done, total || done);
+    } catch (error) {
+        // Bytes already received are worth keeping: the retry resumes from here.
+        try {
+            if (chunks.length) {
+                error.partial = new Blob(chunks, { type });
+                error.partialBytes = done;
+            }
+        } catch { /* ignore */ }
+        error.type = type;
+        error.total = total;
+        throw error;
     }
-    return { blob: new Blob(chunks, { type }), type };
+    return { blob: new Blob(chunks, { type }), type, total, ranged };
 }
 
 function ensureTask() {
@@ -533,9 +694,10 @@ async function removeRow(key, { silent = false } = {}) {
     _queue = _queue.filter((item) => item.key !== key);
     const index = _rows.findIndex((row) => row.key === key);
     if (index < 0) return;
-    _rows.splice(index, 1);
+    const [removed] = _rows.splice(index, 1);
     reindex();
     try { await dbDel(ROWS, key); } catch { /* ignore */ }
+    try { await discardParts(key, removed?.parts); } catch { /* ignore */ }
     try { await dbDel(BLOBS, key); } catch { /* ignore */ }
     for (const cacheKey of [key, `thumb:${key}`]) {
         const url = _urls.get(cacheKey);

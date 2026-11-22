@@ -45,6 +45,9 @@ WAV = (b"RIFF" + (36).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "li
        + (8000).to_bytes(4, "little") + (1).to_bytes(2, "little") + (8).to_bytes(2, "little")
        + b"data" + (0).to_bytes(4, "little"))
 
+# Same container plus padding, so a transfer can be cut mid-file (> 64 bytes).
+BIG_WAV = WAV + b"\x00" * 2048
+
 
 def check(name: str, ok: bool, detail: str = "") -> None:
     results.append((name, bool(ok), detail))
@@ -92,6 +95,9 @@ def main() -> int:
              "podcasts": {"subscribed": [], "episodes": {}}, "radio": {"favorites": [], "recents": []}}
     mode = {"offline": False}
     calls: list[tuple[str, str]] = []
+    # The resume scenario: the first response for this track is cut short on
+    # purpose, so the next request has to carry `Range: bytes=64-`.
+    cut = {"left": 1, "ranges": []}
 
     def handler(route):
         request = route.request
@@ -151,6 +157,23 @@ def main() -> int:
                 })
             return
         if path == "/api/music/stream":
+            video_id = (urllib.parse.parse_qs(parsed.query).get("video_id") or [""])[0]
+            if video_id == "vid22222222":
+                range_header = request.headers.get("range") or ""
+                cut["ranges"].append(range_header)
+                start = int(range_header.split("=")[1].split("-")[0]) if range_header else 0
+                total = len(BIG_WAV)
+                if cut["left"] > 0:
+                    cut["left"] -= 1
+                    part = BIG_WAV[start:start + 64]
+                else:
+                    part = BIG_WAV[start:]
+                route.fulfill(status=206, body=part, headers={
+                    "Content-Type": "audio/wav",
+                    "Content-Range": f"bytes {start}-{start + len(part) - 1}/{total}",
+                    "Content-Length": str(len(part)),
+                })
+                return
             route.fulfill(status=200, content_type="audio/wav", body=WAV)
             return
         if path == "/api/music/history" and method == "POST":
@@ -324,6 +347,39 @@ def main() -> int:
             check("a manual download outside a playlist survives a re-sync",
                   pinned["has"] and any(row[0] == 'Przypiety utwor' and row[2] for row in pinned["rows"]),
                   str(pinned))
+
+            # 4g. resumable transfer: the first response is cut at 64 bytes, so
+            # the client must keep them and ask for `Range: bytes=64-`.
+            resume = page.evaluate("""async () => {
+                const offline = await import('/static/music/offline.js');
+                const track = { id: 'vid22222222', title: 'Wznawiany utwor', artist: 'Test', duration: 60, thumbnail: '' };
+                offline.downloadTrack(track);
+                for (let i = 0; i < 80; i++) {
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                    if (offline.hasLocal(track)) break;
+                }
+                const blobs = await new Promise((resolve, reject) => {
+                    const req = indexedDB.open('ethos-music-db', 1);
+                    req.onerror = () => reject(req.error);
+                    req.onsuccess = () => {
+                        const db = req.result;
+                        const tx = db.transaction('blobs', 'readonly');
+                        const all = tx.objectStore('blobs').getAll();
+                        all.onsuccess = () => resolve(all.result.map((b) => [b.key, b.audio ? b.audio.size : 0]));
+                        all.onerror = () => reject(all.error);
+                    };
+                });
+                return { has: offline.hasLocal(track), row: offline.rowFor(track), blobs };
+            }""")
+            check("a cut audio transfer resumes with Range",
+                  cut["ranges"][:2] == ["", "bytes=64-"], str(cut["ranges"]))
+            check("the resumed track is stored whole, with no partial chunks",
+                  resume["has"]
+                  and any(key.startswith("vid22222222") and "#part:" not in key and size == len(BIG_WAV)
+                          for key, size in resume["blobs"])
+                  and not any(key.startswith("vid22222222") and "#part:" in key
+                              for key, _size in resume["blobs"]),
+                  str(resume)[:300])
 
             cancelled = page.evaluate("""async () => {
                 const offline = await import('/static/music/offline.js');
