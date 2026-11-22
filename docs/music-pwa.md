@@ -40,6 +40,20 @@ The rule matches the Android app's `OfflineStore`:
 - removing the track from **all** playlists deletes its audio from the device;
 - podcast episodes are downloaded on demand and never auto-deleted.
 
+The list is refreshed whenever the app comes back to the foreground (throttled
+to once per 15 s) and when the connection returns, so a playlist edited on the
+desktop starts downloading on the phone without reopening the app.
+
+### Liked is the playlist „Polubione”
+
+There is no separate liked list any more: the heart adds the track to a real
+playlist with the fixed id `liked` and the name **Polubione**, which is why it
+downloads like any other playlist. The server keeps the legacy `liked` array
+identical to the playlist so the desktop Music window and old clients still see
+their hearts; `GET /api/music/state` materialises the playlist for accounts that
+only had likes, and asking `POST /api/music/playlists` for a playlist called
+„Polubione” returns that same object instead of creating a duplicate.
+
 Storage is **IndexedDB**, not Cache Storage: `ethos-music-db` keeps metadata in
 `rows`, audio/cover Blobs in `blobs` and small state (library snapshot, episode
 positions) in `meta`. A downloaded track plays from an object URL, so `<audio>`
@@ -90,7 +104,7 @@ queue and emits one Notification Center warning instead of failing every track.
 | Unified search (YouTube + podcasts + radio + library + playlists, suggestions, history, filters) | `type=all`, 300 ms debounce, local history (12) |
 | Podcasts (catalog, subscribe, RSS, feed refresh, resume, offline episodes) | same endpoints, episodes cached in IDB |
 | Radio (150 stations, categories, favourites, recents, HLS) | same catalog + `/radio/state` |
-| Library (liked, playlists, shared playlists) | same, shared playlists read-only |
+| Library (liked, playlists, shared playlists) | playlists only — likes live in the „Polubione” playlist
 | Offline playlists (auto-download, delete when removed) | same (IndexedDB) |
 | “Download whole playlist to the phone” | same button in the playlist view |
 | Full player (seek, shuffle, repeat, like, queue, sleep timer) | same |
@@ -121,6 +135,7 @@ queue and emits one Notification Center warning instead of failing every track.
 
 ```bash
 .venv/bin/python tests/test_music_pwa.py            # Playwright: login, search, auto-download, offline playback
+.venv/bin/python tests/test_music_liked_playlist.py # like ↔ „Polubione” playlist mirroring + legacy migration
 .venv/bin/python tests/test_music_episode_proxy.py  # SSRF guard, redirects, Range, size cap, retired APK
 .venv/bin/python tests/test_pwa_assets.py           # manifest, icons, public paths, worker precache
 .venv/bin/python tests/test_app_ui.py               # Settings contract (music-pwa-link, no apk-link-music)
@@ -134,7 +149,7 @@ queue and emits one Notification Center warning instead of failing every track.
 - [x] Search (tracks/podcasts/radio/library/playlists), suggestions, history
 - [x] Podcasts: catalog, subscriptions, feed refresh, episode download + resume
 - [x] Radio: catalog, categories, favourites/recents, HLS, live badge
-- [x] Library: liked, playlists, shared playlists (read-only), create/delete
+- [x] Library: playlists (likes are the „Polubione” playlist), shared playlists (read-only), create/delete
 - [x] Device downloads: playlist mirroring, quota guard, storage meter, retries
 - [x] Full player: Media Session, queue, shuffle/repeat, sleep timer, like
 - [x] `episode-audio` proxy with SSRF guard and size cap

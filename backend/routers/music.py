@@ -1145,6 +1145,72 @@ def _remove_by_key(lst: list, key: str) -> bool:
     return len(lst) != before
 
 
+# ── Liked = a normal playlist ("Polubione") ──────────────────────────
+# The heart used to be a separate list, which the phone never downloaded
+# (offline mirroring only walks playlists). "Liked" is now a real playlist
+# with a fixed id, so every client sees one object and the phone keeps it on
+# the device like any other playlist. The ``liked`` array survives as a
+# compatibility view for the desktop app and the retired Android clients; the
+# two are kept identical by the endpoints below.
+
+LIKED_PLAYLIST_ID = "liked"
+LIKED_PLAYLIST_NAME = "Polubione"
+
+
+def _liked_playlist(st: dict) -> dict:
+    """Return (creating if needed) the playlist that backs the liked list."""
+    playlists = st.setdefault("playlists", [])
+    playlist = next((p for p in playlists if isinstance(p, dict)
+                     and str(p.get("id")) == LIKED_PLAYLIST_ID), None)
+    if playlist is None:
+        playlist = {"id": LIKED_PLAYLIST_ID, "name": LIKED_PLAYLIST_NAME, "tracks": []}
+        playlists.insert(0, playlist)
+    else:
+        playlist["name"] = LIKED_PLAYLIST_NAME
+    playlist.setdefault("tracks", [])
+    return playlist
+
+
+def _liked_to_playlist(st: dict) -> bool:
+    """Make the playlist mirror the liked list exactly (used on like/unlike)."""
+    playlist = _liked_playlist(st)
+    tracks = [t for t in (st.get("liked") or []) if isinstance(t, dict)]
+    if playlist["tracks"] != tracks:
+        playlist["tracks"] = tracks
+        return True
+    return False
+
+
+def _playlist_to_liked(st: dict) -> bool:
+    """Make the liked list mirror the playlist exactly (used on playlist edits)."""
+    playlist = _liked_playlist(st)
+    tracks = [t for t in playlist.get("tracks") or [] if isinstance(t, dict)]
+    if st.get("liked") != tracks:
+        st["liked"] = tracks
+        return True
+    return False
+
+
+def _ensure_liked_playlist(st: dict) -> bool:
+    """Create/repair "Polubione" without losing tracks on either side.
+
+    Existing accounts have likes and no playlist; a client may also have added
+    tracks to the playlist before the upgrade. Merge (union), then let the
+    playlist be the single source of truth for the liked view.
+    """
+    playlist = _liked_playlist(st)
+    changed = False
+    existing = {_track_key(t) for t in playlist["tracks"] if isinstance(t, dict)}
+    for track in st.get("liked") or []:
+        if isinstance(track, dict) and _track_key(track) not in existing:
+            playlist["tracks"].append(track)
+            existing.add(_track_key(track))
+            changed = True
+    if _playlist_to_liked(st):
+        changed = True
+    return changed
+
+
 def _norm_podcast(p: Any) -> Optional[dict]:
     if not isinstance(p, dict):
         return None
@@ -1165,9 +1231,23 @@ def _norm_podcast(p: Any) -> Optional[dict]:
 
 @router.get("/state")
 async def state_get(request: Request):
-    """Full library state for the current user (web + Android share this)."""
-    _, st = _user_state(request)
-    return st
+    """Full library state for the current user (web + Android share this).
+
+    Also materialises the "Polubione" playlist for accounts whose likes still
+    live only in the legacy ``liked`` list (one-time, idempotent write).
+    """
+    uid, _st = _user_state(request)
+    async with _lib_lock:
+        states = _load_states()
+        cur = states.get(uid)
+        if not isinstance(cur, dict):
+            cur = _empty_state()
+        for k, v in _empty_state().items():
+            cur.setdefault(k, copy.deepcopy(v) if isinstance(v, (list, dict)) else v)
+        if _ensure_liked_playlist(cur):
+            states[uid] = cur
+            _save_states(states)
+    return cur
 
 
 @router.put("/state")
@@ -1215,6 +1295,7 @@ async def state_put(payload: dict, request: Request):
         for pid, eps in episodes_in.items():
             if not eps_cur.get(pid):
                 eps_cur[pid] = eps
+        _ensure_liked_playlist(cur)
         states[uid] = cur
         _save_states(states)
     return cur
@@ -1269,7 +1350,11 @@ async def radio_state_put(payload: dict, request: Request):
 
 @router.post("/liked")
 async def liked_add(payload: dict, request: Request):
-    """Add a track to liked (idempotent — dedup by id|title)."""
+    """Add a track to liked (idempotent — dedup by id|title).
+
+    The "Polubione" playlist is updated in the same write, so the phone
+    downloads the track like any other playlist entry.
+    """
     track = _norm_track(_track_from_payload(payload))
     if not track:
         raise HTTPException(status_code=422, detail="Brak poprawnego utworu")
@@ -1278,7 +1363,8 @@ async def liked_add(payload: dict, request: Request):
         states = _load_states()
         cur = states.get(uid) or _empty_state()
         added = _add_dedup(cur.setdefault("liked", []), track)
-        if added:
+        changed = _liked_to_playlist(cur)
+        if added or changed:
             states[uid] = cur
             _save_states(states)
     return {"added": added, "count": len(cur.get("liked") or [])}
@@ -1286,7 +1372,7 @@ async def liked_add(payload: dict, request: Request):
 
 @router.delete("/liked")
 async def liked_remove(payload: dict, request: Request):
-    """Remove a track from liked (by id|title key)."""
+    """Remove a track from liked (by id|title key), also from "Polubione"."""
     key = str((payload or {}).get("key") or "")
     if not key:
         raise HTTPException(status_code=422, detail="Brak klucza utworu")
@@ -1295,7 +1381,8 @@ async def liked_remove(payload: dict, request: Request):
         states = _load_states()
         cur = states.get(uid) or _empty_state()
         removed = _remove_by_key(cur.setdefault("liked", []), key)
-        if removed:
+        changed = _liked_to_playlist(cur)
+        if removed or changed:
             states[uid] = cur
             _save_states(states)
     return {"removed": removed, "count": len(cur.get("liked") or [])}
@@ -1352,6 +1439,14 @@ async def playlist_create(payload: dict, request: Request):
     async with _lib_lock:
         states = _load_states()
         cur = states.get(uid) or _empty_state()
+        # "Polubione" is one fixed playlist; asking for it again returns it
+        # instead of creating a second playlist with the same name.
+        if name.casefold() == LIKED_PLAYLIST_NAME.casefold():
+            existing = _liked_playlist(cur)
+            if _ensure_liked_playlist(cur):
+                states[uid] = cur
+                _save_states(states)
+            return existing
         pls = cur.setdefault("playlists", [])
         existing_ids = {str(p.get("id")) for p in pls}
         pid = wanted_id if (wanted_id and wanted_id not in existing_ids) else uuid.uuid4().hex[:12]
@@ -1364,7 +1459,11 @@ async def playlist_create(payload: dict, request: Request):
 
 @router.delete("/playlists/{pid}")
 async def playlist_delete(pid: str, request: Request):
-    """Delete a playlist by id."""
+    """Delete a playlist by id.
+
+    Deleting "Polubione" clears the liked list too — it is one object, not a
+    special case the user cannot get rid of.
+    """
     uid, st = _user_state(request)
     async with _lib_lock:
         states = _load_states()
@@ -1372,7 +1471,11 @@ async def playlist_delete(pid: str, request: Request):
         before = len(cur.setdefault("playlists", []))
         cur["playlists"] = [p for p in cur["playlists"] if str(p.get("id")) != pid]
         deleted = len(cur["playlists"]) != before
-        if deleted:
+        cleared = False
+        if deleted and pid == LIKED_PLAYLIST_ID:
+            cleared = bool(cur.get("liked"))
+            cur["liked"] = []
+        if deleted or cleared:
             states[uid] = cur
             _save_states(states)
     return {"deleted": deleted}
@@ -1392,7 +1495,8 @@ async def playlist_track_add(pid: str, payload: dict, request: Request):
         if not pl:
             raise HTTPException(status_code=404, detail="Playlista nie istnieje")
         added = _add_dedup(pl.setdefault("tracks", []), track)
-        if added:
+        synced = _playlist_to_liked(cur) if pid == LIKED_PLAYLIST_ID else False
+        if added or synced:
             states[uid] = cur
             _save_states(states)
     return {"added": added, "count": len(pl.get("tracks") or [])}
@@ -1412,7 +1516,8 @@ async def playlist_track_remove(pid: str, payload: dict, request: Request):
         if not pl:
             raise HTTPException(status_code=404, detail="Playlista nie istnieje")
         removed = _remove_by_key(pl.setdefault("tracks", []), key)
-        if removed:
+        synced = _playlist_to_liked(cur) if pid == LIKED_PLAYLIST_ID else False
+        if removed or synced:
             states[uid] = cur
             _save_states(states)
     return {"removed": removed, "count": len(pl.get("tracks") or [])}

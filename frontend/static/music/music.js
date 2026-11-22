@@ -75,6 +75,10 @@ const CATEGORIES = [
 
 const HISTORY_KEY = 'ethos.music.searchHistory';
 const HISTORY_MAX = 12;
+// Backed by the server as a real playlist (id "liked"); the heart is just a
+// shortcut for adding/removing a track there, which also makes it download.
+const LIKED_PLAYLIST_ID = 'liked';
+const LIKED_PLAYLIST_NAME = 'Polubione';
 
 const store = {
     liked: [],
@@ -228,7 +232,35 @@ function applyState(state) {
     store.history = state.history || [];
     store.podcasts = state.podcasts || { subscribed: [], episodes: {} };
     if (!store.podcasts.episodes) store.podcasts.episodes = {};
+    // The server owns "Polubione"; synthesise it only against a server that
+    // predates the change (or an empty/missing response), so likes still
+    // download instead of silently sitting in a list nothing mirrors.
+    let likedPlaylist = store.playlists.find((playlist) => playlist.id === LIKED_PLAYLIST_ID);
+    if (!likedPlaylist) {
+        likedPlaylist = { id: LIKED_PLAYLIST_ID, name: LIKED_PLAYLIST_NAME, tracks: store.liked.slice() };
+        store.playlists.unshift(likedPlaylist);
+    }
+    likedPlaylist.name = LIKED_PLAYLIST_NAME;
+    likedPlaylist.tracks = likedPlaylist.tracks || [];
+    if (likedPlaylist.tracks.length < store.liked.length) {
+        const seen = new Set(likedPlaylist.tracks.map((track) => tkey(track)));
+        store.liked.forEach((track) => {
+            if (!seen.has(tkey(track))) likedPlaylist.tracks.push(track);
+        });
+    }
     store.loaded = true;
+}
+
+function likedPlaylist() {
+    return store.playlists.find((playlist) => playlist.id === LIKED_PLAYLIST_ID) || null;
+}
+
+function updateDownloadsMenu() {
+    const button = els.menu?.querySelector('[data-action="downloads"]');
+    if (!button) return;
+    const pending = offline.downloadsSnapshot()
+        .filter((row) => ['queued', 'downloading', 'waiting'].includes(row.status)).length;
+    button.textContent = pending ? `Pobrane · ${pending} w toku` : 'Pobrane';
 }
 
 function setNet(offlineMode) {
@@ -263,6 +295,29 @@ async function loadState() {
         store.sharedPlaylists = shared.grants || [];
     } catch { store.sharedPlaylists = []; }
     offline.syncPlaylists(store.playlists);
+    updateDownloadsMenu();
+}
+
+let _lastRefresh = 0;
+
+/** Quiet refresh for a PWA that was left in the background.
+ *
+ * Playlists edited on the desktop (or likes added there) must reach the phone
+ * without a full reload — that is what starts the offline mirror. Throttled so
+ * switching tabs does not hammer the NAS.
+ */
+async function refreshLibrary() {
+    if (!getToken() || Date.now() - _lastRefresh < 15000) return;
+    _lastRefresh = Date.now();
+    try {
+        const state = await json('/api/music/state');
+        applyState(state);
+        offline.saveLibraryState(state);
+        await persistPlaylists();
+        updateDownloadsMenu();
+        if (['home', 'library', 'playlist'].includes(ui.view)) renderView();
+        if (engine.current) updatePlayer();
+    } catch { /* offline — keep the cached library */ }
 }
 
 async function persistPlaylists() {
@@ -274,6 +329,7 @@ async function persistPlaylists() {
 async function startApp() {
     showApp();
     await offline.initOffline(() => {
+        updateDownloadsMenu();
         if (ui.view === 'downloads' || ui.view === 'settings') renderView();
     });
     await loadState();
@@ -372,7 +428,6 @@ function cardHtml({ image, label, sub, act, id }) {
 function renderHome() {
     const recent = store.history.slice(0, 8);
     indexTracks(recent);
-    indexTracks(store.liked.slice(0, 8));
     const playlistCards = store.playlists.slice(0, 6).map((playlist) => cardHtml({
         image: artUrl(playlist.tracks?.[0] || {}),
         label: playlist.name,
@@ -391,10 +446,6 @@ function renderHome() {
         </div>
         ${recent.length ? `<h2 class="mu-section-title">Ostatnio odtwarzane</h2>${recent.map((track) => rowHtml(track, { ctx: 'home' })).join('')}` : ''}
         ${playlistCards ? `<h2 class="mu-section-title">Twoje playlisty</h2><div class="mu-grid">${playlistCards}</div>` : ''}
-        ${store.liked.length ? `
-            <h2 class="mu-section-title">Polubione</h2>
-            ${store.liked.slice(0, 6).map((track) => rowHtml(track, { ctx: 'liked' })).join('')}
-        ` : ''}
         ${!recent.length && !playlistCards ? emptyHtml('Zacznij od wyszukania utworu — wszystko, co dodasz do playlisty, pobierze się na telefon.') : ''}
     `;
 }
@@ -817,16 +868,9 @@ async function toggleFavourite(stationId) {
 // ── library ────────────────────────────────────────────────────────────────
 
 function renderLibrary() {
-    const liked = store.liked || [];
-    indexTracks(liked);
     els.content.innerHTML = `
         <h1 class="mu-h1">Biblioteka</h1>
         <button type="button" class="mu-more" data-act="new-playlist">+ Nowa playlista</button>
-        ${liked.length ? `<h2 class="mu-section-title">Polubione utwory</h2>
-            <div class="mu-detail-actions">
-                <button type="button" class="mu-playcircle" data-act="play-liked" aria-label="Odtwórz polubione">▶</button>
-            </div>
-            ${liked.map((track) => rowHtml(track, { ctx: 'liked' })).join('')}` : ''}
         <h2 class="mu-section-title">Playlisty</h2>
         ${store.playlists.length ? `<div class="mu-grid">${store.playlists.map((playlist) => cardHtml({
         image: artUrl(playlist.tracks?.[0] || {}),
@@ -866,7 +910,7 @@ async function renderPlaylistDetail() {
             <button type="button" class="mu-playcircle" data-act="play-playlist" aria-label="Odtwórz">▶</button>
             <button type="button" class="mu-smcircle" data-act="shuffle-playlist">Losowo</button>
             <button type="button" class="mu-smcircle" data-act="download-playlist">Pobierz na telefon</button>
-            ${readOnly ? '' : '<button type="button" class="mu-smcircle" data-act="delete-playlist">Usuń playlistę</button>'}
+            ${readOnly ? '' : `<button type="button" class="mu-smcircle" data-act="delete-playlist">${playlist.id === LIKED_PLAYLIST_ID ? 'Wyczyść polubienia' : 'Usuń playlistę'}</button>`}
         </div>
         ${tracks.length ? tracks.map((track) => rowHtml(track, { ctx: readOnly ? 'shared' : 'playlist' })).join('') : emptyHtml('Playlista jest pusta.')}
     `;
@@ -1071,6 +1115,10 @@ async function pickPlaylist(track) {
             });
             playlist.tracks = playlist.tracks || [];
             if (!playlist.tracks.some((item) => tkey(item) === tkey(track))) playlist.tracks.push(track);
+            if (playlist.id === LIKED_PLAYLIST_ID
+                    && !store.liked.some((item) => tkey(item) === tkey(track))) {
+                store.liked.push(track);
+            }
             await persistPlaylists();
             toast(`Dodano do „${playlist.name}”`);
         } catch (error) {
@@ -1145,8 +1193,16 @@ async function toggleLike(track) {
             await apiPost('/api/music/liked', { track });
             store.liked.push(track);
         }
+        // Keep the local "Polubione" playlist in step so the offline mirror
+        // downloads (or drops) the audio straight away.
+        const playlist = likedPlaylist();
+        if (playlist) {
+            if (liked) playlist.tracks = playlist.tracks.filter((item) => tkey(item) !== tkey(track));
+            else if (!playlist.tracks.some((item) => tkey(item) === tkey(track))) playlist.tracks.push(track);
+            await persistPlaylists();
+        }
         updatePlayer();
-        if (ui.view === 'library') renderLibrary();
+        if (ui.view === 'library' || ui.view === 'home') renderView();
     } catch (error) {
         toast(`Polubienia niezsynchronizowane: ${errorText(error)}`, 'warning');
     }
@@ -1332,6 +1388,9 @@ function wirePublicUi() {
     els.loginForm.addEventListener('submit', login);
     window.addEventListener('online', () => { setNet(false); loadState().then(renderView); });
     window.addEventListener('offline', () => setNet(true));
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') refreshLibrary();
+    });
     window.addEventListener('beforeinstallprompt', (event) => {
         event.preventDefault();
         ui.installPrompt = event;
@@ -1399,7 +1458,6 @@ async function onContentClick(event) {
     if (act === 'open-playlist') { openPlaylistById(target.dataset.id); return; }
     if (act === 'open-shared') { openSharedPlaylist(target.dataset.id); return; }
     if (act === 'new-playlist') { const name = await promptText('Nowa playlista', 'Nazwa playlisty'); if (name) await createPlaylist(name); return; }
-    if (act === 'play-liked') { engine.playQueue(store.liked.slice()); openPlayer(); return; }
     if (act === 'play-playlist') { if (ui.activePlaylist?.tracks?.length) { engine.playQueue(ui.activePlaylist.tracks); openPlayer(); } return; }
     if (act === 'shuffle-playlist') {
         const tracks = ui.activePlaylist?.tracks || [];
@@ -1420,12 +1478,13 @@ async function onContentClick(event) {
         const playlist = ui.activePlaylist;
         if (!playlist) return;
         openSheet('Usunąć playlistę?', [
-            sheetButton('Tak, usuń', async () => {
+            sheetButton(playlist.id === LIKED_PLAYLIST_ID ? 'Tak, wyczyść' : 'Tak, usuń', async () => {
                 try {
                     await json(`/api/music/playlists/${playlist.id}`, { method: 'DELETE' });
                     store.playlists = store.playlists.filter((item) => item.id !== playlist.id);
+                    if (playlist.id === LIKED_PLAYLIST_ID) store.liked = [];
                     await persistPlaylists();
-                    toast('Playlista usunięta');
+                    toast(playlist.id === LIKED_PLAYLIST_ID ? 'Polubienia wyczyszczone' : 'Playlista usunięta');
                     go('library');
                 } catch (error) { toast(errorText(error), 'error'); }
             }),

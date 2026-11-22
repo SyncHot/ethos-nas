@@ -84,10 +84,11 @@ export async function initOffline(onChange) {
     try { rows = await dbAll(ROWS); } catch (error) { logWarn('Music offline store unavailable', String(error)); }
     _rows = rows.map((row) => {
         const next = { ...row };
-        // A download interrupted by a reload cannot resume byte-for-byte.
-        if (next.status === 'downloading' || next.status === 'queued') {
-            next.status = 'failed';
-            next.error = 'Przerwane — pobierz ponownie';
+        // A download interrupted by a reload has no partial file to resume from;
+        // put it back in the queue so the next start picks it up again.
+        if (next.status === 'downloading') {
+            next.status = 'queued';
+            next.error = '';
         }
         return next;
     }).sort((a, b) => (b.added_at || 0) - (a.added_at || 0));
@@ -95,6 +96,12 @@ export async function initOffline(onChange) {
         if (row.status === 'failed') await dbPut(ROWS, row).catch(() => {});
     }
     reindex();
+    // Rows queued before the reload have no in-memory queue item yet.
+    for (const row of _rows) {
+        if (row.status === 'queued' && row.track) {
+            _queue.push({ key: row.key, track: row.track, kind: row.kind });
+        }
+    }
     await refreshStorage();
     try {
         if (navigator.storage?.persist && !(await navigator.storage.persisted())) {
@@ -102,6 +109,7 @@ export async function initOffline(onChange) {
         }
     } catch { /* the quota manager may refuse */ }
     notifyChange();
+    if (_queue.length) pump();
     return _rows;
 }
 

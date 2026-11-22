@@ -122,9 +122,12 @@ def main() -> int:
         if path == "/api/music/search":
             reply({
                 "query": "test",
-                "tracks": {"items": [{"id": "vid12345678", "title": "Testowy utwór",
-                                      "artist": "Test Artysta", "duration": 180,
-                                      "thumbnail": ""}], "total": 1, "has_more": False},
+                "tracks": {"items": [
+                    {"id": "vid12345678", "title": "Testowy utwór",
+                     "artist": "Test Artysta", "duration": 180, "thumbnail": ""},
+                    {"id": "vid87654321", "title": "Polubiony utwór",
+                     "artist": "Test Artysta", "duration": 200, "thumbnail": ""},
+                ], "total": 2, "has_more": False},
                 "podcasts": {"items": []}, "radio": {"items": []},
                 "library": {"items": []}, "playlists": {"items": []},
             })
@@ -195,6 +198,19 @@ def main() -> int:
             check("adding a track to a playlist is sent to the NAS",
                   any(path == "/api/music/playlists/pl1/tracks" for _method, path in calls))
 
+            # 4b. the heart is the normal "Polubione" playlist → also downloaded
+            page.locator(".mu-row").nth(1).locator("[data-act='track-menu']").click()
+            page.get_by_role("button", name="Dodaj do playlisty").click()
+            page.get_by_role("button", name="Polubione", exact=True).click()
+            page.wait_for_timeout(300)
+            check("liking writes to the Polubione playlist",
+                  any(path == "/api/music/playlists/liked/tracks" for _method, path in calls),
+                  str(calls[-4:]))
+            page.click('[data-testid="music-nav-library"]')
+            check("the library shows Polubione as a playlist",
+                  "Polubione" in page.inner_text("#mu-content"))
+            page.click('[data-testid="music-nav-search"]')
+
             rows = []
             for _ in range(40):
                 rows = page.evaluate("""() => new Promise((resolve, reject) => {
@@ -213,8 +229,9 @@ def main() -> int:
                 if any(row["status"] == "done" and row["title"] == "Testowy utwór" for row in rows):
                     break
                 page.wait_for_timeout(250)
-            check("the playlist track is downloaded to the device",
-                  any(row["status"] == "done" and row["title"] == "Testowy utwór" for row in rows),
+            check("the playlist track and the liked track are downloaded",
+                  {"Testowy utwór", "Polubiony utwór"} <= {
+                      row["title"] for row in rows if row["status"] == "done"},
                   str(rows))
 
             # 5. offline reload: shell from the SW, library from the IDB snapshot
@@ -236,7 +253,8 @@ def main() -> int:
             check("tapping a download opens the player",
                   page.is_visible('[data-testid="music-player"]'))
             check("the player shows the downloaded track",
-                  "Testowy utwór" in page.inner_text('[data-testid="music-player"]'))
+                  any(title in page.inner_text('[data-testid="music-player"]')
+                      for title in ("Testowy utwór", "Polubiony utwór")))
             stream_after = sum(1 for _m, path in calls if path == "/api/music/stream")
             check("offline playback does not hit the stream proxy", stream_after == stream_before,
                   f"{stream_before} -> {stream_after}")

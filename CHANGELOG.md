@@ -11,6 +11,22 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.18.1] - 2026-11-22
+
+### Changed
+
+- **Music: „Polubione” is a normal playlist.** The heart now writes to a real
+  playlist with that name, so liked tracks download to the phone like any other
+  playlist; the desktop app still shows the same hearts. Existing likes are
+  migrated into the playlist on the next visit and the two views stay in sync.
+
+### Fixed
+
+- Music downloads on the phone resync when the app returns to the foreground or
+  the connection comes back, instead of waiting for a full reload.
+- A download that was queued when the app was closed resumes on the next start
+  instead of being reported as interrupted.
+
 ## [2.18.0] - 2026-11-22
 
 ### Added
