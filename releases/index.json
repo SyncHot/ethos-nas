@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T22:47:50+00:00",
+  "generated_at": "2026-11-22T23:22:42+00:00",
   "latest": {
-    "version": "2.30.3",
-    "git_sha": "a94a2ac",
-    "git_sha_full": "a94a2ac030f6187a8d9138608b634675d3a8a5f9",
-    "build": 245,
-    "released_at": "2026-11-22T22:47:50+00:00",
-    "notes": "GET /api/music/state now declares MusicLibraryState (documented library sections, free-form tracks, extra sections preserved)."
+    "version": "2.31.0",
+    "git_sha": "9c22c54",
+    "git_sha_full": "9c22c5431f885db73992b4660d2c1e87974b0342",
+    "build": 248,
+    "released_at": "2026-11-22T23:22:42+00:00",
+    "notes": "Disk Cleaner: background scans with progress and cancel, a space map, trash-safe deletes and cache/Docker/journal cleanup."
   },
   "releases": [
+    {
+      "version": "2.31.0",
+      "git_sha": "9c22c54",
+      "git_sha_full": "9c22c5431f885db73992b4660d2c1e87974b0342",
+      "build": 248,
+      "released_at": "2026-11-22T23:22:42+00:00",
+      "notes": "Disk Cleaner: background scans with progress and cancel, a space map, trash-safe deletes and cache/Docker/journal cleanup."
+    },
     {
       "version": "2.30.3",
       "git_sha": "a94a2ac",
@@ -201,14 +209,6 @@
       "build": 174,
       "released_at": "2026-11-22T16:14:57+00:00",
       "notes": "Cameras: each camera's own retention setting is now enforced"
-    },
-    {
-      "version": "2.26.0",
-      "git_sha": "500f193",
-      "git_sha_full": "500f193f26e2cb61648d5adf12dda82e8889094d",
-      "build": 172,
-      "released_at": "2026-11-22T16:13:29+00:00",
-      "notes": "Cameras: single-stream cameras record continuously over one RTSP session"
     }
   ]
 }
