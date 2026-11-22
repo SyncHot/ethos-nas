@@ -20,8 +20,6 @@ All notable, user-visible changes to EthOS NAS are documented here.
   `safe_join` (torrent-metadata and symlink escapes) and `unique_dest` are now pure,
   unit-tested helpers (`tests/test_download_urls.py`). No behaviour or API change.
 
-## [2.29.8] - 2026-11-22
-
 ### Fixed
 
 - **Updates: *Update now* no longer does nothing.** The 2.29.4 helper rewrite
