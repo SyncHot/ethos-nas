@@ -8,7 +8,8 @@ guards cannot see:
     .venv/bin/python tests/test_videos_pwa_ui.py
 
 Covers: library tabs, series → season → episode, subtitle track attachment,
-up-next overlay, batch download in the default version, offline unlock after the
+up-next overlay, batch download in the default version, resumable transfers
+(cut stream → `Range: bytes=<done>-` → assembled file), offline unlock after the
 token is gone, and on-device resume restored with no network.
 """
 
@@ -204,6 +205,83 @@ def main() -> int:
             page.click("#vd-player-back")
             page.wait_for_timeout(800)
 
+            # ── Resumable transfer: a cut stream continues with Range ──────
+            # A fake job whose first response closes after 100 of 300 bytes.
+            # The client must keep those bytes, ask for `bytes=100-`, and only
+            # then write the playable `/__media/<id>` entry.
+            fake_id = "e2e-resume-job"
+            fake_total = 300
+            seen_ranges: list[str] = []
+            fake_job = {
+                "id": fake_id, "status": "done", "name": "Resume.Clip.2026",
+                "path": "/tmp/Resume.Clip.2026.mkv", "quality": "tiny",
+                "quality_label": "480p", "size": fake_total, "percent": 100,
+                "download_url": f"/api/videos/exports/{fake_id}/download",
+            }
+
+            def fake_exports(route, request):
+                if request.method == "POST":
+                    route.fulfill(status=202, content_type="application/json",
+                                  body=json.dumps(fake_job))
+                else:
+                    route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                        "jobs": [fake_job], "defaults": {"quality": "tiny"},
+                        "limits": {"queued": 40, "window": 3, "ttl": 86400},
+                    }))
+
+            def fake_download(route, request):
+                header = request.headers.get("range") or ""
+                seen_ranges.append(header)
+                start = int(header.split("=")[1].split("-")[0]) if header else 0
+                # First attempt is cut short on purpose; the resume gets the rest.
+                end = 99 if start == 0 else fake_total - 1
+                body = bytes((i * 7) % 251 for i in range(start, end + 1))
+                route.fulfill(status=206, body=body, headers={
+                    "Content-Type": "video/mp4",
+                    "Content-Range": f"bytes {start}-{end}/{fake_total}",
+                    "Content-Length": str(len(body)),
+                })
+
+            context.route("**/api/videos/exports", fake_exports)
+            context.route("**/api/videos/exports/*/download", fake_download)
+            try:
+                page.evaluate(
+                    "async () => { const m = await import('/static/videos/offline.js');"
+                    " await m.queueDownload({ path: '/tmp/Resume.Clip.2026.mkv',"
+                    " title: 'Resume.Clip.2026' }, 'tiny'); }")
+                done = False
+                for _ in range(80):
+                    done = page.evaluate(
+                        "async (id) => { const m = await import('/static/videos/offline.js');"
+                        " const row = m.downloadsSnapshot().find((r) => r.id === id);"
+                        " return !!row && row.status === 'done' && row.bytesDone === 300; }",
+                        fake_id)
+                    if done:
+                        break
+                    page.wait_for_timeout(250)
+                check("a cut transfer ends as done", done)
+                check("a cut transfer resumes from the stored offset",
+                      len(seen_ranges) >= 2 and seen_ranges[0] == ""
+                      and seen_ranges[1] == "bytes=100-", str(seen_ranges))
+                stored = page.evaluate(
+                    "async (id) => { const cache = await caches.open('ethos-media-v1');"
+                    " const hit = await cache.match('/__media/' + id);"
+                    " return hit ? (await hit.arrayBuffer()).byteLength : -1; }", fake_id)
+                check("the assembled file holds every byte", stored == fake_total, str(stored))
+                leftovers = page.evaluate(
+                    "async (id) => { const cache = await caches.open('ethos-media-v1');"
+                    " const keys = await cache.keys();"
+                    " return keys.filter((k) => { const u = new URL(k.url);"
+                    " return u.pathname === '/__media/' + id && u.searchParams.has('part'); }).length; }",
+                    fake_id)
+                check("partial entries are cleaned after assembly", leftovers == 0, str(leftovers))
+            finally:
+                context.unroute("**/api/videos/exports/*/download", fake_download)
+                context.unroute("**/api/videos/exports", fake_exports)
+                page.evaluate(
+                    "async (id) => { const m = await import('/static/videos/offline.js');"
+                    " await m.deleteDownload(id); }", fake_id)
+
             # Trip mode: no token, no network — downloads must still play.
             page.evaluate("() => localStorage.removeItem('token')")
             context.set_offline(True)
@@ -217,10 +295,15 @@ def main() -> int:
             page.click(f"[data-action='play-local'][data-path='{watched}']")
             page.wait_for_selector("#vd-player:not([hidden])", timeout=20000)
             page.wait_for_function(
-                "() => document.getElementById('vd-video').duration > 1", timeout=20000)
-            page.wait_for_timeout(1500)
-            resumed = page.evaluate("() => document.getElementById('vd-video').currentTime")
-            check("offline playback resumes where it stopped", resumed >= 2.5,
+                "() => { const v = document.getElementById('vd-video');"
+                " return v && v.readyState >= 1 && v.duration > 1; }", timeout=20000)
+            # Read the position right after playback starts and pause there: a
+            # resumed player sits near the saved 6 s, a restarted one near 0 —
+            # unlike a fixed wait, this cannot pass just because time moved on.
+            page.wait_for_timeout(400)
+            resumed = page.evaluate(
+                "() => { const v = document.getElementById('vd-video'); v.pause(); return v.currentTime; }")
+            check("offline playback resumes where it stopped", resumed >= 5.5,
                   f"currentTime={round(resumed, 2)}")
             check("no page errors", not errors, "; ".join(errors[:3]))
             context.close()

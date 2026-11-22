@@ -45,6 +45,26 @@ def main() -> int:
           "pipeThrough" in offline and "cache.put" in offline)
     check("no whole-file Blob buffering",
           "new Blob(chunks" not in offline and "const chunks = []" not in offline)
+    # Resumable transfers: partial bytes live in `?part=<n>` cache entries, the
+    # next attempt asks for the remaining Range, and playback only ever sees the
+    # assembled `/__media/<id>` key.
+    check("resume asks for the remaining range",
+          "Range: `bytes=${done}-`" in offline)
+    check("partial bytes are parked per attempt",
+          "?part=" in offline and "usableParts(" in offline and "discardParts(" in offline)
+    check("parts are assembled into the playable entry",
+          "assembleParts(" in offline and "ReadableStream" in offline)
+    check("a reload keeps the downloaded offset",
+          "const resumeFrom = Number(row.bytesDone) || 0;" in offline
+          and "Resuming from ${formatBytes(resumeFrom)}" in offline)
+    check("a transfer that ignores Range starts over cleanly",
+          "res.status === 200 || res.status === 416" in offline)
+    check("cancel/delete/retry clean partial entries",
+          offline.count("discardLocalMedia(") >= 3)
+    check("a dead NAS copy drops the partial bytes",
+          "'failed', 'cancelled', 'consumed'" in offline)
+    check("a stalled transfer stops auto-retrying",
+          "_paused" in offline and "noteAttempt(" in offline)
     check("queueing no longer blocks on a render poll",
           "waitForRender" not in offline and "POLL_TIMEOUT_MS" not in offline)
 

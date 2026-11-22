@@ -27,6 +27,25 @@ let _downloads = [];
 let _onChange = null;
 let _storage = null;
 
+// A failed attempt is retried automatically (the 2 s server poll turns a
+// finished render back into `ready`), but a transfer that never moves a byte
+// must not spin forever: two attempts without progress pause the row until the
+// user taps Retry or the app is reopened.
+const _stalled = new Map();   // id → consecutive attempts without progress
+const _paused = new Set();    // id → gave up, do not auto-retry
+
+function noteAttempt(id, progressed) {
+    const count = progressed ? 0 : (_stalled.get(id) || 0) + 1;
+    _stalled.set(id, count);
+    if (count >= 2) _paused.add(id);
+    return count;
+}
+
+function clearAttempts(id) {
+    _stalled.delete(id);
+    _paused.delete(id);
+}
+
 // ── IndexedDB ─────────────────────────────────────────────────────────────
 
 function openDb() {
@@ -153,10 +172,19 @@ export async function initOffline(onChange) {
     // declaring the download lost — `syncDownloads()` decides the real state.
     _downloads = rows.map((row) => {
         const next = { ...row };
-        if (next.status === 'downloading' || next.status === 'rendering') {
+        if (next.status === 'downloading') {
+            // Interrupted transfer: keep `bytesDone`/`parts` so the next
+            // attempt resumes with `Range: bytes=<done>-` instead of starting
+            // a multi-GB film from zero.
+            next.status = 'ready';
+            next.error = '';
+        } else if (next.status === 'rendering') {
+            // The NAS-side render was cut by the reload and keeps running
+            // there — the local byte counters mean nothing yet.
             next.status = 'ready';
             next.bytesDone = 0;
             next.percent = 0;
+            next.parts = [];
             next.error = '';
         }
         if (next.posterBlob && !next.posterUrl) {
@@ -305,17 +333,30 @@ export async function syncDownloads() {
     const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
     const byId = new Map(jobs.map((job) => [job.id, job]));
     const touched = new Set();
+    const orphaned = new Set();
     for (const row of _downloads) {
+        // A paused download stays failed with its own error: reconciling it
+        // would flip it back to `ready` every poll and restart the loop.
+        if (_paused.has(row.id)) continue;
         const job = byId.get(row.id);
         if (!job) {
             if (row.status !== 'done' && row.status !== 'failed') {
                 row.status = 'failed';
                 row.error = 'The NAS no longer has this download — queue it again';
+                row.parts = [];
                 touched.add(row.id);
             }
+            if (Array.isArray(row.parts) && row.parts.length) orphaned.add(row.id);
             continue;
         }
         if (applyJob(row, job)) touched.add(row.id);
+        if (['failed', 'cancelled', 'consumed'].includes(job.status)
+            && Array.isArray(row.parts) && row.parts.length) {
+            // The NAS copy is unusable or gone: partial bytes can never resume.
+            row.parts = [];
+            touched.add(row.id);
+            orphaned.add(row.id);
+        }
     }
     const known = new Set(_downloads.map((row) => row.id));
     for (const job of jobs) {
@@ -325,6 +366,12 @@ export async function syncDownloads() {
         touched.add(job.id);
     }
     _downloads.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    if (orphaned.size) {
+        try {
+            const cache = await caches.open(MEDIA_CACHE);
+            for (const id of orphaned) await discardParts(cache, id);
+        } catch { /* cache may be unavailable */ }
+    }
     // A no-op poll must not rewrite IndexedDB or repaint the list every 2 s.
     if (!touched.size) return _downloads;
     notifyChange();
@@ -366,6 +413,7 @@ export async function queueDownload(item, quality) {
     row.item = { ...(row.item || {}), ...publicItem(item) };
     applyJob(row, job);
     upsert(row);
+    clearAttempts(row.id);
     await persistRow(row.id);
     // Fetch the poster now: rows drawn while the film renders then reuse one
     // blob URL instead of reloading a thumbnail on every repaint.
@@ -382,7 +430,7 @@ export async function pumpDownloads() {
     try {
         for (;;) {
             const ready = _downloads
-                .filter((row) => row.status === 'ready')
+                .filter((row) => row.status === 'ready' && !_paused.has(row.id))
                 .sort((a, b) => (a.created_at || 0) - (b.created_at || 0))[0];
             if (!ready) break;
             await transferRow(ready);
@@ -394,20 +442,27 @@ export async function pumpDownloads() {
 
 async function transferRow(row) {
     const title = row.item?.tmdb?.title || row.title || row.path;
-    upsert({ ...row, status: 'downloading', percent: 0, bytesDone: 0, bytesTotal: row.size || 0, error: '' });
+    const resumeFrom = Number(row.bytesDone) || 0;
+    const total = Number(row.bytesTotal) || Number(row.size) || 0;
+    const percent = resumeFrom && total ? Math.min(99, (resumeFrom / total) * 100) : 0;
+    upsert({ ...row, status: 'downloading', percent, bytesTotal: total, error: '' });
     await persistRow(row.id);
     const task = startTask({
         appId: 'videos',
         title: `Saving · ${title}`,
-        detail: `Downloading from the NAS… (${row.qualityLabel || row.quality || 'original'})`,
+        detail: resumeFrom
+            ? `Resuming from ${formatBytes(resumeFrom)}…`
+            : `Downloading from the NAS… (${row.qualityLabel || row.quality || 'original'})`,
+        percent,
         testIdPrefix: 'vd-download',
     });
     try {
         const size = await downloadToCache(row, task);
+        clearAttempts(row.id);
         const current = _downloads.find((entry) => entry.id === row.id);
         if (!current) {
             // The user deleted/cancelled the row while the file was streaming.
-            try { const cache = await caches.open(MEDIA_CACHE); await cache.delete(new Request(`${MEDIA_PREFIX}${row.id}`)); } catch { /* ignore */ }
+            await discardLocalMedia(row.id);
             task.finish('cancelled', { detail: 'Cancelled' });
             setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1000);
             return;
@@ -419,6 +474,7 @@ async function transferRow(row) {
             size,
             bytesDone: size,
             bytesTotal: size,
+            parts: [],
             finished_at: Date.now(),
             error: '',
         });
@@ -442,7 +498,15 @@ async function transferRow(row) {
             setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1000);
             return;
         }
-        upsert({ ...current, status: 'failed', error: message });
+        // Partial bytes that did reach Cache Storage stay on the row, so a
+        // retry (this session) and the next app launch both resume.
+        const progressed = (Number(current.bytesDone) || 0) > resumeFrom;
+        const paused = noteAttempt(row.id, progressed) >= 2;
+        upsert({
+            ...current,
+            status: 'failed',
+            error: paused ? `${message} — tap Retry to resume` : message,
+        });
         await persistRow(row.id);
         task.finish('failed', { detail: message });
         logError('Download failed', `${row.path}: ${message}`);
@@ -470,10 +534,8 @@ export async function cancelDownload(id) {
         notifyChange();
     }
     try { await dbDelete(id); } catch { /* ignore */ }
-    try {
-        const cache = await caches.open(MEDIA_CACHE);
-        await cache.delete(new Request(`${MEDIA_PREFIX}${id}`));
-    } catch { /* cache may be unavailable */ }
+    clearAttempts(id);
+    await discardLocalMedia(id);
     await refreshStorage();
 }
 
@@ -481,39 +543,169 @@ export async function cancelDownload(id) {
 export async function retryDownload(id) {
     const row = _downloads.find((entry) => entry.id === id);
     if (!row) return null;
+    clearAttempts(id);
     const item = row.item || { path: row.path, title: row.title };
     const next = await queueDownload(item, row.quality || undefined);
     if (row.id !== next.id) {
         const index = _downloads.findIndex((entry) => entry.id === row.id);
         if (index >= 0) _downloads.splice(index, 1);
         try { await dbDelete(row.id); } catch { /* ignore */ }
+        // A new job id cannot reuse the old partial bytes.
+        await discardLocalMedia(row.id);
         notifyChange();
     }
     return next;
 }
 
-async function downloadToCache(row, task) {
+// ── resumable transfer ────────────────────────────────────────────────────
+//
+// A multi-GB film must not restart from zero when the page is reloaded, the
+// phone locks or a proxy drops the connection. Every attempt streams into its
+// own Cache Storage entry (`/__media/<id>?part=<n>`) and the row records the
+// part sizes in IndexedDB, so the next attempt sends `Range: bytes=<done>-`
+// and appends. The playable `/__media/<id>` key is written once, by streaming
+// the parts into a single response, and only after the last byte arrived.
+
+function mediaKey(id) { return `${MEDIA_PREFIX}${id}`; }
+function partKey(id, index) { return `${MEDIA_PREFIX}${id}?part=${index}`; }
+
+function absolutePath(path) {
+    try { return new URL(path, location.origin).href; } catch { return path; }
+}
+
+/** Recorded parts that are still cached and still contiguous (0..n-1). */
+async function usableParts(cache, id, recorded) {
+    const list = Array.isArray(recorded) ? recorded : [];
+    const out = [];
+    for (const entry of list) {
+        const index = Number(entry?.index);
+        const bytes = Number(entry?.bytes);
+        if (index !== out.length || !(bytes > 0)) break;   // no gaps allowed
+        let hit = null;
+        try { hit = await cache.match(new Request(partKey(id, index))); } catch { hit = null; }
+        if (!hit) break;
+        out.push({ index, bytes });
+    }
+    return out;
+}
+
+/** Drop every partial entry of one download (cancel, delete, orphaned tail). */
+async function discardParts(cache, id) {
+    const prefix = absolutePath(`${MEDIA_PREFIX}${id}?part=`);
+    let keys = [];
+    try { keys = await cache.keys(); } catch { return; }
+    for (const req of keys) {
+        if (!req.url.startsWith(prefix)) continue;
+        try { await cache.delete(req); } catch { /* ignore */ }
+    }
+}
+
+/** Remove the playable entry and every partial one. */
+async function discardLocalMedia(id) {
+    try {
+        const cache = await caches.open(MEDIA_CACHE);
+        await cache.delete(new Request(mediaKey(id)));
+        await discardParts(cache, id);
+    } catch { /* cache may be unavailable */ }
+}
+
+/** Concatenate the parts into the single entry the player reads. */
+async function assembleParts(cache, id, parts, total) {
+    if (!parts.length) throw new Error('Nothing to assemble');
+    if (typeof ReadableStream === 'undefined') throw new Error('This browser cannot store offline video');
+    const headers = { 'Content-Type': 'video/mp4' };
+    if (total) headers['Content-Length'] = String(total);
+    const stream = new ReadableStream({
+        async start(controller) {
+            for (const part of parts) {
+                let hit = null;
+                try { hit = await cache.match(new Request(partKey(id, part.index))); } catch { hit = null; }
+                if (!hit || !hit.body) continue;
+                const reader = hit.body.getReader();
+                for (;;) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    controller.enqueue(value);
+                }
+            }
+            controller.close();
+        },
+    });
+    await cache.put(new Request(mediaKey(id)), new Response(stream, { headers }));
+}
+
+/** `<total>` from `Content-Range: bytes 100-199/7800000`. */
+function contentRangeTotal(header) {
+    const match = /^bytes\s+\d+-\d+\/(\d+)$/i.exec(String(header || '').trim());
+    return match ? Number(match[1]) || 0 : 0;
+}
+
+/**
+ * One transfer attempt. Returns the stored size when the file is complete;
+ * throws after persisting whatever bytes are durable, so the caller can retry
+ * and resume from the new offset.
+ */
+async function _transferOnce(rawRow, task) {
+    // Always work from the live row: the parts list grows as attempts land, and
+    // the object captured by the caller goes stale after the first `upsert`.
+    const row = _downloads.find((entry) => entry.id === rawRow.id) || rawRow;
     const url = row.download_url || `/api/videos/exports/${encodeURIComponent(row.id)}/download`;
-    const res = await apiFetch(url);
+    const cache = await caches.open(MEDIA_CACHE);
+    try { await cache.delete(new Request(mediaKey(row.id))); } catch { /* ignore */ }
+
+    const recorded = Array.isArray(row.parts) ? row.parts : [];
+    let parts = await usableParts(cache, row.id, recorded);
+    if (parts.length !== recorded.length) {
+        // The tail was evicted: the recorded sizes no longer add up, so drop
+        // whatever survived past the last usable part.
+        for (const entry of recorded.slice(parts.length)) {
+            try { await cache.delete(new Request(partKey(row.id, Number(entry.index)))); } catch { /* ignore */ }
+        }
+    }
+    let done = parts.reduce((sum, part) => sum + part.bytes, 0);
+
+    let res = await apiFetch(url, done > 0 ? { headers: { Range: `bytes=${done}-` } } : {});
+    if (done > 0 && (res.status === 200 || res.status === 416)) {
+        // 200: a proxy dropped the Range header — the body is the whole file.
+        // 416: the NAS copy changed size; those partial bytes are useless.
+        await discardParts(cache, row.id);
+        parts = [];
+        done = 0;
+        if (res.status === 416) res = await apiFetch(url);
+    }
     if (!res.ok) {
         const payload = await res.json().catch(() => ({}));
-        throw new Error(payload.detail || `HTTP ${res.status}`);
+        const error = new Error(payload.detail || `HTTP ${res.status}`);
+        error.status = res.status;
+        throw error;
     }
-    const total = Number(res.headers.get('Content-Length')) || Number(row.size) || 0;
-    const cache = await caches.open(MEDIA_CACHE);
-    const key = new Request(`${MEDIA_PREFIX}${row.id}`);
-    let done = 0;
+    let total = res.status === 206 ? contentRangeTotal(res.headers.get('Content-Range')) : 0;
+    if (!total) total = Number(res.headers.get('Content-Length')) || Number(row.size) || 0;
+    if (total) total = Math.max(total, done);
+
+    const index = parts.length;
+    const key = new Request(partKey(row.id, index));
+    let partBytes = 0;
     let lastUpdate = 0;
+    const startedAt = Date.now();
     const report = () => {
-        const percent = total ? Math.min(99.5, (done / total) * 100) : 0;
-        upsert({ ...(_downloads.find((entry) => entry.id === row.id) || row), bytesDone: done, bytesTotal: total, percent });
+        const written = done + partBytes;
+        const percent = total ? Math.min(99, (written / total) * 100) : 0;
+        const elapsed = (Date.now() - startedAt) / 1000;
+        const speed = elapsed > 2 && partBytes ? formatBytes(partBytes / elapsed) : '';
+        const current = _downloads.find((entry) => entry.id === row.id) || row;
+        upsert({ ...current, bytesDone: written, bytesTotal: total, percent });
         task?.update({
             percent,
-            detail: `${formatBytes(done)}${total ? ` / ${formatBytes(total)}` : ''}`,
-            bytesDone: done,
+            // bytesDone/bytesTotal already render as "X / Y" in the shared row;
+            // repeating them here printed the same numbers twice, with the
+            // server total next to the row's stale estimate.
+            detail: speed ? `${speed}/s` : '',
+            bytesDone: written,
             bytesTotal: total,
         });
     };
+    report();
 
     try {
         if (res.body && typeof TransformStream !== 'undefined') {
@@ -521,7 +713,7 @@ async function downloadToCache(row, task) {
             // phone RAM as one Blob (the old implementation did exactly that).
             const counter = new TransformStream({
                 transform(chunk, controller) {
-                    done += chunk.byteLength;
+                    partBytes += chunk.byteLength;
                     const now = Date.now();
                     if (now - lastUpdate > 250) { lastUpdate = now; report(); }
                     controller.enqueue(chunk);
@@ -529,29 +721,64 @@ async function downloadToCache(row, task) {
             }, undefined, { highWaterMark: 1 });
             const headers = { 'Content-Type': 'video/mp4' };
             if (total) headers['Content-Length'] = String(total);
-            const response = new Response(res.body.pipeThrough(counter), { headers });
-            await cache.put(key, response);
+            await cache.put(key, new Response(res.body.pipeThrough(counter), { headers }));
         } else {
             const buffer = await res.arrayBuffer();
-            done = buffer.byteLength;
+            partBytes = buffer.byteLength;
             report();
             await cache.put(key, new Response(buffer, {
-                headers: { 'Content-Type': 'video/mp4', 'Content-Length': String(done) },
+                headers: { 'Content-Type': 'video/mp4', 'Content-Length': String(done + partBytes) },
             }));
         }
     } catch (error) {
-        try { await cache.delete(key); } catch { /* ignore */ }
+        // Bytes piped into a rejected `cache.put` are not durable: publish the
+        // last flushed offset so the retry resumes exactly there.
+        const current = _downloads.find((entry) => entry.id === row.id) || row;
+        upsert({ ...current, bytesDone: done, bytesTotal: total || Number(current.bytesTotal) || 0, parts });
+        await persistRow(row.id);
         throw error;
     }
-    if (!done) {
-        // Some builds keep the transformed byte count internal; measure the entry.
-        try {
-            const stored = await cache.match(key);
-            done = Number(stored?.headers.get('Content-Length')) || Number(row.size) || 0;
-        } catch { /* ignore */ }
+
+    if (partBytes > 0) parts = [...parts, { index, bytes: partBytes }];
+    const written = done + partBytes;
+    if (total && written < total) {
+        // The stream closed early (proxy/1 h idle cut) but the bytes are
+        // durable — hand them back for the next attempt to resume.
+        const current = _downloads.find((entry) => entry.id === row.id) || row;
+        upsert({ ...current, bytesDone: written, bytesTotal: total, parts, percent: Math.min(99, (written / total) * 100) });
+        await persistRow(row.id);
+        throw new Error(`Transfer stopped at ${formatBytes(written)} of ${formatBytes(total)}`);
     }
-    report();
-    return done;
+
+    task?.update({ percent: 99, detail: 'finalizing…' });
+    const size = total || written;
+    await assembleParts(cache, row.id, parts, size);
+    await discardParts(cache, row.id);
+    const current = _downloads.find((entry) => entry.id === row.id) || row;
+    upsert({ ...current, bytesDone: size, bytesTotal: size, percent: 100, parts: [] });
+    await persistRow(row.id);
+    return size;
+}
+
+async function downloadToCache(row, task) {
+    let lastError = null;
+    let best = Number(row.bytesDone) || 0;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+            const size = await _transferOnce(row, task);
+            if (size > 0) return size;
+        } catch (error) {
+            lastError = error;
+            const status = Number(error?.status) || 0;
+            // 4xx means the job is gone or unreadable — retrying cannot help.
+            if (status >= 400 && status < 500) throw error;
+        }
+        const current = _downloads.find((entry) => entry.id === row.id);
+        const written = Number(current?.bytesDone) || 0;
+        if (written <= best) break;   // an attempt that moved nothing: stop
+        best = written;
+    }
+    throw lastError || new Error('Download interrupted');
 }
 
 async function storePoster(entry, item) {
@@ -608,11 +835,9 @@ export function srtToVtt(srt) {
 
 export async function deleteDownload(id) {
     const row = _downloads.find((entry) => entry.id === id);
-    try {
-        const cache = await caches.open(MEDIA_CACHE);
-        await cache.delete(new Request(`${MEDIA_PREFIX}${id}`));
-    } catch { /* cache may be unavailable */ }
+    await discardLocalMedia(id);
     try { await dbDelete(id); } catch { /* ignore */ }
+    clearAttempts(id);
     if (row?.posterUrl) { try { URL.revokeObjectURL(row.posterUrl); } catch { /* ignore */ } }
     const index = _downloads.findIndex((entry) => entry.id === id);
     if (index >= 0) _downloads.splice(index, 1);

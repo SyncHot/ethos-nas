@@ -62,6 +62,16 @@ icon can be pinned.
    (`ethos-media-v1`, key `/__media/<job id>`) — a multi-GB film never sits in
    RAM as one Blob. Poster + `.srt → .vtt` subtitle and an IndexedDB row
    (`ethos-videos-db`) follow.
+4a. The transfer is **resumable**: each attempt streams into its own cache entry
+   (`/__media/<id>?part=<n>`) and the row records the part sizes, so a reload, a
+   locked screen or a dropped proxy connection continues with
+   `Range: bytes=<done>-` instead of starting a 4 GB film from zero. The
+   playable `/__media/<id>` key is written once, by streaming the parts into one
+   response, only after the last byte lands; `200` (Range stripped) and `416`
+   (NAS copy changed) restart the transfer cleanly. Partial entries are dropped
+   on cancel/delete/retry and when the server job vanishes; two attempts with no
+   new bytes pause the row until Retry (or the next app launch) so a dead
+   transfer cannot spin forever.
 5. After storing, the page calls `POST /api/videos/exports/{id}/consumed`, so
    the NAS frees that file immediately (it also expires with the TTL).
    The list is repainted **in place** while a transfer runs (the poster node is
@@ -171,7 +181,8 @@ after a reload; nothing outside the caller's scope is ever returned.
 - `tests/test_video_engine.py` — `build_render_cmd` copy mode (remux),
   `download_mode` passthrough/fallback, plus faststart/`-progress`/hw/`-an`.
 - `tests/test_videos_pwa.py` — static guards: reload reconciles with the NAS
-  queue, streaming into Cache Storage, no whole-file Blob, version settings,
+  queue, streaming into Cache Storage, no whole-file Blob, resumable parts
+  (`?part=<n>` + `Range`), stalled-transfer pause, version settings,
   series/seasons, tabs, subtitles, up-next, offline unlock and the `resume`
   store.
 - `tests/test_videos_pwa_ui.py` — Playwright E2E on an isolated instance with
@@ -193,6 +204,8 @@ after a reload; nothing outside the caller's scope is ever returned.
   (core 2.16.0)
 - [x] Multi-select batch queueing in the default version (core 2.18.0)
 - [x] Cache Storage downloads with Range-capable offline playback
+- [x] Resumable transfers — a reload or dropped connection continues with
+  `Range: bytes=<done>-` instead of re-downloading from zero
 - [x] Service worker precache + `/__media` handler + shell fallback
 - [x] Series grouping with seasons and “Download season” (core 2.20.0)
 - [x] Subtitles, up-next autoplay, playback speed and cast
