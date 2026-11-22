@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T10:21:18+00:00",
+  "generated_at": "2026-11-22T10:30:25+00:00",
   "latest": {
-    "version": "2.14.0",
-    "git_sha": "a3c59eb",
-    "git_sha_full": "a3c59eb7b0244ae9d562b37f4d365071df79e435",
-    "build": 120,
-    "released_at": "2026-11-22T10:21:18+00:00",
-    "notes": "Sharing: grant files, Photos albums, Video folders and Music playlists view-only to other accounts; Files drops Favorites that point at deleted folders."
+    "version": "2.14.1",
+    "git_sha": "4cee1d7",
+    "git_sha_full": "4cee1d7946c6af86cdc4980fb1f49fb887909ef3",
+    "build": 123,
+    "released_at": "2026-11-22T10:30:25+00:00",
+    "notes": "Sticky Notes: checklist tasks, a right-edge quick-capture ribbon and an installable /notes app with offline queue and Web Push reminders."
   },
   "releases": [
+    {
+      "version": "2.14.1",
+      "git_sha": "4cee1d7",
+      "git_sha_full": "4cee1d7946c6af86cdc4980fb1f49fb887909ef3",
+      "build": 123,
+      "released_at": "2026-11-22T10:30:25+00:00",
+      "notes": "Sticky Notes: checklist tasks, a right-edge quick-capture ribbon and an installable /notes app with offline queue and Web Push reminders."
+    },
     {
       "version": "2.14.0",
       "git_sha": "a3c59eb",
@@ -201,14 +209,6 @@
       "build": 65,
       "released_at": "2026-11-20T14:36:09+00:00",
       "notes": "Setup: the first-run card asks for the admin username and password"
-    },
-    {
-      "version": "2.6.0",
-      "git_sha": "3e971e8",
-      "git_sha_full": "3e971e835aa9cdba919cd6e767a8cc7f531344a3",
-      "build": 63,
-      "released_at": "2026-11-20T14:27:36+00:00",
-      "notes": "Setup: pick your own username, not just the password, when claiming a new appliance"
     }
   ]
 }
