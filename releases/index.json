@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T13:13:00+00:00",
+  "generated_at": "2026-11-22T13:14:09+00:00",
   "latest": {
-    "version": "2.19.0",
-    "git_sha": "dbe6e90",
-    "git_sha_full": "dbe6e900533d647947755e4e899fb014c1d02af6",
-    "build": 140,
-    "released_at": "2026-11-22T13:13:00+00:00",
-    "notes": "Videos: new 480p · tiny download version, now the default — plus working delete for active downloads, no poster flicker and no lingering Tasks row."
+    "version": "2.19.1",
+    "git_sha": "51019fb",
+    "git_sha_full": "51019fb5d841478cecf7b2410da450b4f873cb56",
+    "build": 142,
+    "released_at": "2026-11-22T13:14:09+00:00",
+    "notes": "Music: every playlist shows how many tracks are already downloaded to the phone"
   },
   "releases": [
+    {
+      "version": "2.19.1",
+      "git_sha": "51019fb",
+      "git_sha_full": "51019fb5d841478cecf7b2410da450b4f873cb56",
+      "build": 142,
+      "released_at": "2026-11-22T13:14:09+00:00",
+      "notes": "Music: every playlist shows how many tracks are already downloaded to the phone"
+    },
     {
       "version": "2.19.0",
       "git_sha": "dbe6e90",
@@ -201,14 +209,6 @@
       "build": 81,
       "released_at": "2026-11-22T06:31:40+00:00",
       "notes": "Users: create, edit, disable and delete accounts from Settings, with immediate session revocation"
-    },
-    {
-      "version": "2.6.8",
-      "git_sha": "276db5a",
-      "git_sha_full": "276db5a018d6c2a41c9dc6f0fdcd59411fe2e6e2",
-      "build": 79,
-      "released_at": "2026-11-21T12:37:06+00:00",
-      "notes": "First-run setup asks for a username and password only — the setup code is gone from the wizard by default"
     }
   ]
 }
