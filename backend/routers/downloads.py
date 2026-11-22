@@ -90,6 +90,7 @@ from backend.services.download_config import (
     upsert_category as _upsert_category,
 )
 from backend.services import download_providers as _providers
+from backend.services import download_engine
 from backend.services import download_retry as _retry_policy
 from backend.services import download_schedule as _schedule_policy
 from backend.services import watch_folders
@@ -440,17 +441,61 @@ def _debrid_worker_scoped(task: dict, stop_event: threading.Event) -> None:
     creds = _providers.provider_credentials(cfg, provider)
     if not _providers.credentials_complete(provider, creds):
         creds = _providers.credentials_from_secret(provider, str(task.get("_debrid_key") or "")) or creds
-    if not _providers.credentials_complete(provider, creds):
-        raise RuntimeError(f"{spec.label} credentials are no longer configured (set them in Settings)")
     key = _providers.primary_secret(provider, creds)
     tid = int(task.get("_debrid_id") or 0)
     is_link = task.get("kind") == "debrid_link"
+    # A link task may still resolve through another configured link provider,
+    # so its own credentials are only required for a magnet/torrent task.
+    if not is_link and not _providers.credentials_complete(provider, creds):
+        raise RuntimeError(f"{spec.label} credentials are no longer configured (set them in Settings)")
 
     # ── Phase 1: resolve premium link / add the magnet ─────────────────────
     if is_link:
         # File-hosting link (RapidGator, Mega, tb7.pl-supported hosts, …):
-        # no torrent — the link provider resolves it to a direct download URL.
-        link = _providers.resolve_link(provider, creds, _source_url(task), stop_event)
+        # no torrent — a link provider resolves it to a direct download URL.
+        # The task's own provider is tried first (when still configured), then
+        # every other configured provider that supports the host, so a second
+        # account (e.g. AllDebrid next to tb7.pl) takes over when the first one
+        # cannot unlock the link.
+        source = _source_url(task)
+        pool = []
+        if provider and _providers.credentials_complete(provider, creds):
+            pool.append((provider, creds))
+        for pid, pcreds in _providers.link_candidates(cfg, source):
+            if pid not in [p for p, _c in pool]:
+                pool.append((pid, pcreds))
+        link = None
+        errors = []
+        for pid, pcreds in pool:
+            pspec = _providers.get(pid)
+            label = pspec.label if pspec else pid
+            try:
+                if pid != provider:
+                    logger.info("Download %s: unlocking the link with %s", task["id"], label)
+                candidate = _providers.resolve_link(pid, pcreds, source, stop_event)
+            except Exception as exc:  # noqa: BLE001 — surface it and try the next provider
+                errors.append(f"{label}: {exc}")
+                logger.warning("Download %s: %s could not unlock the link: %s",
+                               task["id"], label, exc)
+                if stop_event.is_set():
+                    return  # paused/canceled mid-unlock
+                continue
+            if str(candidate.get("url") or ""):
+                link = candidate
+                provider, creds = pid, pcreds
+                task["provider"] = pid
+                key = _providers.primary_secret(pid, pcreds)
+                task["_debrid_key"] = key
+                break
+            errors.append(f"{label}: no direct link returned")
+            if stop_event.is_set():
+                return
+        if link is None:
+            if not pool:
+                raise RuntimeError(
+                    "No link provider with credentials can unlock this host — "
+                    "configure one in Settings → Providers")
+            raise RuntimeError("; ".join(errors) or "No link provider could unlock this URL")
         if link.get("name"):
             task["name"] = os.path.basename(str(link["name"]).replace("\\", "/")) or task["name"]
         if link.get("size"):
@@ -1119,10 +1164,7 @@ def _try_next_mirror(task: dict) -> bool:
 
 def _queue_order(tasks: Optional[list] = None) -> list:
     """Waiting tasks in start order: higher `priority` first, then FIFO."""
-    candidates = [t for t in (_tasks if tasks is None else tasks)
-                  if t.get("status") == "waiting"]
-    return sorted(candidates,
-                  key=lambda x: (-int(x.get("priority") or 0), x.get("created_at", 0)))
+    return download_engine.queue_order(_tasks if tasks is None else tasks)
 
 
 _window_timer: Optional[asyncio.TimerHandle] = None
@@ -1319,12 +1361,9 @@ def _schedule_retry_wakeup() -> None:
         _retry_timer.cancel()
     _retry_timer = None
     now = _now()
-    pending = [float(t.get("_next_retry_at") or 0) for t in _tasks
-               if t.get("status") == "waiting"
-               and float(t.get("_next_retry_at") or 0) > now]
-    if not pending:
+    delay = download_engine.next_retry_delay(_tasks, now)
+    if delay is None:
         return
-    delay = max(1.0, min(pending) - now)
 
     def _go() -> None:
         global _retry_timer
@@ -1838,10 +1877,25 @@ async def add_task(payload: AddTaskRequest):
     # ── Premium file-hosting link (RapidGator, Mega, …) → link task ─────────
     url = _validate_url(raw_url)
     _reject_private_url(url)
-    provider, link_creds = _providers.link_provider(cfg)
-    key = _providers.primary_secret(provider, link_creds)
-    if (provider and _providers.credentials_complete(provider, link_creds)
-            and await asyncio.to_thread(_providers.host_matches, provider, url)):
+    # Every configured link provider that supports this host is a candidate;
+    # the one in `debrid.link_provider` goes first and the rest are fallbacks.
+    candidates = await asyncio.to_thread(_providers.link_candidates, cfg, url)
+    if not candidates and _providers.is_known_hoster(url):
+        # A file-host landing page is never the file itself — downloading it
+        # with the plain HTTP engine would just save the HTML.
+        configured = await asyncio.to_thread(_providers.configured_link_providers, cfg)
+        names = ", ".join((_providers.get(pid).label if _providers.get(pid) else pid)
+                          for pid, _c in configured) or "none"
+        host = urllib.parse.urlparse(url).hostname or "this hoster"
+        raise HTTPException(
+            status_code=400,
+            detail=(f"{host} is a premium file hoster — this link needs a link provider. "
+                    f"Configured: {names}. Add one that supports this host in "
+                    "Settings → Providers (AllDebrid unlocks any host)."),
+        )
+    if candidates:
+        provider, link_creds = candidates[0]
+        key = _providers.primary_secret(provider, link_creds)
         # Route through the hoster-link provider's unlock API/flow.
         name = (payload.name or "").strip() or _name_from_url(url)
         name = os.path.basename(name.replace("\\", "/")).strip() or "download.bin"

@@ -149,11 +149,13 @@ is ~1.9k lines after the feature work).
 **Progress (2.29.4/2.29.5).** `services/download_schedule.py` (`in_window`, `seconds_until_window` —
 day/night windows including the overnight case), `services/download_retry.py`
 (`is_retryable`, `retry_delay` — permanent-error matcher + capped exponential backoff) and
-`services/watch_folders.py` (`scan_folder`, bounded dedupe, `.processed` move) are out of the
-router, with `tests/test_download_schedule_retry.py` (25 checks) and
-`tests/test_watch_folders.py` (14 checks). The router keeps the timer that wakes the pump, the
-scanner thread + per-user path scope, and the task-state side of a failure. Still inline:
-`_pump`/worker scheduling, the RSS loop and the qBittorrent shim.
+`services/watch_folders.py` (`scan_folder`, bounded dedupe, `.processed` move) and
+`services/download_engine.py` (`queue_order`, `next_retry_delay`) are out of the router, with
+`tests/test_download_engine_queue.py` (10 checks), `tests/test_download_schedule_retry.py`
+(25 checks) and `tests/test_watch_folders.py` (14 checks). The router keeps the timer that wakes
+the pump, the scanner thread + per-user path scope, and the task-state side of a failure. Still
+inline: the `_pump` loop itself (it owns the worker pool and provider preflight), the RSS loop
+and the qBittorrent shim.
 
 ### ☐ P2-02 · Split `gallery.py` (~2.1k lines) — `XL`
 **Problem.** SQLite indexing, EXIF extraction, the AES-GCM private vault + PIN sessions, albums, facets,

@@ -11,6 +11,14 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.29.6] - 2026-11-22
+
+### Changed
+
+- **Queue order and retry timing moved into `services/download_engine.py`**: which waiting
+  task starts next (priority, then FIFO) and when the retry timer should fire are now pure,
+  unit-tested helpers (`tests/test_download_engine_queue.py`). No behaviour or API change.
+
 ## [2.29.5] - 2026-11-22
 
 ### Changed
