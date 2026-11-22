@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T17:29:26+00:00",
+  "generated_at": "2026-11-22T17:33:59+00:00",
   "latest": {
-    "version": "2.28.3",
-    "git_sha": "795039e",
-    "git_sha_full": "795039ee040bd5d6cf768ac39ce24b0215a00144",
-    "build": 185,
-    "released_at": "2026-11-22T17:29:26+00:00",
-    "notes": "Packages: a stopped package service now says 'start it in Package Center' instead of showing a Python connection error; new cross-package QA sweep (docs/packages-qa.md)."
+    "version": "2.28.4",
+    "git_sha": "b77ffbc",
+    "git_sha_full": "b77ffbcfe2eaba16082a7cdc0e317bf177a16ed4",
+    "build": 188,
+    "released_at": "2026-11-22T17:33:59+00:00",
+    "notes": "Installer: allow installing inside an image build chroot (port check skipped)"
   },
   "releases": [
+    {
+      "version": "2.28.4",
+      "git_sha": "b77ffbc",
+      "git_sha_full": "b77ffbcfe2eaba16082a7cdc0e317bf177a16ed4",
+      "build": 188,
+      "released_at": "2026-11-22T17:33:59+00:00",
+      "notes": "Installer: allow installing inside an image build chroot (port check skipped)"
+    },
     {
       "version": "2.28.3",
       "git_sha": "795039e",
@@ -201,14 +209,6 @@
       "build": 133,
       "released_at": "2026-11-22T12:52:52+00:00",
       "notes": "Music: the phone player is now the installable /music web app with offline playlist downloads; the Android APK is retired"
-    },
-    {
-      "version": "2.16.0",
-      "git_sha": "d607b82",
-      "git_sha_full": "d607b821201b1e51e719fcaa3699563a9d9ce20d",
-      "build": 131,
-      "released_at": "2026-11-22T12:46:11+00:00",
-      "notes": "Videos: queue many downloads, choose Original/1080p/720p (default in Settings) and the NAS prepares them one by one — the queue survives a reload and Original copies the video instead of re-encoding it."
     }
   ]
 }
