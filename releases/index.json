@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T22:11:03+00:00",
+  "generated_at": "2026-11-22T22:18:25+00:00",
   "latest": {
-    "version": "2.29.6",
-    "git_sha": "ba431c0",
-    "git_sha_full": "ba431c03f538171ef4789584c76355bc57dbaf00",
-    "build": 226,
-    "released_at": "2026-11-22T22:11:03+00:00",
-    "notes": "Downloads: queue order and retry timing extracted into a service (no behaviour change)"
+    "version": "2.29.7",
+    "git_sha": "4baa636",
+    "git_sha_full": "4baa636c4411841e0f033eb7c7f70164ac372c74",
+    "build": 231,
+    "released_at": "2026-11-22T22:18:25+00:00",
+    "notes": "Downloads: a second link provider (AllDebrid) now takes over when tb7.pl cannot unlock a hoster link"
   },
   "releases": [
+    {
+      "version": "2.29.7",
+      "git_sha": "4baa636",
+      "git_sha_full": "4baa636c4411841e0f033eb7c7f70164ac372c74",
+      "build": 231,
+      "released_at": "2026-11-22T22:18:25+00:00",
+      "notes": "Downloads: a second link provider (AllDebrid) now takes over when tb7.pl cannot unlock a hoster link"
+    },
     {
       "version": "2.29.6",
       "git_sha": "ba431c0",
@@ -201,14 +209,6 @@
       "build": 162,
       "released_at": "2026-11-22T14:26:35+00:00",
       "notes": "Radarr/Sonarr now use the download folder configured in Download Station instead of a phantom /home/qb-admin/Downloads, so imports land in the media library."
-    },
-    {
-      "version": "2.23.0",
-      "git_sha": "a5e7a7a",
-      "git_sha_full": "a5e7a7a346d85ba69a6657248d8f5f3258262e50",
-      "build": 160,
-      "released_at": "2026-11-22T14:26:12+00:00",
-      "notes": "System: EthOS pauses heavy work and skips the OOM killer when the box runs out of memory, and reports why it was killed"
     }
   ]
 }
