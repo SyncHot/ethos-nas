@@ -23,7 +23,7 @@ from typing import Optional
 import psutil
 from fastapi import (APIRouter, BackgroundTasks, Depends, File, HTTPException, Response,
                      UploadFile, WebSocket, WebSocketDisconnect)
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.config import APP_VERSION, INSTALL_DIR, settings
 from backend.services.net_utils import port_is_listening
@@ -506,8 +506,20 @@ async def storage_usage() -> dict:
     return await asyncio.to_thread(usage)
 
 
+class RetentionSweepRequest(BaseModel):
+    """Optional body for POST /retention/sweep.
+
+    ``areas`` limits the run to the named managed caches (Disk Cleaner reclaims
+    one area at a time); omitting it sweeps everything, as before.
+    """
+
+    areas: list[str] | None = Field(default=None, max_length=20)
+
+    model_config = {"extra": "forbid"}
+
+
 @router.post("/retention/sweep", dependencies=[Depends(require_admin)])
-async def retention_sweep() -> dict:
+async def retention_sweep(req: RetentionSweepRequest | None = None) -> dict:
     """Run the retention policy now ("Clean now" in Settings → System).
 
     The sweeper already runs on a timer (`ETHOS_RETENTION_INTERVAL`); this is the
@@ -515,10 +527,20 @@ async def retention_sweep() -> dict:
     Center when something was actually freed, so the result is visible later.
     """
     from backend.services.notifications_service import emit_event
-    from backend.services.retention_service import sweep
+    from backend.services.retention_service import area_names, sweep
+
+    only = None
+    if req and req.areas:
+        unknown = sorted(set(req.areas) - set(area_names()))
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown retention area(s): {', '.join(unknown)}",
+            )
+        only = req.areas
 
     try:
-        summary = await asyncio.to_thread(sweep)
+        summary = await asyncio.to_thread(sweep, only)
     except Exception as exc:
         logger.error("Manual retention sweep failed", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Cleanup failed: {exc}") from exc

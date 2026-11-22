@@ -84,6 +84,11 @@ def _areas() -> list[tuple[str, Path, float | None, int | None]]:
     ]
 
 
+def area_names() -> list[str]:
+    """Names of the areas retention knows about (for API validation)."""
+    return [name for name, *_rest in _areas()]
+
+
 def _remove(entry: Path) -> tuple[bool, int]:
     """Delete one entry; returns (removed, bytes) and never raises."""
     size = _entry_size(entry)
@@ -98,12 +103,19 @@ def _remove(entry: Path) -> tuple[bool, int]:
     return True, size
 
 
-def sweep() -> dict:
-    """Apply the retention policy once. Returns a summary (never raises)."""
+def sweep(only: list[str] | None = None) -> dict:
+    """Apply the retention policy once. Returns a summary (never raises).
+
+    ``only`` limits the run to the named areas (the Disk Cleaner lets an admin
+    reclaim one cache at a time); ``None`` sweeps everything, as before.
+    """
     now = time.time()
+    wanted = {str(name) for name in (only or [])}
     summary: dict = {"removed_files": 0, "freed_bytes": 0, "by_area": {}}
 
     for name, path, max_age, max_files in _areas():
+        if wanted and name not in wanted:
+            continue
         removed = freed = 0
         if name == "trash":
             # Per-user namespaces: the age policy applies to each trashed item,

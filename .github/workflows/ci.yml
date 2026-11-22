@@ -58,6 +58,7 @@ jobs:
                    tests/test_child_limits.py \
                    tests/test_startup_guard.py \
                    tests/test_retention.py \
+                   tests/test_disk_clean.py \
                    tests/test_trash_service.py \
                    tests/test_trash_multiuser_api.py \
                    tests/test_logging_convention.py \
