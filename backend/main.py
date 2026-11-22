@@ -285,6 +285,14 @@ async def lifespan(app: FastAPI):
     )
     _start_package_updates()
 
+    # Watch container health so a restart loop is reported instead of showing as
+    # “running” only when somebody opens the Packages window.
+    from backend.services.package_health_service import (
+        start_health_monitor as _start_package_health,
+        stop_health_monitor as _stop_package_health,
+    )
+    _start_package_health()
+
     # Memory-pressure guard (services/pressure_guard.py): turns "the box is
     # nearly out of memory" into a pause of heavy work before systemd-oomd or
     # the kernel picks a victim.
@@ -333,6 +341,7 @@ async def lifespan(app: FastAPI):
     await stop_os_update_checker()
     await stop_os_image_checker()
     await _stop_package_updates()
+    await _stop_package_health()
     from backend.services.camera_service import stop_all_recordings
     from backend.services.task_registry import shutdown as shutdown_tasks
     await shutdown_tasks()

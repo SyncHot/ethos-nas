@@ -469,7 +469,9 @@ each package keeps its own rollback and the button reports `n/m` progress.
 `ETHOS_PACKAGES_MAX_INDEX_BYTES` (5 MB), `ETHOS_PACKAGES_MAX_MANIFEST_BYTES` (2 MB),
 `ETHOS_PACKAGES_MAX_ARTIFACT_BYTES` (256 MB), `ETHOS_PACKAGES_TTL_SECONDS` (900),
 `ETHOS_PACKAGES_MIN_FREE_MB` (2048 — install/update answer 507 below it),
-`ETHOS_PACKAGES_UPDATE_CHECK` (true) and `ETHOS_PACKAGES_UPDATE_CHECK_HOURS` (6).
+`ETHOS_PACKAGES_DOCKER_ROOT` (auto-detected), `ETHOS_PACKAGES_UPDATE_CHECK` (true) /
+`ETHOS_PACKAGES_UPDATE_CHECK_HOURS` (6), `ETHOS_PACKAGES_HEALTH_CHECK` (true) /
+`ETHOS_PACKAGES_HEALTH_INTERVAL_SECONDS` (90).
 
 ## Automatic update check
 
@@ -479,6 +481,33 @@ short-lived dev instance never reaches the network. Each installed package with 
 produces one Notification Center event (`dedupe_key=pkg-update:<id>:<version>`, action opens
 Packages); a package that is updated or uninstalled simply stops being reported. Repository
 failures are logged and never break startup or shutdown.
+
+## Container health
+
+`GET /api/packages/{id}/status` answers `{status, runtime, health, containers}` for compose packages;
+`health` aggregates `docker compose ps --format json` (`unhealthy` beats `starting` beats `healthy`,
+otherwise `none`) and `containers[]` carries `{name, service, state, health, exit_code}`. The
+Packages table shows the aggregate next to the project status, so a restart loop no longer looks
+“running”.
+
+`services/package_health_service.py` samples every installed compose package every
+`ETHOS_PACKAGES_HEALTH_INTERVAL_SECONDS` (90 s; disable with `ETHOS_PACKAGES_HEALTH_CHECK=false`)
+and publishes one `warning` when a container turns `unhealthy` or enters `restarting`
+(`dedupe_key=pkg-health:<id>/<container>`) and one `info` when it recovers. Observed state lives in
+`<DATA_DIR>/packages/health.json` (versioned `json_store`), so a core restart does not re-alert a
+condition the operator already saw.
+
+## Docker access and the NAS account
+
+`package_installer._compose_env()` exports `ETHOS_SERVICE_UID`, `ETHOS_SERVICE_GID` and
+`ETHOS_DATA_DIR` to every `docker compose` call, so a manifest can run its container with the same
+identity as EthOS (`PUID: "${ETHOS_SERVICE_UID:-1000}"`). Without it, a container that writes to
+`/mnt` or `/media` creates files the NAS and its users cannot edit; `compose_policy.lint_compose`
+warns when a read-write share bind has neither `PUID`/`PGID` nor `user:`.
+
+The install/update preflight checks the free-space reserve on **both** `DATA_DIR` and Docker's root
+(`ETHOS_PACKAGES_DOCKER_ROOT`, auto-detected with `docker info`): images do not live in the package
+store, so a full `/` must fail the check too.
 
 ## Repository hygiene (`ethos-pack`)
 
@@ -517,6 +546,11 @@ CI runs the same checks in `.github/scripts/validate_repo.py`.
 - [x] App-data preview, opt-in purge (`remove_data=1`) and orphan-data cleanup
 - [x] Window UIs declare `ui.expose`/`ui.auth`; loopback and mixed-content frames fall back to a tab
 - [x] `ethos-pack lint` / `readme` + CI drift guards (pins, restart policies, README table)
+- [x] Container health in `/status`, aggregate badge and unhealthy/recovery notifications
+- [x] `ETHOS_SERVICE_UID/GID` exported to compose; policy warns about share writes without PUID
+- [x] Free-space reserve checked on `DATA_DIR` **and** Docker's root
+- [x] Stable/Beta channel filter in Package Center
+- [x] Explicit consent before installing a LAN port that has no login
 - [x] Dependency resolver: `requires` installed first, `conflicts` and dependent-uninstall blocked
 - [x] Core extraction: `ethos-music-engine` (yt-dlp) and `ethos-media-enhance` (OpenCV) published
 - [ ] Sign and publish `ethos-nas-packages` (needs the private key)

@@ -84,8 +84,14 @@ def main() -> int:
 
     real_usage = _shutil.disk_usage
     real_min = package_installer.settings.PACKAGES_MIN_FREE_MB
+    real_root = package_installer.settings.PACKAGES_DOCKER_ROOT
+    real_cache = package_installer._DOCKER_ROOT_CACHE
+    docker_root = TMP / "docker"
+    docker_root.mkdir(parents=True, exist_ok=True)
     try:
         package_installer.settings.PACKAGES_MIN_FREE_MB = 1024
+        package_installer.settings.PACKAGES_DOCKER_ROOT = str(docker_root)
+        package_installer._DOCKER_ROOT_CACHE = None
         package_installer.shutil.disk_usage = lambda _path: _Usage(512 * 1024 * 1024)
         try:
             package_installer._preflight_disk("demo")
@@ -98,6 +104,19 @@ def main() -> int:
         package_installer._preflight_disk("demo")
         check("enough space passes", True)
 
+        # Images live in the Docker root, not in DATA_DIR: a full Docker disk must
+        # fail even when the package store has room.
+        def _per_path(path):
+            return _Usage(64 * 1024 * 1024 if str(path).startswith(str(docker_root))
+                          else 8 * 1024 * 1024 * 1024)
+        package_installer.shutil.disk_usage = _per_path
+        try:
+            package_installer._preflight_disk("demo")
+            docker_checked = False
+        except PackageError as exc:
+            docker_checked = exc.status == 507 and str(docker_root) in exc.detail
+        check("a full Docker root is rejected too", docker_checked)
+
         package_installer.settings.PACKAGES_MIN_FREE_MB = 0
         package_installer.shutil.disk_usage = lambda _path: _Usage(0)
         package_installer._preflight_disk("demo")
@@ -105,6 +124,8 @@ def main() -> int:
     finally:
         package_installer.shutil.disk_usage = real_usage
         package_installer.settings.PACKAGES_MIN_FREE_MB = real_min
+        package_installer.settings.PACKAGES_DOCKER_ROOT = real_root
+        package_installer._DOCKER_ROOT_CACHE = real_cache
         _shutil.rmtree(TMP, ignore_errors=True)
 
     failed = [name for name, ok, _ in results if not ok]

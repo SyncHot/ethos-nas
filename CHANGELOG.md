@@ -11,6 +11,39 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.28.0] - 2026-11-22
+
+### Added
+
+- **Package Center: container health.** `GET /api/packages/{id}/status` now returns the containers and
+  an aggregate `health` from `docker compose ps`, the Installed table shows it next to the project
+  status, and a background monitor publishes one warning when a container turns unhealthy or enters
+  a restart loop (and one info when it recovers) — a crash loop no longer looks “running”.
+- **Package Center: Stable/Beta channel filter.** The catalog carries a `channel`; the window now has
+  a channel selector, so the `beta` channel is reachable instead of being a dead API parameter.
+- **Explicit consent for unauthenticated ports.** A package whose manifest declares
+  `ui.expose: "lan"` with `ui.auth: "none"` cannot be installed or updated until the operator ticks
+  “this port has no login” in the confirmation dialog.
+- **Catalog: Uptime Monitor (`ethos-monitor`, Uptime Kuma 2.5.12) and FreshRSS (`ethos-rss` 1.30.4).**
+
+### Changed
+
+- **Compose packages run as the EthOS account when they write to shares.** Every `docker compose`
+  call exports `ETHOS_SERVICE_UID`/`ETHOS_SERVICE_GID`, manifests can use
+  `PUID: "${ETHOS_SERVICE_UID:-1000}"`, and the compose policy warns when a read-write `/mnt` or
+  `/media` bind has neither `PUID`/`PGID` nor `user:`. Syncthing uses it, so synced files stay
+  editable by the NAS and its users.
+- **The install/update disk preflight checks Docker's root too.** Images land in
+  `Docker Root Dir`, not in the package store, so a full `/` is now caught before a pull instead of
+  after (`ETHOS_PACKAGES_DOCKER_ROOT` overrides the detected path).
+
+### Fixed
+
+- **Domains:** the reverse proxy and its control plane now report container health instead of
+  looking healthy while Caddy is dead.
+- **Catalog:** every service has a healthcheck where the image supports one; the remaining lint
+  warnings for `domains` are gone.
+
 ## [2.27.0] - 2026-11-22
 
 ### Added

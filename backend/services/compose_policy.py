@@ -101,6 +101,46 @@ def _check_devices(devices: Any, service: str, capabilities: set[str],
         errors.append(f"{service}: devices are not allowed: {entry}")
 
 
+def _binds_share_rw(volumes: list) -> bool:
+    """True when the service mounts one of the shared trees read-write."""
+    for volume in volumes:
+        if isinstance(volume, str):
+            parts = volume.split(":")
+            source, mode = parts[0], (parts[2] if len(parts) > 2 else "rw")
+        elif isinstance(volume, dict):
+            if str(volume.get("type") or "bind") != "bind":
+                continue
+            source = str(volume.get("source") or "")
+            mode = "ro" if volume.get("read_only") else "rw"
+        else:
+            continue
+        if "ro" in mode.split(","):
+            continue
+        real = os.path.realpath(os.path.expanduser(str(source or "")))
+        if any(real == root or real.startswith(root + os.sep) for root in _ALLOWED_BIND_ROOTS):
+            return True
+    return False
+
+
+def _declares_container_uid(service: dict) -> bool:
+    """True when the service states which uid/gid writes to the shares."""
+    if service.get("user"):
+        return True
+    env = service.get("environment") or {}
+    if isinstance(env, dict):
+        if any(key in {"PUID", "PGID", "USER_UID", "USER_GID"} for key in env):
+            return True
+        text = " ".join(str(value) for value in env.values())
+    elif isinstance(env, list):
+        if any(str(item).split("=", 1)[0] in {"PUID", "PGID", "USER_UID", "USER_GID"}
+               for item in env):
+            return True
+        text = " ".join(str(item) for item in env)
+    else:
+        text = ""
+    return "ETHOS_SERVICE_UID" in text or "ETHOS_SERVICE_GID" in text
+
+
 def lint_compose(text_or_dict: Any,
                  capabilities: Any = None,
                  package_id: str | None = None,
@@ -172,6 +212,14 @@ def lint_compose(text_or_dict: Any,
                         _check_bind(volume.get("source") or "", name, errors, bind_roots)
                 else:
                     errors.append(f"{name}: invalid volume entry")
+            if _binds_share_rw(volumes) and not _declares_container_uid(service):
+                # A container writing as its own uid creates files the EthOS
+                # account cannot edit; manifests should use PUID/PGID (EthOS
+                # exports ETHOS_SERVICE_UID/ETHOS_SERVICE_GID for interpolation).
+                warnings.append(
+                    f"{name}: writes to a share without PUID/PGID or user: — "
+                    f"files may not be editable by the NAS account"
+                )
 
         env_files = service.get("env_file") or []
         if isinstance(env_files, str):

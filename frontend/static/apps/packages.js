@@ -23,6 +23,7 @@ const _pkg = {
     statuses: {},
     search: '',
     category: '',
+    channel: '',
     isAdmin: false,
     jobTimer: null,
     job: null,
@@ -172,6 +173,15 @@ function _statusBadge(status) {
     return _badge(status || 'unknown', cls);
 }
 
+// A container can be "running" and unhealthy at the same time, so the health
+// reported by `docker compose ps` is shown next to the project status.
+function _healthBadge(health) {
+    if (health === 'healthy') return ` ${_badge('healthy', 'badge-green')}`;
+    if (health === 'unhealthy') return ` ${_badge('unhealthy', 'badge-red')}`;
+    if (health === 'starting') return ` ${_badge('starting', 'badge-yellow')}`;
+    return '';
+}
+
 // ── Active job state ────────────────────────────────────────────────────────
 
 function _jobBusy(pkgId) {
@@ -220,6 +230,12 @@ export async function renderPackagesPage(body) {
         </div>
         <div class="ui-row">
             <span id="pkgTabCount" class="ui-tag" data-testid="pkg-tab-count" hidden></span>
+            <select id="pkgChannel" class="ui-input" data-testid="pkg-channel" aria-label="Package channel"
+                    title="Show packages from one release channel" style="max-width:130px;padding:4px 8px;">
+                <option value="">All channels</option>
+                <option value="stable">Stable only</option>
+                <option value="beta">Beta only</option>
+            </select>
             <button class="ui-btn small primary" id="pkgUpdateAllBtn" data-testid="pkg-update-all"
                     title="Update every package with a newer version" hidden>${uiIcon('arrowUp', 12)} Update all</button>
             <button class="ui-btn small" id="pkgRefreshBtn" data-testid="pkg-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>
@@ -246,6 +262,10 @@ export async function renderPackagesPage(body) {
     });
     toolbar.querySelector('#pkgRefreshBtn')?.addEventListener('click', () => _loadAll(true));
     toolbar.querySelector('#pkgUpdateAllBtn')?.addEventListener('click', () => _updateAll());
+    toolbar.querySelector('#pkgChannel')?.addEventListener('change', (ev) => {
+        _pkg.channel = ev.target.value;
+        _renderContent();
+    });
 
     shell.onSection((id) => {
         _pkg.tab = id;
@@ -289,9 +309,9 @@ async function _loadAll(force = false) {
         await Promise.all(_pkg.installed.map(async (pkg) => {
             try {
                 const status = await apiJsonFetch(`/api/packages/${encodeURIComponent(pkg.id)}/status`);
-                statuses[pkg.id] = status.status;
+                statuses[pkg.id] = { status: status.status, health: status.health || 'none' };
             } catch (_) {
-                statuses[pkg.id] = 'unknown';
+                statuses[pkg.id] = { status: 'unknown', health: 'none' };
             }
         }));
         _pkg.statuses = statuses;
@@ -371,6 +391,7 @@ function _syncUpdateAllButton() {
 }
 
 function _matches(pkg) {
+    if (_pkg.channel && String(pkg.channel || 'stable') !== _pkg.channel) return false;
     if (_pkg.category && pkg.category !== _pkg.category) return false;
     const needle = _pkg.search.trim().toLowerCase();
     if (!needle) return true;
@@ -562,7 +583,10 @@ async function _purgeOrphan(pkgId) {
 }
 
 function _installedRow(pkg) {
-    const status = _pkg.statuses[pkg.id] || 'unknown';
+    const info = _pkg.statuses[pkg.id] || {};
+    // Older records stored the bare status string; accept both shapes.
+    const status = typeof info === 'string' ? info : (info.status || 'unknown');
+    const health = typeof info === 'string' ? 'none' : (info.health || 'none');
     const disabled = _disabledAttr(pkg.id);
     const busyLabel = _busyLabel(pkg.id);
     // Files-only packages (native UI, no service) have nothing to start or stop.
@@ -584,7 +608,7 @@ function _installedRow(pkg) {
         <tr data-testid="pkg-row-${escapeAttr(pkg.id)}">
             <td><div>${_icon(pkg, 20)} ${escapeHtml(pkg.name)}</div><div class="path">${escapeHtml(pkg.id)}</div></td>
             <td class="path">${escapeHtml(pkg.version)}</td>
-            <td data-testid="pkg-status-${escapeAttr(pkg.id)}">${_statusBadge(status)}</td>
+            <td data-testid="pkg-status-${escapeAttr(pkg.id)}">${_statusBadge(status)}${_healthBadge(health)}</td>
             <td>${escapeHtml(pkg.source_name || pkg.source || 'local')}</td>
             <td class="actions"><div class="ui-row" style="justify-content:flex-end;">${busyLabel}${openUi}${openLogsBtn}${update}${actions}</div></td>
         </tr>`;
@@ -600,6 +624,10 @@ async function _openDetail(pkgId) {
     const canInstall = _pkg.isAdmin && !detail.installed && _blockedDeps(detail).length === 0;
     const canUpdate = _pkg.isAdmin && detail.update_available && _blockedDeps(detail).length === 0;
     const canUninstall = _pkg.isAdmin && detail.installed && !canUpdate;
+    // A window UI with no login is reachable by anyone who can open the port;
+    // installing one must be a conscious decision, not a surprise.
+    const needsPortConsent = !!(detail.ui && detail.ui.mode === 'window'
+        && detail.ui.expose === 'lan' && detail.ui.auth !== 'package');
     const confirmLabel = canUpdate ? `Update to v${detail.version}` : (canInstall ? 'Install' : (canUninstall ? 'Uninstall' : 'Close'));
     const body = `
         <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px;">
@@ -619,6 +647,10 @@ async function _openDetail(pkgId) {
         ${_systemRequires(detail).length ? `<div style="font-size:12px;margin-top:6px;">System requirements: ${_systemRequires(detail).map((item) => escapeHtml(_systemLabel(item))).join(', ')}${_systemRequires(detail).includes('docker') ? ' — Docker is installed automatically when missing.' : ''}</div>` : ''}
         ${_systemWarning(detail)}
         ${_uiExposure(detail)}
+        ${needsPortConsent && (canInstall || canUpdate) ? `<label style="display:flex;gap:9px;align-items:flex-start;font-size:13px;line-height:1.45;margin-top:8px;cursor:pointer;">
+            <input type="checkbox" name="ack_open_port" data-testid="pkg-ack-open-port" style="margin-top:2px;">
+            <div>I understand that port ${escapeHtml(String(detail.ui.port))} has no login and anyone on my network can open it.</div>
+        </label>` : ''}
         ${_pythonRequires(detail).length ? `<div style="font-size:12px;margin-top:6px;">Package environment: ${_pythonRequires(detail).map(escapeHtml).join(', ')} — installed into a private virtualenv from bundled wheels, offline.</div>` : ''}
         ${(detail.screenshots || []).length ? `<div style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;">${detail.screenshots.map((url) => `<a href="${escapeAttr(url)}" target="_blank" rel="noopener"><img src="${escapeAttr(url)}" alt="" style="height:90px;border-radius:8px;"></a>`).join('')}</div>` : ''}
         ${detail.installed && _pkg.isAdmin ? `<div style="margin-top:12px;"><button class="btn-ghost" data-testid="pkg-detail-logs" style="font-size:12px;padding:4px 10px;">📋 Open logs for ${escapeHtml(detail.name)}</button></div>` : ''}`;
@@ -633,8 +665,12 @@ async function _openDetail(pkgId) {
             if (logsBtn) logsBtn.addEventListener('click', () => openLogs({ app: `pkg:${detail.id}` }));
         },
         onSubmit: canUpdate || canInstall || canUninstall
-            ? async (_values, { setError, close }) => {
+            ? async (values, { setError, close }) => {
                 try {
+                    if (needsPortConsent && (canInstall || canUpdate) && values.ack_open_port !== true) {
+                        setError(`Tick the box to confirm port ${detail.ui.port} is reachable without a login.`);
+                        return false;
+                    }
                     if (canUninstall) {
                         // The options dialog needs the screen; close this one first.
                         close();

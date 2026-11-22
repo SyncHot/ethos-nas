@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.27.0"
+APP_VERSION = "2.28.0"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -148,9 +148,15 @@ class Settings:
     PACKAGES_TTL_SECONDS: int = int(os.getenv("ETHOS_PACKAGES_TTL_SECONDS", "900"))
     # Refuse install/update when the data filesystem has less than this reserve.
     PACKAGES_MIN_FREE_MB: int = int(os.getenv("ETHOS_PACKAGES_MIN_FREE_MB", "2048"))
+    # Filesystem `docker info` reports as Docker Root Dir; auto-detected when empty
+    # (images do not live under DATA_DIR, so both reserves are checked).
+    PACKAGES_DOCKER_ROOT: str = os.getenv("ETHOS_PACKAGES_DOCKER_ROOT", "")
     # Background check for package updates (services/package_update_service.py).
     PACKAGES_UPDATE_CHECK: bool = os.getenv("ETHOS_PACKAGES_UPDATE_CHECK", "true").lower() in ("1", "true", "yes", "on")
     PACKAGES_UPDATE_CHECK_HOURS: float = float(os.getenv("ETHOS_PACKAGES_UPDATE_CHECK_HOURS", "6"))
+    # Container-health monitor (services/package_health_service.py).
+    PACKAGES_HEALTH_CHECK: bool = os.getenv("ETHOS_PACKAGES_HEALTH_CHECK", "true").lower() in ("1", "true", "yes", "on")
+    PACKAGES_HEALTH_INTERVAL_SECONDS: int = int(os.getenv("ETHOS_PACKAGES_HEALTH_INTERVAL_SECONDS", "90"))
     # Seed the official signed source on a fresh install. Tests set this to 0
     # so they never depend on GitHub availability.
     PACKAGES_DEFAULT_SOURCE: bool = os.getenv("ETHOS_PACKAGES_DEFAULT_SOURCE", "true").lower() in ("1", "true", "yes", "on")

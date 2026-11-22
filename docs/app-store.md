@@ -1,7 +1,7 @@
 # App store model — slim core vs packages
 
-Status: **phases 1-2 and 4 implemented**, phase 3 (desktop surface) not started.
-Verified against the code on 2026-11-15.
+Status: **phases 1-4 implemented** (desktop surface included); see “Status” at the end.
+Verified against the code on 2026-11-22.
 
 ## Why
 
@@ -84,6 +84,18 @@ removed distributions reappears — there is no pending allowlist any more.
 The first two are **engine** packages: no `ui` block, no desktop icon. `music.py` keeps every
 route Android expects and only the yt-dlp work moved; `files.py` falls back to the first valid
 frame when the package is absent, so thumbnails never fail.
+
+The core keeps no code for these **community apps** either — they are containers with their own
+login, embedded in an EthOS window from their own port (`ui.expose: "lan"` + `ui.auth: "package"`).
+Package Center states the exposure and asks for an explicit confirmation when a port has no login:
+
+| id | port | what it is |
+|---|---|---|
+| `ethos-sync` | 8384 (+ 22000 tcp/udp, 21027 udp) | Syncthing, syncs folders under `/mnt` and `/media` with other devices; GUI login set on first visit |
+| `ethos-git` | 3000 (+ SSH 2222) | Forgejo, self-hosted Git for the Code Editor and Git Diff remotes |
+| `ethos-monitor` | 3001 | Uptime Kuma, monitors other hosts/services and sends its own alerts |
+| `ethos-rss` | 8080 | FreshRSS news reader |
+| `ethos-welcome` | 8090 | static welcome page, deliberately no login (`ui.auth: "none"`) |
 
 `ethos-kanban` is the reference **user-space app**: a native UI plus a stdlib-only service (no
 wheels at all), reached through the authenticated package proxy. It is the pattern for moving any

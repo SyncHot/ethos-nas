@@ -9,6 +9,7 @@ and restore it if the new service fails to start.
 import asyncio
 import json
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -29,6 +30,9 @@ from backend.services.package_schema import (
 logger = logging.getLogger("ethos-nas.services.package_installer")
 
 COMPOSE_TIMEOUT = 300
+
+# `docker info` is slow and the root does not move while the daemon runs.
+_DOCKER_ROOT_CACHE: Optional[str] = None
 
 
 def _now_iso() -> str:
@@ -60,28 +64,59 @@ def _discard_dir(path: Path, reason: str) -> bool:
     return True
 
 
+def _docker_root() -> Optional[Path]:
+    """Filesystem the Docker daemon writes images and volumes to.
+
+    Images land in `Docker Root Dir`, not in `DATA_DIR`, so the free-space
+    reserve has to be checked there too or a 2 GB image fills `/` while the
+    preflight reports plenty of room. The path is cached: `docker info` takes
+    seconds and the daemon's root does not change while it runs.
+    """
+    global _DOCKER_ROOT_CACHE
+    configured = str(getattr(settings, "PACKAGES_DOCKER_ROOT", "") or "").strip()
+    if configured:
+        return Path(configured)
+    if _DOCKER_ROOT_CACHE is None:
+        try:
+            proc = subprocess.run(
+                ["docker", "info", "--format", "{{.DockerRootDir}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            _DOCKER_ROOT_CACHE = (proc.stdout or "").strip() if proc.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            logger.debug("docker info probe failed", exc_info=True)
+            _DOCKER_ROOT_CACHE = ""
+    return Path(_DOCKER_ROOT_CACHE) if _DOCKER_ROOT_CACHE else None
+
+
 def _preflight_disk(pkg_id: str) -> None:
     """Refuse an install/update that cannot fit the configured free-space reserve.
 
     Pulling images and writing a wheelhouse is the heaviest write the core does;
     a package that dies at 90 % leaves containers and partial state behind, so
-    the reserve is checked before anything is downloaded.
+    the reserve is checked before anything is downloaded — on the package store
+    **and** on the Docker root, which is usually a different filesystem.
     """
     required_mb = max(0, int(settings.PACKAGES_MIN_FREE_MB))
     if required_mb <= 0:
         return
-    try:
-        free = shutil.disk_usage(str(settings.DATA_DIR)).free
-    except OSError:
-        logger.warning("Cannot read free space for the package store", exc_info=True)
-        return
-    if free < required_mb * 1024 * 1024:
-        raise PackageError(
-            f"Not enough free disk space for {pkg_id}: "
-            f"{free // (1024 * 1024)} MB available, {required_mb} MB required. "
-            f"Free some space and retry",
-            507,
-        )
+    targets = [Path(settings.DATA_DIR)]
+    root = _docker_root()
+    if root is not None and str(root) not in {str(t) for t in targets}:
+        targets.append(root)
+    for target in targets:
+        try:
+            free = shutil.disk_usage(str(target)).free
+        except OSError:
+            logger.warning("Cannot read free space for %s", target, exc_info=True)
+            continue
+        if free < required_mb * 1024 * 1024:
+            raise PackageError(
+                f"Not enough free disk space for {pkg_id} on {target}: "
+                f"{free // (1024 * 1024)} MB available, {required_mb} MB required. "
+                f"Free some space and retry",
+                507,
+            )
 
 
 def _runtime(record: dict) -> str:
@@ -98,13 +133,29 @@ def _compose_cmd(pkg_id: str, path: Path, *args: str) -> list[str]:
     return ["docker", "compose", "-f", str(path), "-p", pkg_id, *args]
 
 
-def _run_compose(cmd: list[str]):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=COMPOSE_TIMEOUT)
+def _compose_env() -> dict:
+    """Environment for `docker compose`, including the EthOS service identity.
+
+    Compose interpolates `${VAR}` from this environment, so a manifest can run its
+    container with the same uid/gid as EthOS (`PUID: "${ETHOS_SERVICE_UID}"`) and
+    files it creates on /mnt or /media stay editable by the NAS and its accounts.
+    """
+    env = dict(os.environ)
+    env.setdefault("ETHOS_SERVICE_UID", str(os.getuid()))
+    env.setdefault("ETHOS_SERVICE_GID", str(os.getgid()))
+    env.setdefault("ETHOS_DATA_DIR", str(settings.DATA_DIR))
+    return env
+
+
+def _run_compose(cmd: list[str], env: Optional[dict] = None):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=COMPOSE_TIMEOUT,
+                          env=env)
 
 
 async def _compose(pkg_id: str, path: Path, *args: str) -> None:
     try:
-        proc = await asyncio.to_thread(_run_compose, _compose_cmd(pkg_id, path, *args))
+        proc = await asyncio.to_thread(_run_compose, _compose_cmd(pkg_id, path, *args),
+                                       _compose_env())
     except FileNotFoundError:
         raise PackageError("docker is not available on this system", 503) from None
     except subprocess.TimeoutExpired as exc:
@@ -147,13 +198,86 @@ async def _status(pkg_id: str, record: Optional[dict] = None) -> str:
     return "stopped"
 
 
+def _parse_compose_ps(raw: str) -> list[dict]:
+    """Parse `docker compose ps --format json` (a JSON array or one object per line)."""
+    text = (raw or "").strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)]
+    rows = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _container_view(row: dict) -> dict:
+    exit_code = row.get("ExitCode")
+    return {
+        "name": str(row.get("Name") or row.get("Service") or ""),
+        "service": str(row.get("Service") or ""),
+        "state": str(row.get("State") or ""),
+        "health": str(row.get("Health") or ""),
+        "exit_code": exit_code if isinstance(exit_code, int) else None,
+    }
+
+
+def aggregate_health(containers: list[dict]) -> str:
+    """`unhealthy` wins, then `starting`, then `healthy`, otherwise `none`."""
+    health = [str(item.get("health") or "") for item in containers if item.get("health")]
+    if "unhealthy" in health:
+        return "unhealthy"
+    if "starting" in health:
+        return "starting"
+    if health and all(item == "healthy" for item in health):
+        return "healthy"
+    return "none"
+
+
+async def compose_ps(pkg_id: str, *, is_compose: Optional[bool] = None) -> list[dict]:
+    """Per-container rows for a compose package (empty list when the probe fails)."""
+    check_pkg_id(pkg_id)
+    if is_compose is False or compose_file(pkg_id) is None:
+        return []
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["docker", "compose", "-p", pkg_id, "ps", "--format", "json", "--all"],
+            capture_output=True, text=True, timeout=20, env=_compose_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.debug("compose ps probe failed for %s", pkg_id, exc_info=True)
+        return []
+    if proc.returncode != 0:
+        logger.debug("compose ps for %s exited %s: %s", pkg_id, proc.returncode,
+                     (proc.stderr or "").strip()[:200])
+        return []
+    return [_container_view(row) for row in _parse_compose_ps(proc.stdout)]
+
+
 async def package_status(pkg_id: str) -> dict:
     check_pkg_id(pkg_id)
     record = packages_store.get_package(pkg_id)
+    runtime = _runtime(record or {})
+    containers = await compose_ps(pkg_id, is_compose=runtime == "compose")
     return {
         "package": pkg_id,
         "status": await _status(pkg_id, record),
-        "runtime": _runtime(record or {}),
+        "runtime": runtime,
+        "health": aggregate_health(containers),
+        "containers": containers,
     }
 
 
