@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T06:31:40+00:00",
+  "generated_at": "2026-11-22T06:39:14+00:00",
   "latest": {
-    "version": "2.7.0",
-    "git_sha": "a19bf6b",
-    "git_sha_full": "a19bf6bdb8c7adb3bfbcc68a0c4f421c1e346a76",
-    "build": 81,
-    "released_at": "2026-11-22T06:31:40+00:00",
-    "notes": "Users: create, edit, disable and delete accounts from Settings, with immediate session revocation"
+    "version": "2.8.0",
+    "git_sha": "87d4d5e",
+    "git_sha_full": "87d4d5e97f45a48d1a855172d6db26f7fa917e06",
+    "build": 83,
+    "released_at": "2026-11-22T06:39:14+00:00",
+    "notes": "System: Ubuntu package updates — check, install from Settings → System, reboot prompt"
   },
   "releases": [
+    {
+      "version": "2.8.0",
+      "git_sha": "87d4d5e",
+      "git_sha_full": "87d4d5e97f45a48d1a855172d6db26f7fa917e06",
+      "build": 83,
+      "released_at": "2026-11-22T06:39:14+00:00",
+      "notes": "System: Ubuntu package updates — check, install from Settings → System, reboot prompt"
+    },
     {
       "version": "2.7.0",
       "git_sha": "a19bf6b",
@@ -201,14 +209,6 @@
       "build": 27,
       "released_at": "2026-11-17T18:11:13+00:00",
       "notes": "Download Manager: archive-tools host requirement installs bsdtar (7z/rar extraction) through the root helper when available; optional so installs never fail."
-    },
-    {
-      "version": "2.3.4",
-      "git_sha": "58fe49d",
-      "git_sha_full": "58fe49d406e9cae03486cfa84952bf21aae827d4",
-      "build": 25,
-      "released_at": "2026-11-17T18:02:51+00:00",
-      "notes": "Download Manager: Clear failed removes errored records and their leftover .part data without touching finished files."
     }
   ]
 }
