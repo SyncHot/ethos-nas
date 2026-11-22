@@ -99,7 +99,7 @@ new recipients in `users`; `all` uses a broadcast event.
 |---|---|---|
 | Files | any file/folder | `GET /api/files` + `/raw` + `/thumbnail` via `sanitize_read` |
 | Photos | album | `GET /api/gallery/albums?owner=` and `/items?owner=&album=` |
-| Video Station | library root / single video | `/api/videos/library?path=`, `/stream`, `/transcode` via `sanitize_read` |
+| Video Station | library root / single video | `/api/videos/library?path=`, `/stream`, `/transcode` via `sanitize_read`; shared folders and their videos also appear on Home in “Shared folders” / “Shared with you” shelves |
 | Music | playlist | `GET /api/music/playlists/shared?owner=&id=` rewrites local `file_url` to `/api/files/raw?path=` |
 | Books | folder / individual book | shared roots in the Books service; bytes via `/api/files/raw` |
 
@@ -144,8 +144,9 @@ Packages: `ethos-photos`, `ethos-video`, `ethos-music`, `ethos-books` (sibling r
       notification targeting) and static guards
 - [x] Browser verification: Sharing app, dialog, Files sidebar, Photos shared albums,
       Video shared folders, Music shared playlists, Books shared-roots service
-- [ ] Package publish — blocked by the unrelated `ethos-sticky-notes` manifest in the
-      package repo; publish after the 2.14.0 core release
+- [x] Package publish — Photos 1.0.3, Video 2.1.3, Music 1.0.2, Books 1.1.0
+      (signed index in `ethos-packages`)
+- [x] Core release — v2.14.0
 - [ ] Android parity for shared albums/playlists (Moments/Music follow-up)
 
 ## Verification
@@ -166,6 +167,5 @@ Packages: `ethos-photos`, `ethos-video`, `ethos-music`, `ethos-books` (sibling r
 - Shared media outside `/home|/mnt|/media` is impossible by design.
 - Android Moments/Music do not show shared resources until a parity follow-up.
 - Sharing “My List” from Video Station is a follow-up; v1 shares roots and files.
-- The package releases for Photos/Video/Music/Books are prepared (`min_ethos_version`
-  2.14.0) but not published; the sibling repo's signed index cannot be rebuilt until
-  the unrelated `ethos-sticky-notes` package is valid again.
+- The package releases for Photos/Video/Music/Books require EthOS 2.13.3
+  (`min_ethos_version`) and are published through Package Center.
