@@ -254,6 +254,35 @@ with tempfile.TemporaryDirectory() as _tmp:
     finally:
         packages_store.BACKUP_DIR = _old_backup
 
+print("\nPort preflight")
+import socket  # noqa: E402
+from backend.services import package_installer  # noqa: E402
+
+_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+_sock.bind(("0.0.0.0", 0))
+_sock.listen(1)
+_busy = _sock.getsockname()[1]
+try:
+    def _conflict():
+        package_installer._preflight_ports(
+            {"id": "demo-pkg", "name": "Demo", "ui": {"port": _busy}}, "demo-pkg")
+
+    try:
+        _conflict()
+        _raised = None
+    except PackageError as exc:
+        _raised = exc
+    check("a taken port fails the install before anything is deployed",
+          _raised is not None and _raised.status == 409, str(_raised))
+    check("the message names the port and the service",
+          _raised is not None and str(_busy) in _raised.detail and "Demo" in _raised.detail,
+          str(_raised.detail if _raised else ""))
+    check("a free port passes", package_installer._preflight_ports(
+        {"id": "demo-pkg", "name": "Demo", "ui": {"port": 0}, "healthcheck": {}}, "demo-pkg") is None)
+finally:
+    _sock.close()
+
 failed = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
 sys.exit(1 if failed else 0)

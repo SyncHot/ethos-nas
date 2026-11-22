@@ -92,7 +92,7 @@ Package Center states the exposure and asks for an explicit confirmation when a 
 | id | port | what it is |
 |---|---|---|
 | `ethos-sync` | 8384 (+ 22000 tcp/udp, 21027 udp) | Syncthing, syncs folders under `/mnt` and `/media` with other devices; GUI login set on first visit |
-| `ethos-git` | 3000 (+ SSH 2222) | Forgejo, self-hosted Git for the Code Editor and Git Diff remotes |
+| `ethos-git` | 3005 (+ SSH 2222) | Forgejo, self-hosted Git for the Code Editor and Git Diff remotes (host port 3005 — 3000 collides with common compose projects) |
 | `ethos-monitor` | 3001 | Uptime Kuma, monitors other hosts/services and sends its own alerts |
 | `ethos-rss` | 8080 | FreshRSS news reader |
 | `ethos-welcome` | 8090 | static welcome page, deliberately no login (`ui.auth: "none"`) |

@@ -11,6 +11,23 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.28.2] - 2026-11-22
+
+### Fixed
+
+- **A package install that cannot get its port now says so up front.** Package
+  Center binds the package's `ui.port`/`healthcheck.port` before downloading
+  anything, so a host that already runs something on that port (another compose
+  project, a dev server) no longer ends with the raw
+  “Bind for 127.0.0.1:3000 failed: port is already allocated” after the files
+  were deployed — it reports `Port 3000 is already used by <container>`.
+  Updates are unaffected: the running package owns its own port.
+
+### Changed
+
+- Forgejo (`ethos-git` 1.0.1) publishes its web UI on host port **3005** instead
+  of 3000, which collides with common compose projects.
+
 ## [2.28.1] - 2026-11-22
 
 ### Fixed

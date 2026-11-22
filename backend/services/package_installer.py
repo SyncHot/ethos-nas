@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -87,6 +88,61 @@ def _docker_root() -> Optional[Path]:
             logger.debug("docker info probe failed", exc_info=True)
             _DOCKER_ROOT_CACHE = ""
     return Path(_DOCKER_ROOT_CACHE) if _DOCKER_ROOT_CACHE else None
+
+
+def _port_owner(port: int) -> str:
+    """Container publishing `port`, for a readable conflict message."""
+    try:
+        proc = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.debug("docker ps probe failed for the port preflight", exc_info=True)
+        return ""
+    if proc.returncode != 0:
+        return ""
+    for line in (proc.stdout or "").splitlines():
+        name, _, ports = line.partition("\t")
+        for chunk in ports.split(","):
+            published = chunk.strip().split("->")[0]
+            if published.rsplit(":", 1)[-1] == str(port):
+                return name.strip()
+    return ""
+
+
+def _preflight_ports(manifest: dict, pkg_id: str) -> None:
+    """Fail a fresh install before it downloads anything when a port is taken.
+
+    EthOS embeds the package UI from the port in `ui.port`, so a collision is not
+    a cosmetic problem: `docker compose up` dies with
+    ``Bind for 127.0.0.1:3000 failed: port is already allocated`` after the files
+    are already deployed, which reads like a broken package. Name the port and
+    the container holding it instead.
+    """
+    ports = []
+    for candidate in ((manifest.get("ui") or {}).get("port"),
+                      (manifest.get("healthcheck") or {}).get("port")):
+        try:
+            port = int(candidate or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if 0 < port < 65536 and port not in ports:
+            ports.append(port)
+    for port in ports:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("0.0.0.0", port))
+            except OSError:
+                owner = _port_owner(port)
+                where = f" by {owner}" if owner else ""
+                logger.warning("Package %s: port %d is already in use%s", pkg_id, port, where)
+                raise PackageError(
+                    f"Port {port} is already used{where}. {manifest.get('name') or pkg_id} "
+                    f"needs it for its window — free the port or stop that container first.",
+                    409,
+                ) from None
+    logger.debug("Package %s: ports %s are free", pkg_id, ports)
 
 
 def _preflight_disk(pkg_id: str) -> None:
@@ -445,6 +501,7 @@ async def install(entry: dict, job_id: str) -> None:
     check_min_ethos_version(manifest, APP_VERSION)
     _installable(manifest)
     _preflight_disk(pkg_id)
+    _preflight_ports(manifest, pkg_id)
     package_jobs.set_step(job_id, "requires")
     await _ensure_requires(manifest, job_id)
     manifest, staging = await _stage_package(entry, job_id, manifest)

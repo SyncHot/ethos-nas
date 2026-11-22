@@ -128,6 +128,12 @@ repo/
     - `ui.auth` — `"package"` (the app has its own login) or `"none"` (it does not). Required
       whenever `expose` is `"lan"`, so shipping an unauthenticated panel on the LAN is a
       deliberate, visible decision.
+    - **Port collisions fail fast.** A fresh install binds `ui.port` / `healthcheck.port`
+      before anything is downloaded; if the port is taken (another compose project on the
+      host, a dev server) it stops with “Port 3000 is already used by wawalocal-public-1”
+      instead of deploying the files and dying inside `docker compose up`. Updates skip the
+      check — the running package owns its own port then. `_preflight_ports` in
+      `services/package_installer.py`.
     When EthOS itself is served over HTTPS, the browser blocks an `http` frame (mixed content);
     the window then offers the tab-only card instead of a blank pane.
   - `{"mode": "native", "entry": "frontend/app.js"}` — the entry module is loaded
