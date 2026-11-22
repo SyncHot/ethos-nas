@@ -11,6 +11,42 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-11-22
+
+### Added
+
+- **Video Station 2.0 playback engine.** New bounded fMP4 HLS sessions
+  (`POST /api/videos/hls`, owner-checked playlist/segments, stop endpoint) for
+  HEVC/AC3/DTS/MKV on desktop, phones and the Android app, with a 40 s sliding
+  window and per-user/global session caps. The legacy `/transcode` pipe stays as
+  a fallback.
+- **VA-API/QuickSync hardware decode + encode.** The media probe validates both
+  tiers with real micro-encodes, captures ffmpeg stderr, pins the render node,
+  picks the bitrate from the downscaled target height and caps concurrent
+  transcodes. `/api/videos/status` now returns `encoder`, `vaapi`, active
+  streams and per-candidate reasons; `/api/videos/info` reports the engine;
+  transcode/HLS responses expose `X-Ethos-Mode`/`Encoder`/`Decode`.
+- `GET /api/videos/bootstrap` (one walk for config, engine, home, roots, resume
+  and My List), a 10 s library walk cache with `truncated`, `DELETE
+  /api/videos/resume` (remove from Continue Watching), and a per-user My List
+  (`GET/POST/DELETE /api/videos/list`).
+
+### Changed
+
+- Video Station package 2.0.0 uses a full-bleed cinema layout (hero, poster
+  shelves, bottom tab bar on phones) and a custom HLS player with hardware
+  engine diagnostics; the package needs this release (`min_ethos_version
+  2.12.0`).
+- Android Video 1.4.0 plays remux/transcode and multi-audio files through HLS,
+  restores resume positions everywhere and reports the NAS encoder in stats.
+
+### Fixed
+
+- Video HLS sessions stop cleanly on shutdown/app end and expire abandoned
+  sessions (no orphaned ffmpeg processes or disk growth).
+- The `/videos` library cache no longer walks the whole tree for every Home and
+  Library request.
+
 ## [2.11.0] - 2026-11-22
 
 ### Added

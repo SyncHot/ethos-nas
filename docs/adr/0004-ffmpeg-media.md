@@ -23,4 +23,7 @@ add drivers and a second service.
 - Transcodes cost CPU; they are single-flight per file and cancelled on shutdown (task registry).
 - Caches must be bounded — the retention service enforces LRU caps, otherwise a `find /` in the File
   Manager can generate six figures of thumbnails.
-- Hardware acceleration is not used; a future ADR should cover VAAPI/NVENC if 4K transcoding is required.
+- Hardware acceleration: Video Station probes VA-API/QuickSync and uses hardware H.264
+  encode (with VA-API/QSV decode when the file supports it), falling back to software
+  libx264 — see `docs/video-station.md` Phase 8. File Manager previews and Surveillance
+  recordings are still software-only; a future ADR should cover NVENC/zero-copy for them.

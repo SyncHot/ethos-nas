@@ -294,6 +294,8 @@ async def lifespan(app: FastAPI):
     await stop_os_image_checker()
     from backend.services import package_runtime as _package_runtime_stop
     await _package_runtime_stop.shutdown_all()
+    from backend.services import video_hls as _video_hls
+    await _video_hls.MANAGER.stop_all()
     from backend.services.camera_service import stop_all_recordings
     from backend.services.task_registry import shutdown as shutdown_tasks
     await shutdown_tasks()

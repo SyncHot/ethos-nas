@@ -119,4 +119,8 @@ becomes a horizontal strip. The same checklist is in the `app-ui` skill.
 | `login.js` | full-screen overlay before the desktop exists |
 | `app-drawer.js`, `fm-controls.js` | chrome/helpers, not standalone windows |
 
+Package exception: `ethos-video` uses the documented cinema/media layout (full-bleed nav, hero,
+poster shelves, bottom tab bar on phones, immersive player) — see `ethos-packages/AGENTS.md`.
+Settings and popovers still use the shell vocabulary and both themes.
+
 New apps and redesigns must not copy an exception.

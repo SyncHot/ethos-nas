@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Unit checks for services/video_engine.py (playback mode, ffmpeg builders, probe)."""
+
+import asyncio
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from backend.services import video_engine as ve  # noqa: E402
+from backend.services.video_hls import rewrite_playlist, segment_path  # noqa: E402
+
+_passed = 0
+_failed = 0
+
+
+def check(name: str, cond: bool, detail: str = "") -> None:
+    global _passed, _failed
+    if cond:
+        _passed += 1
+        print(f"[PASS] {name}")
+    else:
+        _failed += 1
+        print(f"[FAIL] {name}" + (f" — {detail}" if detail else ""))
+
+
+HEVC = {"width": 3840, "height": 2160, "video_codec": "hevc", "audio_codec": "eac3",
+        "audio_tracks": [{"codec": "eac3", "language": "eng"},
+                         {"codec": "aac", "language": "pol"}]}
+H264 = {"width": 1920, "height": 1080, "video_codec": "h264", "audio_codec": "aac",
+        "audio_tracks": [{"codec": "aac", "language": "eng"}]}
+H264_AC3 = {"width": 1920, "height": 1080, "video_codec": "h264", "audio_codec": "ac3",
+            "audio_tracks": [{"codec": "ac3", "language": "eng"}]}
+
+
+def test_modes() -> None:
+    check("h264+aac mp4 is direct",
+          ve.select_playback_mode(H264, "/x/movie.mp4") == "direct")
+    check("h264+ac3 mkv is remux",
+          ve.select_playback_mode(H264_AC3, "/x/movie.mkv") == "remux")
+    check("hevc mkv is transcode",
+          ve.select_playback_mode(HEVC, "/x/movie.mkv") == "transcode")
+    check("no ffmpeg falls back to direct",
+          ve.select_playback_mode(HEVC, "/x/movie.mkv", ffmpeg_available=False) == "direct")
+
+
+def test_bitrate() -> None:
+    check("4K downscaled to 720p gets 4M",
+          ve.bitrate_for(3840, 2160, 720) == "4M")
+    check("1080p target gets 6M",
+          ve.bitrate_for(3840, 2160, 1080) == "6M")
+    check("480p target gets 2.5M",
+          ve.bitrate_for(1920, 1080, 480) == "2.5M")
+    check("360p target gets 1.5M",
+          ve.bitrate_for(640, 360, 0) == "1.5M")
+
+
+def test_video_args() -> None:
+    pre, video, filters = ve.build_video_args(
+        HEVC, "transcode", "vaapi", "balanced", decode_hw=True, device="/dev/dri/renderD128")
+    check("VA-API decode pins the device", "-vaapi_device" in pre and "/dev/dri/renderD128" in pre)
+    check("VA-API decode uses -hwaccel vaapi", "-hwaccel" in pre and "vaapi" in pre)
+    check("VA-API GPU downscale", "scale_vaapi=w=-2:h=1080" in filters, str(filters))
+    check("VA-API encoder selected", "h264_vaapi" in video)
+
+    pre, video, filters = ve.build_video_args(
+        HEVC, "transcode", "vaapi", "balanced", decode_hw=False, device="/dev/dri/renderD128")
+    check("software decode uploads frames", "format=nv12" in filters and "hwupload" in filters)
+    check("software decode still uses VA-API encode", "h264_vaapi" in video)
+
+    pre, video, filters = ve.build_video_args(
+        HEVC, "transcode", "qsv", "balanced", decode_hw=True, device="/dev/dri/renderD128")
+    check("QSV GPU downscale", "scale_qsv=w=-2:h=1080" in filters, str(filters))
+    check("QSV encoder selected", "h264_qsv" in video)
+
+    pre, video, filters = ve.build_video_args(HEVC, "transcode", None, "fast")
+    check("libx264 gets CRF", "libx264" in video and "-crf" in video)
+    check("libx264 downscales to 720p", "scale=-2:720" in filters, str(filters))
+
+    pre, video, filters = ve.build_video_args(H264_AC3, "remux", None, "balanced")
+    check("remux copies the video", video == ["-c:v", "copy"] and filters == [])
+
+
+def test_audio_args() -> None:
+    args = ve.build_audio_args(H264, 0, "remux", "192k")
+    check("AAC remux copies audio", args[-2:] == ["-c:a", "copy"], str(args))
+    args = ve.build_audio_args(H264_AC3, 0, "remux", "192k")
+    check("AC3 remux encodes to AAC", "aac" in args and "192k" in args)
+    args = ve.build_audio_args(HEVC, 1, "transcode", "128k")
+    check("selected audio track is mapped", "0:a:1?" in args, str(args))
+
+
+def test_commands() -> None:
+    cmd = ve.build_transcode_cmd(
+        "ffmpeg", "/x/movie.mkv", HEVC, 12.5, "vaapi", "transcode", 0,
+        "balanced", "192k", decode_hw=True, device="/dev/dri/renderD128")
+    joined = " ".join(cmd)
+    for token in ("-hwaccel vaapi", "h264_vaapi", "-g 30", "-bf 0",
+                  "-movflags +frag_keyframe+empty_moov", "pipe:1", "-sn"):
+        check(f"pipe cmd contains {token}", token in joined, joined)
+
+    cmd = ve.build_hls_cmd(
+        "ffmpeg", "/x/movie.mkv", HEVC, 0, "vaapi", "transcode", 0,
+        "balanced", "192k", "/tmp/out", decode_hw=True, device="/dev/dri/renderD128")
+    joined = " ".join(cmd)
+    for token in ("-re", "-f hls", "-hls_segment_type fmp4", "delete_segments",
+                  "independent_segments", "index.m3u8", "seg%05d.m4s"):
+        check(f"HLS cmd contains {token}", token in joined, joined)
+
+
+def test_playlist_and_segments() -> None:
+    text = ('#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:4.0,\nseg00000.m4s\n')
+    rewritten = rewrite_playlist(text, "tok en")
+    check("init URI gets the token",
+          'URI="init.mp4?token=tok%20en"' in rewritten, rewritten)
+    check("segment gets the token", "seg00000.m4s?token=tok%20en" in rewritten, rewritten)
+    check("no token leaves the playlist unchanged", rewrite_playlist(text, None) == text)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "init.mp4").write_bytes(b"x")
+        Path(tmp, "seg00000.m4s").write_bytes(b"y")
+        session = type("S", (), {"directory": Path(tmp)})()
+        check("init is served", segment_path(session, "init.mp4") is not None)
+        check("segment is served", segment_path(session, "seg00000.m4s") is not None)
+        check("traversal is blocked", segment_path(session, "../init.mp4") is None)
+        check("playlist name is not a segment", segment_path(session, "index.m3u8") is None)
+
+
+async def test_probe_without_ffmpeg() -> None:
+    probe = ve.HardwareProbe(None, None)
+    st = await probe.status()
+    check("missing ffmpeg is reported", st["encoder"] is None and not st["tools"]["ffmpeg"])
+
+
+async def test_limiter() -> None:
+    limiter = ve.TranscodeLimiter(1)
+    check("first slot acquired", await limiter.acquire(timeout=0.1))
+    check("second slot is refused", not await limiter.acquire(timeout=0.2))
+    await limiter.release()
+    check("released slot is reusable", await limiter.acquire(timeout=0.1))
+    await limiter.release()
+
+
+def main() -> int:
+    test_modes()
+    test_bitrate()
+    test_video_args()
+    test_audio_args()
+    test_commands()
+    test_playlist_and_segments()
+    asyncio.run(test_probe_without_ffmpeg())
+    asyncio.run(test_limiter())
+    print(f"\n{_passed} passed, {_failed} failed")
+    return 1 if _failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

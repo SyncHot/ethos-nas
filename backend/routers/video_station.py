@@ -9,21 +9,27 @@ Library model:
 REST:
 - GET  /api/videos/config            — saved root folders + display/playback options
 - POST /api/videos/config            — save root folders + display/playback options
-- GET  /api/videos/status            — ffmpeg/ffprobe presence + QSV availability
+- GET  /api/videos/bootstrap         — config + engine + home + roots + resume + My List
+- GET  /api/videos/status            — ffmpeg/ffprobe + VA-API/QSV/software capabilities
 - GET  /api/videos/browse?path=...   — subdirectories for the folder picker
 - GET  /api/videos/library?path=&q=  — folders + videos under a path (or all)
 - GET  /api/videos/stream?path=...   — Range-capable raw file streaming
+- POST /api/videos/hls               — start a bounded fMP4 HLS remux/transcode session
+- GET  /api/videos/hls/{sid}/…       — playlist/segments (owner-checked)
+- POST|DELETE /api/videos/hls/{sid}/stop
 - GET  /api/videos/transcode?path=&t=&a=&q=
-  Live processing piped as fragmented MP4; `t` = start offset, `a` = audio track
-  index (0-based among audio streams), `q` = quality preset. The server picks the
-  lightest path that works:
+  Legacy live fragmented-MP4 pipe (fallback / older clients). The server picks
+  the lightest path that works:
     remux     — video copied losslessly (-c:v copy), audio → AAC only when needed.
-                Real-time on any CPU; the common case for H.264 rips with AC3/EAC3/DTS.
-    transcode — full re-encode (Intel QSV h264 when available, libx264 otherwise)
-                + downscale to the preset's max height + AAC audio.
+    transcode — full re-encode (VA-API/QSV when available, libx264 otherwise) +
+                hardware decode when the per-file probe accepts it + AAC audio.
 - GET  /api/videos/subtitles?path=.. — sibling .srt/.vtt files for a video
 - GET  /api/videos/resume?path=...   — saved playback position (or null)
 - POST /api/videos/resume            — save/clear playback position
+- DELETE /api/videos/resume?path=... — remove from Continue Watching
+- GET  /api/videos/list              — per-user My List paths
+- POST /api/videos/list              — add/remove a path
+- DELETE /api/videos/list?path=...   — remove a path
 - GET  /api/videos/thumbnail?path=.  — ffmpeg frame grab, disk-cached (404 w/o ffmpeg)
 - GET  /api/videos/info?path=...     — ffprobe metadata, disk-cached
 - GET  /api/videos/tmdb/status       — TMDB key configured? + match count
@@ -46,14 +52,15 @@ import time
 from collections import deque
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from pydantic import BaseModel
 
 # Shared path sanitizer from the File Manager router (delegates to
 # services/path_scope.py, so the caller's identity is enforced here too).
 from backend.config import settings
 from backend.routers.files import _sanitize
-from backend.services import path_scope, tmdb_service, user_data
+from backend.services import path_scope, tmdb_service, user_data, video_engine, video_hls
 from backend.services.video_metadata import parse_video_name
 
 logger = logging.getLogger("ethos-nas.routers.video_station")
@@ -110,6 +117,9 @@ DEFAULT_CONFIG = {
         "auto_subtitles": True,
         # Series: start the next episode automatically on end.
         "autoplay_next": True,
+        # Decode with VA-API/QSV when the probe says the codec is supported;
+        # falls back to software automatically per file.
+        "hardware_decode": True,
     },
     # TMDB (Phase 6) — display-only metadata + locally cached artwork. Files
     # are never renamed or moved. api_key is masked in GET /config; an empty
@@ -117,15 +127,9 @@ DEFAULT_CONFIG = {
     "tmdb": {"api_key": "", "auto_fetch": True, "language": "pl-PL"},
 }
 
-QUALITY_PRESETS = {
-    # Tuned for a 4-core Celeron-class CPU (Intel N150): libx264 veryfast does
-    # ~8 fps at 1440p, so downscaling is what keeps live playback watchable.
-    "fast":     {"preset": "ultrafast", "crf": 28, "max_height": 720},
-    "balanced": {"preset": "veryfast",  "crf": 23, "max_height": 1080},
-    "high":     {"preset": "veryfast",  "crf": 20, "max_height": 0},  # 0 = source res
-}
+QUALITY_PRESETS = video_engine.QUALITY_PRESETS
 
-AUDIO_BITRATES = {"96k", "128k", "160k", "192k", "256k"}
+AUDIO_BITRATES = video_engine.AUDIO_BITRATES
 
 # Caps for the bounded "All Videos" recursive walk.
 ALL_VIDEOS_MAX_DEPTH = 8
@@ -134,44 +138,28 @@ ALL_VIDEOS_MAX_FILES = 10000
 FFMPEG_BIN = shutil.which("ffmpeg")
 # Audio codecs browsers decode natively inside <video>. Anything else (AC3/EAC3/
 # DTS/TrueHD — common in movie rips) must be transcoded to AAC.
-BROWSER_AUDIO_OK = {"aac", "mp3", "opus"}
+BROWSER_AUDIO_OK = video_engine.BROWSER_AUDIO_OK
 # Video codecs browsers reliably decode. HEVC/AV1/MPEG-4 etc. get re-encoded
 # to H.264 so playback works everywhere.
-BROWSER_VIDEO_OK = {"h264", "vp8", "vp9"}
+BROWSER_VIDEO_OK = video_engine.BROWSER_VIDEO_OK
 # Containers the browser can demux directly in <video>.
-STREAMABLE_EXTS = {".mp4", ".m4v", ".webm", ".mov"}
+STREAMABLE_EXTS = video_engine.STREAMABLE_EXTS
 
 
 def _playback_mode(info: dict, abs_path: str) -> str:
-    """How the browser should get this file.
-
-    - 'direct':   raw /stream — video codec, audio codec and container are all
-      natively playable (h264/vp8/vp9 + aac/mp3/opus in mp4/webm/mov).
-    - 'remux':    video stream copied losslessly into fragmented MP4; audio is
-      re-encoded to AAC only when the browser can't decode it (AC3/EAC3/DTS…).
-      Real-time on any CPU — the common case for H.264 movie rips with Dolby
-      Digital audio in MKV.
-    - 'transcode': full video re-encode + AAC; used when the video codec itself
-      is not browser-playable (HEVC/AV1/MPEG-2…).
-    """
-    if not FFMPEG_BIN:
-        return "direct"  # nothing else we can do; the player surfaces the error
-    ac = (info.get("audio_codec") or "").lower()
-    vc = (info.get("video_codec") or "").lower()
-    ext = os.path.splitext(abs_path)[1].lower()
-    video_ok = (not vc) or vc in BROWSER_VIDEO_OK
-    audio_ok = (not ac) or ac in BROWSER_AUDIO_OK
-    if video_ok and audio_ok and ext in STREAMABLE_EXTS:
-        return "direct"
-    if video_ok:
-        return "remux"
-    return "transcode"
+    """How the browser should get this file (see services/video_engine.py)."""
+    return video_engine.select_playback_mode(
+        info, abs_path, ffmpeg_available=bool(FFMPEG_BIN),
+    )
 
 def _needs_transcode(info: dict, abs_path: str) -> bool:
     """Kept for API compatibility (Android app): True when the file must go
     through /transcode instead of raw /stream."""
     return _playback_mode(info, abs_path) != "direct"
 FFPROBE_BIN = shutil.which("ffprobe")
+
+_ENGINE = video_engine.HardwareProbe(FFMPEG_BIN, FFPROBE_BIN)
+_HLS = video_hls.MANAGER
 
 _resume_lock = asyncio.Lock()
 
@@ -224,7 +212,7 @@ def _sanitize_options(options: dict) -> dict:
                 base[k] = v[:32]
             elif k == "preferred_audio_lang" and isinstance(v, str):
                 base[k] = v.strip().lower()[:8]
-            elif k in ("auto_subtitles", "autoplay_next"):
+            elif k in ("auto_subtitles", "autoplay_next", "hardware_decode"):
                 base[k] = bool(v)
     return base
 
@@ -405,7 +393,59 @@ def _walk_all(roots: list[str], query: str = "") -> dict:
             continue
 
     _attach_tmdb(videos)
-    return {"path": None, "parent": None, "folders": top_folders, "videos": videos}
+    return {"path": None, "parent": None, "folders": top_folders, "videos": videos,
+            "truncated": len(videos) >= ALL_VIDEOS_MAX_FILES}
+
+
+# ── Library cache (one walk shared by /home, /library, /bootstrap) ────────────
+
+_LIB_CACHE: dict = {"key": None, "ts": 0.0, "listing": None}
+_LIB_CACHE_TTL = 10.0
+_lib_cache_lock = asyncio.Lock()
+
+
+async def _walk_all_cached(roots: list[str], query: str = "", *, refresh: bool = False) -> dict:
+    """One bounded walk shared by home/library/bootstrap for a short TTL."""
+    key = tuple(roots)
+    cached = _LIB_CACHE.get("listing")
+    now = time.monotonic()
+    if (not refresh and cached is not None and _LIB_CACHE.get("key") == key
+            and now - float(_LIB_CACHE.get("ts") or 0) < _LIB_CACHE_TTL):
+        listing = cached
+    else:
+        async with _lib_cache_lock:
+            cached = _LIB_CACHE.get("listing")
+            now = time.monotonic()
+            if (not refresh and cached is not None and _LIB_CACHE.get("key") == key
+                    and now - float(_LIB_CACHE.get("ts") or 0) < _LIB_CACHE_TTL):
+                listing = cached
+            else:
+                listing = await asyncio.to_thread(_walk_all, roots, "")
+                _LIB_CACHE.update(key=key, ts=time.monotonic(), listing=listing)
+    if not query:
+        return listing
+    q = query.lower()
+    return {
+        **listing,
+        "videos": [v for v in listing.get("videos", []) if q in (v.get("name") or "").lower()],
+    }
+
+
+def _home_payload(videos: list[dict], resumes: dict, limit: int) -> dict:
+    cw: list[tuple[float, dict]] = []
+    for v in videos:
+        r = resumes.get(v["path"])
+        if not r or not r.get("duration"):
+            continue
+        t = float(r.get("time") or 0)
+        d = float(r["duration"])
+        if t < 5 or t >= d * 0.97:
+            continue
+        item = {**v, "resume_time": round(t, 2), "resume_duration": round(d, 2)}
+        cw.append((float(r.get("updated_at") or 0), item))
+    cw.sort(key=lambda x: x[0], reverse=True)
+    recently = sorted(videos, key=lambda v: v.get("modified") or 0, reverse=True)[:limit]
+    return {"continue_watching": [it for _, it in cw[:limit]], "recently_added": recently}
 
 
 # ── Resume positions ──────────────────────────────────────────────────────────
@@ -418,6 +458,19 @@ def _load_resume_map() -> dict:
 
 def _save_resume_map(m: dict) -> None:
     _resume_store().save(m)
+
+
+def _list_store():
+    """Per-user My List (server-side so web and Android agree)."""
+    return user_data.user_store("video_station_list.json")
+
+
+def _load_list_paths() -> list[str]:
+    data = _list_store().load()
+    paths = data.get("paths") if isinstance(data, dict) else None
+    if not isinstance(paths, list):
+        return []
+    return [p for p in paths if isinstance(p, str)][:2000]
 
 
 # ── ffprobe / ffmpeg helpers ──────────────────────────────────────────────────
@@ -464,6 +517,7 @@ def _ffprobe_sync(abs_path: str) -> dict:
         "width": _int((vstream or {}).get("width")),
         "height": _int((vstream or {}).get("height")),
         "video_codec": (vstream or {}).get("codec_name"),
+        "pix_fmt": (vstream or {}).get("pix_fmt"),
         "audio_codec": (astream or {}).get("codec_name"),
         "bitrate": _int(fmt.get("bit_rate")),
         # Every audio stream, in file order — index is the position among
@@ -496,8 +550,8 @@ async def _probe(abs_path: str) -> dict:
     async with _info_cache_lock:
         cache = _load_info_cache()
         hit = cache.get(key)
-        # schema 2 added audio_tracks; older entries are treated as misses.
-        if (hit and hit.get("schema") == 2 and hit.get("mtime") == st.st_mtime
+        # schema 3 added pix_fmt; older entries are treated as misses.
+        if (hit and hit.get("schema") == 3 and hit.get("mtime") == st.st_mtime
                 and hit.get("size") == st.st_size):
             return {k: v for k, v in hit.items() if k not in ("mtime", "size", "schema")}
 
@@ -511,7 +565,7 @@ async def _probe(abs_path: str) -> dict:
 
     async with _info_cache_lock:
         cache = _load_info_cache()
-        cache[key] = {"schema": 2, "mtime": st.st_mtime, "size": st.st_size,
+        cache[key] = {"schema": 3, "mtime": st.st_mtime, "size": st.st_size,
                       "checked_at": __import__("time").time(), **info}
         try:
             _save_info_cache(cache)
@@ -584,6 +638,18 @@ async def set_config(payload: dict = Body(...)) -> dict:
     _save_config(cfg)
     return {**cfg, "tmdb": _mask_tmdb(cfg["tmdb"])}
 
+def _engine_status_payload(hw: dict) -> dict:
+    return {
+        "ffmpeg": bool(FFMPEG_BIN),
+        "ffprobe": bool(FFPROBE_BIN),
+        "qsv": hw.get("encoder") == "qsv",      # kept for older clients
+        "vaapi": hw.get("encoder") == "vaapi",
+        "encoder": hw.get("encoder"),
+        "hw": hw,
+        "active_transcodes": video_engine.LIMITER.snapshot(),
+    }
+
+
 @router.get("/status")
 async def status(refresh: bool = False) -> dict:
     """Media-engine capabilities for the settings UI (HW probe is cached).
@@ -591,17 +657,8 @@ async def status(refresh: bool = False) -> dict:
     `?refresh=1` forces a fresh GPU probe — handy after installing a driver or
     fixing device permissions without bouncing the whole service.
     """
-    global _hw_cache, _dri_node_cache
-    if refresh:
-        _hw_cache = None
-        _dri_node_cache = None
-    hw = await _hw_encoder()
-    return {
-        "ffmpeg": bool(FFMPEG_BIN),
-        "ffprobe": bool(FFPROBE_BIN),
-        "qsv": hw["encoder"] == "qsv",          # kept for older clients
-        "hw": hw,
-    }
+    hw = await _ENGINE.status(refresh=refresh)
+    return _engine_status_payload(hw)
 
 
 @router.get("/browse")
@@ -648,42 +705,43 @@ async def browse(path: str | None = Query(default=None)) -> dict:
 async def library(
     path: str | None = Query(default=None),
     q: str = Query(default=""),
+    refresh: bool = Query(default=False),
 ) -> dict:
     """Folder listing (single level) or the bounded 'All Videos' walk."""
     if not path:
         cfg = _load_config()
-        return await asyncio.to_thread(_walk_all, cfg["roots"], q)
+        return await _walk_all_cached(cfg["roots"], q, refresh=refresh)
     return await asyncio.to_thread(_list_dir, path, q)
 
 
 @router.get("/home")
 async def home(limit: int = Query(default=12, ge=1, le=50)) -> dict:
-    """Jellyfin-style home rows computed from one bounded walk over all roots.
-
-    - continue_watching: items with a live resume position (5 s < t < 97 %),
-      most recently watched first; each carries resume_time/resume_duration.
-    - recently_added: top N by file mtime.
-    """
+    """Jellyfin-style home rows computed from one bounded walk over all roots."""
     cfg = _load_config()
-    listing = await asyncio.to_thread(_walk_all, cfg["roots"], "")
-    videos = listing.get("videos", [])
+    listing = await _walk_all_cached(cfg["roots"])
+    return _home_payload(listing.get("videos", []), _load_resume_map(), limit)
+
+
+@router.get("/bootstrap")
+async def bootstrap(limit: int = Query(default=12, ge=1, le=50)) -> dict:
+    """One call for the app shell: config + engine + home + roots + resume + list."""
+    cfg = _load_config()
+    listing = await _walk_all_cached(cfg["roots"])
     resumes = _load_resume_map()
-
-    cw: list[tuple[float, dict]] = []
-    for v in videos:
-        r = resumes.get(v["path"])
-        if not r or not r.get("duration"):
-            continue
-        t = float(r.get("time") or 0)
-        d = float(r["duration"])
-        if t < 5 or t >= d * 0.97:
-            continue
-        item = {**v, "resume_time": round(t, 2), "resume_duration": round(d, 2)}
-        cw.append((float(r.get("updated_at") or 0), item))
-    cw.sort(key=lambda x: x[0], reverse=True)
-
-    recently = sorted(videos, key=lambda v: v.get("modified") or 0, reverse=True)[:limit]
-    return {"continue_watching": [it for _, it in cw[:limit]], "recently_added": recently}
+    hw = await _ENGINE.status()
+    username, role = path_scope.current_identity()
+    return {
+        "config": {**cfg, "tmdb": _mask_tmdb(cfg.get("tmdb") or {}),
+                   "allowed_roots": list(path_scope.allowed_roots(username, role))},
+        "status": _engine_status_payload(hw),
+        "home": _home_payload(listing.get("videos", []), resumes, limit),
+        "roots": cfg.get("roots", []),
+        "folders": listing.get("folders", []),
+        "total": len(listing.get("videos", [])),
+        "truncated": bool(listing.get("truncated")),
+        "resume": resumes,
+        "list": _load_list_paths(),
+    }
 
 @router.get("/stream")
 async def stream(path: str = Query(...)) -> FileResponse:
@@ -706,163 +764,27 @@ async def stream(path: str = Query(...)) -> FileResponse:
     return FileResponse(abs_path, media_type=media_type)
 
 
-_hw_cache: dict | None = None
-_dri_node_cache: str | None = None
-_dri_reason_cache: str | None = None
-
-
-def _dri_probe() -> tuple[str | None, str]:
-    """(first usable /dev/dri/renderD* node, explanation when unusable).
-
-    Permission denied is by far the common case — the node is root:render 0660
-    and the service user is not in `render` — so the explanation names the exact
-    commands to run instead of a generic "unavailable".
-    """
-    global _dri_node_cache, _dri_reason_cache
-    if _dri_node_cache is None:
-        try:
-            nodes = sorted(f"/dev/dri/{n}" for n in os.listdir("/dev/dri")
-                           if n.startswith("renderD"))
-        except OSError:
-            nodes = []
-        _dri_node_cache, _dri_reason_cache = "", ""
-        if not nodes:
-            _dri_reason_cache = "no /dev/dri/renderD* node — no GPU is exposed to this host"
-        else:
-            for p in nodes:
-                if os.access(p, os.R_OK | os.W_OK):
-                    _dri_node_cache = p
-                    break
-            if not _dri_node_cache:
-                import getpass
-                try:
-                    user = getpass.getuser()
-                except Exception:
-                    user = "ethos-nas"
-                _dri_reason_cache = (
-                    f"{nodes[0]} exists but user '{user}' cannot open it (root:render 0660) — run: "
-                    f"sudo usermod -aG render,video {user} && sudo systemctl restart ethos-nas")
-    return (_dri_node_cache or None), (_dri_reason_cache or "")
-
-
-def _dri_render_node() -> str | None:
-    """First /dev/dri/renderD* node this process can actually open, or None."""
-    return _dri_probe()[0]
-
-
-async def _probe_encoder(args: list[str]) -> bool:
-    """Micro-encode 0.4 s of testsrc through the given encoder arguments."""
-    if not FFMPEG_BIN:
-        return False
-    cmd = [FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-nostdin",
-           "-f", "lavfi", "-i", "testsrc2=duration=0.4:size=640x360:rate=30",
-           *args, "-f", "null", "-"]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        return (await asyncio.wait_for(proc.wait(), timeout=25)) == 0
-    except Exception as exc:
-        logger.warning("HW encoder probe failed (%s): %s", " ".join(args[:2]), exc)
-        return False
-
-
 async def _hw_encoder() -> dict:
-    """Detect the best hardware H.264 encoder once per server run.
-
-    Cascade: Intel QuickSync (h264_qsv / oneVPL) → VA-API (h264_vaapi on the
-    iHD driver) → None (software libx264). Each tier is validated with a real
-    micro-encode, so a build with the encoder compiled in but a missing or
-    permission-denied render node is never assumed to work.
-    """
-    global _hw_cache
-    if _hw_cache is not None:
-        return _hw_cache
-    res: dict = {"encoder": None, "device": None, "reason": ""}
-    dev, why = _dri_probe()
-    if not dev:
-        res["reason"] = why
-        _hw_cache = res
-        logger.info("Videos media engine: software libx264 (%s)", res["reason"])
-        return res
-    if await _probe_encoder(["-c:v", "h264_qsv", "-b:v", "2M", "-pix_fmt", "nv12"]):
-        res.update(encoder="qsv", device=dev, reason=f"Intel QuickSync via {dev}")
-    elif await _probe_encoder(["-vaapi_device", dev, "-vf", "format=nv12,hwupload",
-                               "-c:v", "h264_vaapi", "-b:v", "2M"]):
-        res.update(encoder="vaapi", device=dev, reason=f"VA-API H.264 encode via {dev}")
-    else:
-        res["reason"] = f"no working hardware H.264 encoder on {dev} — using libx264"
-    _hw_cache = res
-    logger.info("Videos media engine: %s", res["reason"] or "software libx264")
-    return res
+    """Compatibility wrapper around the cached engine probe."""
+    st = await _ENGINE.status()
+    return {"encoder": st.get("encoder"), "device": st.get("device"),
+            "reason": st.get("reason", "")}
 
 
 def _transcode_bitrate(width: int, height: int) -> str:
-    px = (width or 0) * (height or 0)
-    if px >= 1920 * 1080:
-        return "6M"
-    if px >= 1280 * 720:
-        return "4M"
-    if px >= 854 * 480:
-        return "2.5M"
-    return "1.5M"
+    return video_engine.bitrate_for(width, height)
 
 
 def _build_transcode_cmd(abs_path: str, info: dict, start: float, hw: str | None,
                          mode: str, track_idx: int, quality: str,
-                         audio_bitrate: str) -> list[str]:
-    w = info.get("width") or 0
-    h = info.get("height") or 0
-    preset = QUALITY_PRESETS.get(quality) or QUALITY_PRESETS["balanced"]
-
-    # Filters run in order. Hardware encoders need frames on the GPU, so the
-    # CPU-side downscale happens first and hwupload is always the last step.
-    vf: list[str] = []
-    if mode == "transcode" and preset["max_height"] and h > preset["max_height"]:
-        # Downscale before encoding — on a Celeron-class CPU this is the
-        # difference between watchable and unwatchable for 4K/8K sources.
-        vf.append(f"scale=-2:{preset['max_height']}")
-
-    pre: list[str] = []   # global options (must precede -i)
-    if mode == "remux":
-        v = ["-c:v", "copy"]
-    elif hw == "qsv":
-        # Intel QuickSync: hardware H.264 encode, no B-frames for low latency,
-        # short GOP so fragments stay small in the live pipe.
-        v = ["-c:v", "h264_qsv", "-preset", "veryfast",
-             "-b:v", _transcode_bitrate(w, h), "-g", "30", "-bf", "0",
-             "-pix_fmt", "yuv420p"]
-    elif hw == "vaapi":
-        # VA-API (iHD driver, low-power EncSliceLP on Alder Lake-N / N150).
-        dev = _dri_render_node()
-        pre = ["-vaapi_device", dev] if dev else []
-        vf += ["format=nv12", "hwupload"]
-        v = ["-c:v", "h264_vaapi", "-b:v", _transcode_bitrate(w, h),
-             "-g", "30", "-bf", "0"]
-    else:
-        v = ["-c:v", "libx264", "-preset", preset["preset"], "-crf", str(preset["crf"]),
-             # Short GOP: with the default 250-frame GOP a slow CPU would take
-             # ~a minute to emit the first fragment of the live pipe.
-             "-g", "30",
-             "-maxrate", _transcode_bitrate(w, h), "-bufsize", "16M",
-             "-pix_fmt", "yuv420p"]
-    vf_args = ["-vf", ",".join(vf)] if vf else []
-
-    # Audio: pick the requested track (clamped); copy it when it's already AAC,
-    # otherwise encode to AAC so every browser can play it with sound.
-    tracks = info.get("audio_tracks") or []
-    idx = min(max(0, int(track_idx)), max(0, len(tracks) - 1)) if tracks else 0
-    acodec = (tracks[idx].get("codec") or "") if idx < len(tracks) else ""
-    if mode == "remux" and acodec == "aac":
-        a = ["-map", f"0:a:{idx}?", "-c:a", "copy"]
-    else:
-        a = ["-map", f"0:a:{idx}?", "-c:a", "aac", "-b:a", audio_bitrate]
-
-    return [FFMPEG_BIN or "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", settings.FFMPEG_LOGLEVEL,
-            *pre, "-ss", f"{start:.3f}", "-i", abs_path,
-            "-map", "0:v:0", *v, *vf_args, *a,
-            # Fragmented MP4: empty moov up front + one fragment per keyframe so
-            # the browser starts playing immediately from a non-seekable pipe.
-            "-f", "mp4", "-movflags", "+frag_keyframe+empty_moov", "pipe:1"]
+                         audio_bitrate: str, *, decode_hw: bool = False,
+                         device: str | None = None) -> list[str]:
+    """Compatibility wrapper — the real builder lives in services/video_engine.py."""
+    return video_engine.build_transcode_cmd(
+        FFMPEG_BIN or "ffmpeg", abs_path, info, start, hw, mode, track_idx,
+        quality, audio_bitrate, decode_hw=decode_hw, device=device,
+        loglevel=settings.FFMPEG_LOGLEVEL,
+    )
 
 
 async def _drain_stderr(stream, sink: deque) -> None:
@@ -907,58 +829,175 @@ async def transcode(
         start = max(0.0, duration - 2)  # don't start inside the final GOP
 
     quality = q if q in QUALITY_PRESETS else "balanced"
-    audio_bitrate = _load_config()["options"]["audio_bitrate"]
-    hw = (await _hw_encoder())["encoder"] if mode == "transcode" else None
-    hw_tag = hw or "none"
-    cmd = _build_transcode_cmd(abs_path, info, start, hw, mode, a, quality,
-                               audio_bitrate)
-    logger.info("Transcode start | mode=%s hw=%s track=%d q=%s input=%s t=%.2f\ncmd: %s",
-                mode, hw_tag, a, quality, abs_path, start, shlex.join(cmd))
+    cfg_options = _load_config()["options"]
+    audio_bitrate = cfg_options["audio_bitrate"]
+    engine_status = await _ENGINE.status()
+    encoder = engine_status.get("encoder") if mode == "transcode" else None
+    decode_hw = False
+    if mode == "transcode" and encoder and cfg_options.get("hardware_decode", True):
+        decode_hw, _decode_reason = await _ENGINE.can_decode_hw(
+            abs_path, info, encoder, engine_status.get("device"),
+        )
+    cmd = video_engine.build_transcode_cmd(
+        FFMPEG_BIN, abs_path, info, start, encoder, mode, a, quality,
+        audio_bitrate, decode_hw=decode_hw, device=engine_status.get("device"),
+        loglevel=settings.FFMPEG_LOGLEVEL,
+    )
+    hw_tag = encoder or "none"
+    decode_tag = "hw" if decode_hw else "sw"
+    logger.info("Transcode start | mode=%s hw=%s decode=%s track=%d q=%s input=%s t=%.2f\ncmd: %s",
+                mode, hw_tag, decode_tag, a, quality, abs_path, start, shlex.join(cmd))
+
+    if not await video_engine.LIMITER.acquire(timeout=5.0):
+        raise HTTPException(status_code=429, detail="Transcoder is busy — try again in a moment",
+                            headers={"Retry-After": "5"})
 
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     except Exception as exc:
+        await video_engine.LIMITER.release()
         logger.error("Transcode spawn failed | input=%s: %s", abs_path, exc)
         raise HTTPException(status_code=502, detail=f"Could not start transcode: {exc}") from exc
 
     async def _stream():
-        if proc.stdout is None or proc.stderr is None:   # unreachable — both are PIPEd
-            return
         err_tail = deque(maxlen=64)  # 16 KiB chunks → ≤1 MiB of stderr kept
-        drain = asyncio.create_task(_drain_stderr(proc.stderr, err_tail))
+        drain: asyncio.Task | None = None
         t0 = time.monotonic()
         try:
-            while True:
-                chunk = await proc.stdout.read(1 << 16)
-                if not chunk:
-                    break
-                yield chunk
-            await proc.wait()
+            if proc.stdout is not None and proc.stderr is not None:
+                drain = asyncio.create_task(_drain_stderr(proc.stderr, err_tail))
+                while True:
+                    chunk = await proc.stdout.read(1 << 16)
+                    if not chunk:
+                        break
+                    yield chunk
+                await proc.wait()
         finally:
-            drain.cancel()
+            if drain is not None:
+                drain.cancel()
             if proc.returncode is None:  # client went away → kill ffmpeg
                 with contextlib.suppress(ProcessLookupError):
                     proc.kill()
             with contextlib.suppress(Exception, asyncio.CancelledError):
                 await proc.wait()
+            await video_engine.LIMITER.release()
             tail = b"".join(err_tail).decode("utf-8", "replace")[-2000:]
             elapsed = time.monotonic() - t0
             if proc.returncode == 0:
-                logger.info("Transcode done | mode=%s hw=%s input=%s elapsed=%.1fs",
-                            mode, hw_tag, abs_path, elapsed)
+                logger.info("Transcode done | mode=%s hw=%s decode=%s input=%s elapsed=%.1fs",
+                            mode, hw_tag, decode_tag, abs_path, elapsed)
             elif proc.returncode is None or proc.returncode < 0:
                 # Killed by us — the client disconnected (seek/close). Normal.
-                logger.info("Transcode stopped (client gone) | mode=%s hw=%s input=%s "
-                            "elapsed=%.1fs", mode, hw_tag, abs_path, elapsed)
+                logger.info("Transcode stopped (client gone) | mode=%s hw=%s decode=%s input=%s "
+                            "elapsed=%.1fs", mode, hw_tag, decode_tag, abs_path, elapsed)
             else:
                 logger.error(
-                    "Transcode FAILED | mode=%s hw=%s input=%s rc=%s elapsed=%.1f\n"
-                    "--- stderr ---\n%s", mode, hw_tag, abs_path, proc.returncode,
+                    "Transcode FAILED | mode=%s hw=%s decode=%s input=%s rc=%s elapsed=%.1f\n"
+                    "--- stderr ---\n%s", mode, hw_tag, decode_tag, abs_path, proc.returncode,
                     elapsed, tail or "(empty)")
 
     return StreamingResponse(_stream(), media_type="video/mp4",
-                             headers={"Cache-Control": "no-store"})
+                             headers={"Cache-Control": "no-store",
+                                      "X-Ethos-Mode": mode,
+                                      "X-Ethos-Encoder": hw_tag,
+                                      "X-Ethos-Decode": decode_tag})
+
+
+class HlsRequest(BaseModel):
+    path: str
+    t: float = 0.0
+    a: int = 0
+    q: str = "balanced"
+
+
+@router.post("/hls")
+async def start_hls(payload: HlsRequest) -> dict:
+    """Start a bounded fMP4 HLS session for non-direct media (mobile-friendly)."""
+    abs_path = _sanitize(payload.path)
+    if not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not FFMPEG_BIN:
+        raise HTTPException(status_code=503, detail="ffmpeg not available")
+    info = await _probe(abs_path)
+    mode = _playback_mode(info, abs_path)
+    if mode == "direct":
+        raise HTTPException(status_code=400, detail="This file can be streamed directly")
+    duration = float(info.get("duration") or 0)
+    start = max(0.0, float(payload.t))
+    if duration and start >= duration - 1:
+        start = max(0.0, duration - 2)
+    quality = payload.q if payload.q in QUALITY_PRESETS else "balanced"
+    cfg_options = _load_config()["options"]
+    audio_bitrate = cfg_options["audio_bitrate"]
+    engine_status = await _ENGINE.status()
+    encoder = engine_status.get("encoder") if mode == "transcode" else None
+    decode_hw = False
+    if mode == "transcode" and encoder and cfg_options.get("hardware_decode", True):
+        decode_hw, _reason = await _ENGINE.can_decode_hw(
+            abs_path, info, encoder, engine_status.get("device"),
+        )
+
+    def _factory(out_dir: str) -> list[str]:
+        return video_engine.build_hls_cmd(
+            FFMPEG_BIN, abs_path, info, start, encoder, mode, payload.a, quality,
+            audio_bitrate, out_dir, decode_hw=decode_hw,
+            device=engine_status.get("device"), loglevel=settings.FFMPEG_LOGLEVEL,
+        )
+
+    try:
+        session = await _HLS.start(
+            user_data.current_username(), abs_path, _factory,
+            mode=mode, encoder=encoder, decode_hw=decode_hw,
+        )
+    except video_hls.HlsLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc),
+                            headers={"Retry-After": "5"}) from exc
+    except video_hls.HlsStartError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "session": session.sid,
+        "playlist": f"/api/videos/hls/{session.sid}/index.m3u8",
+        "duration": duration,
+        "mode": mode,
+        "encoder": encoder,
+        "decode": "hw" if decode_hw else "sw",
+        "audio_tracks": info.get("audio_tracks", []),
+    }
+
+
+@router.get("/hls/{sid}/index.m3u8")
+async def hls_playlist(sid: str, request: Request) -> Response:
+    """Serve the rewritten playlist (segment URIs keep ?token= for API keys)."""
+    session = await _HLS.get(sid, user_data.current_username())
+    if not session:
+        raise HTTPException(status_code=404, detail="Stream session not found")
+    try:
+        text = await asyncio.to_thread(session.playlist.read_text, encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="Playlist is not ready") from exc
+    body = video_hls.rewrite_playlist(text, request.query_params.get("token"))
+    return Response(content=body, media_type="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "no-store"})
+
+
+@router.api_route("/hls/{sid}/stop", methods=["POST", "DELETE"])
+async def stop_hls(sid: str) -> dict:
+    if not await _HLS.stop(sid, user_data.current_username()):
+        raise HTTPException(status_code=404, detail="Stream session not found")
+    return {"ok": True}
+
+
+@router.get("/hls/{sid}/{name}")
+async def hls_segment(sid: str, name: str) -> FileResponse:
+    session = await _HLS.get(sid, user_data.current_username())
+    if not session:
+        raise HTTPException(status_code=404, detail="Stream session not found")
+    target = video_hls.segment_path(session, name)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    return FileResponse(str(target), media_type="video/mp4",
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.get("/subtitles")
@@ -1025,6 +1064,67 @@ async def set_resume(payload: dict = Body(...)) -> dict:
                            "updated_at": __import__("time").time()}
         _save_resume_map(m)
     return {"ok": True}
+
+
+@router.delete("/resume")
+async def clear_resume(path: str = Query(...)) -> dict:
+    """Remove a title from Continue Watching without touching the file."""
+    abs_path = _sanitize(path)
+
+    def _drop(data):
+        if isinstance(data, dict):
+            data.pop(abs_path, None)
+            return data
+        return {}
+
+    _resume_store().update(_drop)
+    return {"ok": True}
+
+
+class ListUpdate(BaseModel):
+    path: str
+    add: bool = True
+
+
+@router.get("/list")
+async def get_list() -> dict:
+    """Per-user My List (server-side so web and Android agree)."""
+    return {"paths": _load_list_paths()}
+
+
+@router.post("/list")
+async def set_list(payload: ListUpdate) -> dict:
+    abs_path = _sanitize(payload.path)
+    if payload.add and not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    def _mutate(data):
+        paths = data.get("paths") if isinstance(data, dict) else []
+        if not isinstance(paths, list):
+            paths = []
+        paths = [p for p in paths if isinstance(p, str) and p != abs_path]
+        if payload.add:
+            paths.insert(0, abs_path)
+        data["paths"] = paths[:2000]
+        return data
+
+    _list_store().update(_mutate)
+    return {"paths": _load_list_paths()}
+
+
+@router.delete("/list")
+async def delete_list(path: str = Query(...)) -> dict:
+    abs_path = _sanitize(path)
+
+    def _mutate(data):
+        paths = data.get("paths") if isinstance(data, dict) else []
+        if not isinstance(paths, list):
+            paths = []
+        data["paths"] = [p for p in paths if isinstance(p, str) and p != abs_path]
+        return data
+
+    _list_store().update(_mutate)
+    return {"paths": _load_list_paths()}
 
 
 @router.get("/thumbnail")
@@ -1097,6 +1197,14 @@ async def info(path: str = Query(...)) -> dict:
     mode = _playback_mode(result, abs_path)
     result["playback_mode"] = mode
     result["needs_transcode"] = mode != "direct"
+    st = _ENGINE.cached_status() or {}
+    decode = st.get("decode") or {}
+    result["engine"] = {
+        "mode": mode,
+        "encoder": st.get("encoder") if mode == "transcode" else None,
+        "hw_decode_capable": bool(decode.get("vaapi") or decode.get("qsv")),
+        "probed": bool(st),
+    }
     return {"info": result}
 
 # ── TMDB metadata + local artwork (Phase 6) ───────────────────────────────────

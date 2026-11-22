@@ -98,7 +98,7 @@ Photos, Music and Videos have **no service at all**: they are files-only package
 native UI module that calls the core API with the caller's own JWT through `ctx.apiFetch`. That is
 why they need neither `user_access` nor a loopback port — and why the Android apps (which use
 `/api/gallery`, `/api/music`, `/api/videos`) are unaffected. A files-only package carries no
-runtime, so `status` reports `not_configured` and Packages shows no start/stop buttons.
+runtime, so `status` reports `ready` and Packages shows no start/stop buttons.
 
 Internal launchers keep working: Files still calls `openApp('gallery')`, and `app.js` maps
 legacy ids (`gallery`, `music`, `videos`, `kanban`) to their package.

@@ -302,6 +302,97 @@ filename carries an IMDb id, and richer display data (genres/cast/runtime).
       via IMDb id with genres/cast extras + original-size poster on disk.
       34/34 green (2026-10-12).
 
+## Phase 8 — Cinema UI + HLS + hardware engine (2026-11-22)
+
+This phase supersedes the 2026-10-04 HW note below: after the service user was
+added to `render`/`video`, the VA-API H.264 micro-encode **passes** on this host
+(production log: `Videos media engine: VA-API H.264 encode via
+/dev/dri/renderD128`). QuickSync still fails with `MFX session: -9` because the
+oneVPL implementation is missing; libx264 remains the software fallback.
+
+### Hardware engine
+
+- `backend/services/video_engine.py` owns playback-mode selection, ffmpeg
+  argument builders and the cached `HardwareProbe` (QSV → VA-API → libx264,
+  real micro-encode, captured stderr tails, pinned QSV device, probe lock/TTL).
+- Transcode now uses **VA-API/QSV hardware decode** when a short per-file probe
+  accepts the codec (`-hwaccel vaapi -hwaccel_output_format vaapi` +
+  `scale_vaapi` / `h264_vaapi`), with automatic software decode + `hwupload`
+  fallback. `config.options.hardware_decode` (default on) is the kill switch.
+- Bitrate follows the **downscaled target height**, not the source resolution.
+- `/api/videos/status` adds `encoder`, `vaapi`, `active_transcodes` and a
+  structured `hw` object (`device`, `reason`, `candidates.{qsv,vaapi,libx264}`
+  with ffmpeg stderr, `decode`, `ffmpeg_version`, `probed_at`); `qsv` stays for
+  compatibility. `/api/videos/info` adds `engine`; transcode/HLS responses send
+  `X-Ethos-Mode`, `X-Ethos-Encoder`, `X-Ethos-Decode`.
+- A global limiter caps concurrent transcode/HLS work at 2 (HTTP 429 + Retry-After).
+
+### HLS sessions
+
+- `backend/services/video_hls.py`: per-session temp dir under
+  `<DATA_DIR>/video_hls/<sid>`, owner-checked, uuid4 ids, `-re` real-time read,
+  fMP4 segments (`-hls_time 4`, list 10 ≈ 40 s), `delete_segments` +
+  `independent_segments` + `temp_file`, init.mp4. Caps: 2 sessions global, 1 per
+  user; idle TTL 120 s, dir TTL 600 s; sweeper registered with `task_registry`;
+  `stop_all()` on app shutdown.
+- Endpoints (JWT + `path_scope.scope_request`, no public paths):
+  `POST /api/videos/hls`, `GET /api/videos/hls/{sid}/index.m3u8` (rewrites
+  segment URIs with `?token=` for API-key clients), `GET /hls/{sid}/{init.mp4|segNNNNN.m4s}`
+  (strict allowlist), `POST|DELETE /hls/{sid}/stop`. `/transcode` stays as the
+  legacy pipe/fallback.
+- Player contract: start at an absolute `t`; far seeks restart the session at
+  the target; audio/quality changes restart with `a=`/`q=`; resume times are
+  absolute.
+
+### Library API
+
+- One short-TTL walk cache (10 s) shared by `/home`, `/library` and the new
+  `GET /api/videos/bootstrap`; `truncated` reports the 10 000-file cap.
+- `DELETE /api/videos/resume?path=` removes a title from Continue Watching.
+- Per-user My List: `GET /api/videos/list`, `POST /api/videos/list` (add/remove
+  by path), `DELETE /api/videos/list?path=` (store `video_station_list.json`,
+  capped at 2 000 paths). The web package migrates the old localStorage list.
+
+### Web package 2.0.0
+
+- Full-bleed cinema UI (documented media exception): top nav, backdrop hero,
+  poster shelves, Movies/Series/show-detail, Library, Search, My List, Settings
+  and an immersive player; bottom tab bar on phones and touch-sized controls.
+- HLS via native playback (Safari/iOS) or a lazily loaded `frontend/hls.min.js`
+  (hls.js 1.7.4, Apache-2.0); `/transcode` fallback. Settings → Media engine
+  shows the encoder candidates/reasons, hardware decode, active streams and a
+  “Test hardware encode” refresh.
+- New `data-testid` coverage, event delegation (no `window._vs*` globals or
+  inline `onclick`), `ctx.notifications`/`ctx.progress`/`ctx.modal.confirm`,
+  lazy posters and incremental grids.
+
+### Android 1.4.0
+
+- Uses `/api/videos/hls` for remux/transcode and multi-audio files, ExoPlayer
+  native HLS, absolute resume mapping, far-seek/audio/quality session restarts,
+  decoder fallback (`DefaultRenderersFactory.setEnableDecoderFallback(true)`),
+  resume merge from `/resume/all`, server My List/options helpers; player stats
+  show Direct/HLS + NAS encoder.
+
+### Tests
+
+- `tests/test_video_engine.py` (47 checks), `tests/test_video_hls.py` (13),
+  `tests/test_video_library.py` (11), `tests/test_video_api.py` (17: isolated
+  server, HLS playlist/segment/token/owner, resume delete, per-user My List,
+  auth/scope), router smoke 139/139, Android `testDebugUnitTest` green.
+
+### File map
+
+| Concern | File |
+|---|---|
+| Engine/probe/builders | `backend/services/video_engine.py` |
+| HLS sessions | `backend/services/video_hls.py` |
+| Endpoints | `backend/routers/video_station.py` |
+| Shutdown hook | `backend/main.py` |
+| Tests | `tests/test_video_{engine,hls,library,api}.py` |
+| Package UI | `ethos-packages/ethos-video/frontend/app.js` + `hls.min.js` |
+| Android | `ethos-video/.../playback/{PlaybackManager,PlaybackPlan,PlayerService}.kt` |
+
 ## Status
 - [x] Phase 1 — docs + metadata service + API enrichment + /home endpoint
 - [x] Phase 2 — frontend home/movies/series + player subtitle picker
@@ -312,6 +403,8 @@ filename carries an IMDb id, and richer display data (genres/cast/runtime).
 - [x] Phase 6 — TMDB metadata + local posters (display-only, no renames)
 - [x] Phase 7 — localized metadata (language setting), original-size artwork,
       IMDb exact match, genres/cast/runtime details
+- [x] Phase 8 — cinema UI 2.0, HLS sessions, VA-API hardware decode/encode,
+      media-engine diagnostics, per-user My List, Android HLS parity
 
 ## Verification log
 | Date | What | Result |
