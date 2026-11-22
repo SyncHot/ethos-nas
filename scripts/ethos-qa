@@ -284,14 +284,17 @@ def check_package(pkg_dir: Path, manifest: dict, base_url: str, version: tuple[i
                        f"{polish} character(s) of non-English copy in the native UI — the rest of "
                        "EthOS is English")
         own_vars = set(re.findall(r"(--[a-z][a-z0-9-]{2,})\s*:", source))
-        has_dark = bool(re.search(r"(?:\.dark\b|prefers-color-scheme:\s*dark)", source))
+        # A palette pair is either dark overrides on a light base or light overrides
+        # on a dark base (the Code Editor workbench is dark by default).
+        has_switch = bool(re.search(
+            r"(?:\.dark\b|\.light\b|prefers-color-scheme:\s*dark)", source))
         host_tokens = len(re.findall(r"var\(--(?:text|surface|border|accent|bg)-", source))
         hexes = len(set(re.findall(r"#[0-9a-fA-F]{3,8}\b", source)))
         if len(own_vars) >= 8:
-            row["theme"] = f"own tokens ({len(own_vars)})" + (" + dark" if has_dark else "")
-            if not has_dark:
+            row["theme"] = f"own tokens ({len(own_vars)})" + (" + 2 themes" if has_switch else "")
+            if not has_switch:
                 report.add("S16", "warn", pkg_id,
-                           f"defines {len(own_vars)} palette variables but no dark palette")
+                           f"defines {len(own_vars)} palette variables but only one theme")
         elif host_tokens >= 5:
             row["theme"] = f"host tokens ({host_tokens})"
             report.add("S16", "warn", pkg_id,

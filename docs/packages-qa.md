@@ -61,7 +61,7 @@ scheme · `S17` catalog copy · `S18` language · `A01–A06` live API/health/lo
 | `ethos-books` | 1.2.1 | native | 8089 | own tokens (21) + dark | 67 | 0 |
 | `ethos-cleaner` | 1.0.1 | native | — | host tokens (46) | 13 | 0 |
 | `ethos-docker` | 1.0.5 | native | — | own tokens (21) + dark | 52 | 0 |
-| `ethos-editor` | 1.0.1 | native | — | literal palette (80 colours) | 226 | 0 |
+| `ethos-editor` | 1.0.2 | native | — | own tokens (26) + 2 themes | 229 | 0 |
 | `ethos-git` | 1.0.1 | window | 3005 | — | 0 | 0 |
 | `ethos-git-diff` | 1.0.1 | native | — | host tokens (18) | 34 | 0 |
 | `ethos-kanban` | 1.0.3 | native | 8098 | host tokens (34) | 36 | 0 |
@@ -138,13 +138,16 @@ several are valueless attributes such as `data-scan-custom`, which the checker i
   `ethos-qa` now share the same "hook" definition and both report zero findings. AntiVirus's three
   unhooked buttons are covered by its `data-scan`/`data-tab` attributes.
 
-### ☐ P1-05 · `ethos-editor` is a package that needs the core's stylesheet
-The 200 KB module ships **no CSS**: all 406 `.ed-*` rules live in the core
-`frontend/index.html` (200 KB) and its palette is 80 literal colours with no variables. That breaks
-the "native module must be self-contained" rule, keeps the core's design system from being extracted
-(`TODO` P3-10) and makes the editor invisible to any other host.
-- **Fix.** Move the `.ed-*` block into the module (tokenised, light + dark), then delete it from
-  `index.html`. Related: P3-04 (split the module).
+### ☑ P1-05 · `ethos-editor` is a package that needed the core's stylesheet
+The 200 KB module shipped **no CSS**: all 195 `.ed-*` classes (804 lines) were defined only in the
+core `frontend/index.html`, so the package could not style itself anywhere else and kept P3-10
+blocked.
+- **Fix.** `ethos-editor` 1.0.2 (`74b56b4`) embeds that block and injects it once per page
+  (`<style id="ethos-editor-styles">`, created in `render()`). Verified with a computed-style
+  snapshot of `.ed-shell`/`.ed-menubar`/`.ed-editor` (identical before/after) and by disabling the
+  core `<style>` in the page: the shell still lays out from the package copy alone.
+- **Follow-up.** The core block stays for now so an installed 1.0.1 keeps working; delete it once
+  1.0.2 is everywhere (`TODO` Q-08), which is what actually shrinks `index.html`.
 
 ## P2 — inconsistency / polish
 
@@ -155,8 +158,10 @@ the "native module must be self-contained" rule, keeps the core's design system 
   entry; the real entries were 240–430 chars. Long **descriptions** are informational: the catalog
   table shows 150 chars, the dialog shows all of it.
 - **Theme scheme drift.** `ethos-cleaner`, `ethos-git-diff`, `ethos-kanban`, `ethos-photos` style
-  themselves with the core's `--text-1/--surface-*` variables; `ethos-editor` uses literals. All of
-  them follow light/dark correctly, but a redesign has to touch a different vocabulary in each app.
+  themselves with the core's `--text-1/--surface-*` variables instead of their own palette. All four
+  follow light/dark correctly, but a redesign has to learn a different vocabulary in each app.
+  `ethos-editor` now declares `--vs-*` with a dark default and `.light` overrides, which the sweep
+  accepts as a palette pair.
 - **Inline handlers.** `ethos-kanban` 1.0.3 replaced its 12 `onclick`/`onchange`/`ondblclick`
   attributes with one delegated listener (`data-kanban-act` / `data-kanban-arg`, ids escaped as HTML
   attributes instead of JavaScript inside an attribute). `ethos-photos` still has 61 (`TODO` P3-03);

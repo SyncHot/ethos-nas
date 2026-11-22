@@ -540,10 +540,16 @@ Measured with the rule from `package-ui/SKILL.md` (a `data-testid` *or* a stable
 `ethos-music` 1.0.3 (`db6df8f`): `em-nav-N`, `em-mini-*`, `em-fp-*`. Sweep and `ethos-qa` share the
 same hook definition now.
 
-### ☐ Q-04 · Move the Code Editor stylesheet out of the core — `L`
-`ethos-editor` ships no CSS: 406 `.ed-*` rules live in `frontend/index.html` (206 KB → blocks
-P3-10) and the module uses 80 literal colours. Tokenise into the module, then delete from the core.
-Overlaps P3-04.
+### ☑ Q-04 · Move the Code Editor stylesheet out of the core — `L`
+`ethos-editor` 1.0.2 (`74b56b4`) embeds the 804-line `.ed-*` block and injects it once per page
+(`<style id="ethos-editor-styles">`); computed styles are unchanged and the shell lays out with the
+core `<style>` disabled. Overlaps P3-04 (module split).
+
+### ☐ Q-08 · Delete the legacy `.ed-*` block from `frontend/index.html` — `S`
+The core still carries the same 804 lines so an installed `ethos-editor` 1.0.1 keeps working. Once
+1.0.2 is installed everywhere, delete lines 1976–2779 of `index.html` (the "Code Editor App"
+section) — that is what actually shrinks the 200 KB file and unblocks P3-10. Check every installed
+instance reports `ethos-editor >= 1.0.2` first (`GET /api/packages`).
 
 ### ☑ Q-05 · One-line release notes — `S`
 The newest changelog entry is what Package Center shows on an update; `vmm` (430 chars),
