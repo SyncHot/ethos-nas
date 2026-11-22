@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -119,8 +120,11 @@ def _http_json(url: str, timeout: int = 15):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        # Never include the URL: it carries the v3 API key in the query string.
+        raise TmdbError(f"TMDB request failed: HTTP {exc.code}") from exc
     except Exception as exc:
-        raise TmdbError(f"TMDB request failed: {exc}") from exc
+        raise TmdbError(f"TMDB request failed: {type(exc).__name__}") from exc
 
 
 def _http_download(url: str, dest: Path, timeout: int = 20) -> None:
@@ -133,7 +137,7 @@ def _http_download(url: str, dest: Path, timeout: int = 20) -> None:
         dest.write_bytes(data)
     except Exception as exc:
         dest.unlink(missing_ok=True)
-        raise TmdbError(f"image download failed: {exc}") from exc
+        raise TmdbError(f"image download failed ({type(exc).__name__})") from exc
 
 
 def _year_from_date(date_str: Optional[str]) -> Optional[int]:

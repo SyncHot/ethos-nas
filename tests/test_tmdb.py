@@ -87,18 +87,27 @@ def main() -> int:
 
     # ── D. _sanitize_tmdb partial patches ─────────────────────────────────
     print("D. _sanitize_tmdb")
-    prev = {"api_key": "stored-key-abc", "auto_fetch": False, "language": "pl-PL"}
+    prev = {"api_key": "stored-key-abc", "auto_fetch": False, "language": "pl-PL",
+            "provider": "auto"}
     out = _sanitize_tmdb({"language": "en-US"}, prev)
     check("partial: key kept", out["api_key"] == "stored-key-abc")
     check("partial: auto_fetch=False kept (not reset to True)", out["auto_fetch"] is False)
     check("partial: language updated", out["language"] == "en-US")
+    check("partial: provider kept", out["provider"] == "auto")
 
     out = _sanitize_tmdb({"language": "pl_PL"}, prev)   # underscore, not a TMDB code
     check("invalid language keeps previous", out["language"] == "pl-PL")
     out = _sanitize_tmdb({"language": ""}, prev)        # empty → keep previous
     check("empty language keeps previous", out["language"] == "pl-PL")
+    out = _sanitize_tmdb({"provider": "bogus"}, prev)   # invalid provider ignored
+    check("invalid provider keeps previous", out["provider"] == "auto")
+    out = _sanitize_tmdb({"provider": "keyless", "clear_key": True}, prev)
+    check("provider updates", out["provider"] == "keyless")
+    check("clear_key removes the key", out["api_key"] == "")
     out = _sanitize_tmdb(None, prev)                    # no section at all
-    check("missing section keeps everything", out == {"api_key": "stored-key-abc", "auto_fetch": False, "language": "pl-PL"})
+    check("missing section keeps everything",
+          out == {"api_key": "stored-key-abc", "auto_fetch": False,
+                  "language": "pl-PL", "provider": "auto"})
 
     # ── E. live TMDB (needs a stored key) ─────────────────────────────────
     cfg_file = Path(os.environ.get("ETHOS_DATA_DIR", "backend/data")) / "video_station_config.json"

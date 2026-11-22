@@ -1,0 +1,25 @@
+[
+  {
+    "score": 0.9,
+    "show": {
+      "id": 44933,
+      "url": "https://www.tvmaze.com/shows/44933/severance",
+      "name": "Severance",
+      "type": "Scripted",
+      "language": "English",
+      "genres": ["Drama", "Science-Fiction", "Mystery"],
+      "status": "Running",
+      "runtime": null,
+      "averageRuntime": 49,
+      "premiered": "2022-02-18",
+      "rating": {"average": 7.7},
+      "weight": 100,
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/548/1371406.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/548/1371406.jpg"
+      },
+      "summary": "<p>Mark Scout leads a team at Lumon Industries, whose employees have undergone a severance procedure.</p>",
+      "externals": {"tvrage": null, "thetvdb": 371980, "imdb": "tt11280740"}
+    }
+  }
+]

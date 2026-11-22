@@ -393,6 +393,18 @@ oneVPL implementation is missing; libx264 remains the software fallback.
 | Package UI | `ethos-packages/ethos-video/frontend/app.js` + `hls.min.js` |
 | Android | `ethos-video/.../playback/{PlaybackManager,PlaybackPlan,PlayerService}.kt` |
 
+## Phase 9 — Keyless metadata providers (2026-11-22)
+
+Metadata no longer requires a TMDB key. `backend/services/metadata/` owns a
+provider chain: Cinemeta (keyless movies/series with Metahub posters/backdrops),
+TVmaze (official keyless series fallback, CC BY-SA) and an optional TMDB adapter;
+`auto` uses TMDB when a key exists, otherwise keyless. The package 2.1.0 Settings
+panel exposes the provider, per-source health, fetch-missing/re-fetch-all,
+attribution and a bounded auto-fetch. Existing `tmdb` envelopes and
+`/api/videos/tmdb/*` routes stay as compatibility aliases for Android/older
+packages, and the old TMDB cache is migrated to `video_metadata_matches.json`.
+Full contract, security limits and attribution: `docs/video-metadata.md`.
+
 ## Status
 - [x] Phase 1 — docs + metadata service + API enrichment + /home endpoint
 - [x] Phase 2 — frontend home/movies/series + player subtitle picker
@@ -405,6 +417,8 @@ oneVPL implementation is missing; libx264 remains the software fallback.
       IMDb exact match, genres/cast/runtime details
 - [x] Phase 8 — cinema UI 2.0, HLS sessions, VA-API hardware decode/encode,
       media-engine diagnostics, per-user My List, Android HLS parity
+- [x] Phase 9 — keyless Cinemeta/TVmaze metadata, optional TMDB, provider UI,
+      source attribution and cache migration (`docs/video-metadata.md`)
 
 ## Verification log
 | Date | What | Result |

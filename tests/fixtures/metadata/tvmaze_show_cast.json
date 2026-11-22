@@ -1,0 +1,25 @@
+{
+  "id": 44933,
+  "url": "https://www.tvmaze.com/shows/44933/severance",
+  "name": "Severance",
+  "genres": ["Drama", "Science-Fiction", "Mystery"],
+  "averageRuntime": 49,
+  "premiered": "2022-02-18",
+  "rating": {"average": 7.7},
+  "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/548/1371406.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/548/1371406.jpg"
+  },
+  "summary": "<p>Mark Scout leads a team at Lumon Industries, whose employees have undergone a severance procedure.</p>\n<p>More text.</p>",
+  "externals": {"thetvdb": 371980, "imdb": "tt11280740"},
+  "_embedded": {
+    "cast": [
+      {"person": {"id": 1, "name": "Adam Scott"}},
+      {"person": {"id": 2, "name": "Britt Lower"}},
+      {"person": {"id": 3, "name": "Zach Cherry"}},
+      {"person": {"id": 4, "name": "Patricia Arquette"}},
+      {"person": {"id": 5, "name": "John Turturro"}},
+      {"person": {"id": 6, "name": "Christopher Walken"}}
+    ]
+  }
+}

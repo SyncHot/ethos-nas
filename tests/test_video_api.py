@@ -119,13 +119,52 @@ def main() -> int:
             return 1
 
         if has_media:
-            code, body = call(base, "POST", "/api/videos/config", admin, {"roots": [str(share)]})
+            code, body = call(base, "POST", "/api/videos/config", admin,
+                              {"roots": [str(share)], "tmdb": {"auto_fetch": False}})
             check("config saves a root", code == 200, f"{code} {body[:200]}")
 
             code, body = call(base, "GET", "/api/videos/bootstrap", admin)
             boot = json.loads(body) if code == 200 else {}
             check("bootstrap returns config/status/home",
                   code == 200 and "home" in boot and "status" in boot, f"{code} {body[:200]}")
+
+            code, body = call(base, "GET", "/api/videos/metadata/status", admin)
+            meta_status = json.loads(body) if code == 200 else {}
+            check("metadata status is keyless by default",
+                  code == 200 and meta_status.get("provider") == "auto"
+                  and meta_status.get("source_mode") == "keyless", f"{code} {body[:300]}")
+            code, _ = call(base, "GET", "/api/videos/metadata/status", None)
+            check("metadata status requires auth", code == 401, str(code))
+
+            code, body = call(base, "POST", "/api/videos/config", admin,
+                              {"roots": [str(share)], "tmdb": {"provider": "off"}})
+            check("metadata provider off saved",
+                  code == 200 and json.loads(body).get("tmdb", {}).get("provider") == "off",
+                  f"{code} {body[:200]}")
+            code, _ = call(base, "POST", "/api/videos/metadata/refresh", admin, {})
+            check("refresh refuses when metadata is off", code == 400, str(code))
+
+            code, body = call(base, "POST", "/api/videos/config", admin,
+                              {"roots": [str(share)], "tmdb": {"provider": "tmdb"}})
+            check("metadata provider tmdb saved", code == 200, f"{code} {body[:200]}")
+            code, _ = call(base, "POST", "/api/videos/metadata/refresh", admin, {})
+            check("tmdb provider without key is rejected", code == 400, str(code))
+            code, _ = call(base, "GET", "/api/videos/tmdb/test", admin)
+            check("legacy tmdb test still requires a key", code == 400, str(code))
+
+            image_dir = data_dir / "metadata_images"
+            image_dir.mkdir(parents=True, exist_ok=True)
+            (image_dir / "api-test.jpg").write_bytes(b"\xff\xd8\xff\xe0test")
+            code, body = call(base, "GET", "/api/videos/metadata/image?file=api-test.jpg", admin)
+            check("metadata image is served", code == 200 and body.startswith(b"\xff\xd8"), str(code))
+            code, body = call(base, "GET", "/api/videos/tmdb/image?file=api-test.jpg", admin)
+            check("legacy image alias works", code == 200, str(code))
+            code, _ = call(base, "GET", "/api/videos/metadata/image?file=../api-test.jpg", admin)
+            check("metadata image rejects traversal", code == 400, str(code))
+
+            code, body = call(base, "POST", "/api/videos/config", admin,
+                              {"roots": [str(share)], "tmdb": {"provider": "keyless"}})
+            check("metadata provider keyless restored", code == 200, f"{code} {body[:200]}")
 
             code, body = call(base, "GET", "/api/videos/info?path=" + urllib.parse.quote(str(sample)), admin)
             info = json.loads(body).get("info", {}) if code == 200 else {}

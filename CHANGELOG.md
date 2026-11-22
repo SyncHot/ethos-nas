@@ -11,6 +11,41 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-11-22
+
+### Added
+
+- **Keyless video metadata and posters.** Video Station no longer needs a TMDB
+  key: the core now runs a provider chain with Cinemeta (movies and series,
+  posters/backdrops/IMDb rating/cast) and TVmaze (official series fallback,
+  CC BY-SA), while TMDB remains optional and is preferred when a key is set.
+  New `/api/videos/metadata/{status,test,refresh,image}` endpoints, a provider
+  selector, per-source health checks, source attribution and a bounded
+  automatic metadata fetch after opening the app.
+- A versioned metadata cache (`video_metadata_matches.json`, migration from the
+  old TMDB cache), a 14-day negative cache, generic artwork caching under
+  `metadata_images/` (old `tmdb_images/` still served) and source fields on every
+  match (`source`, `source_id`, `source_label`, `source_url`, `imdb_id`).
+- **File Manager: extract any archive to a chosen folder.** Extract Here /
+  Extract to… in the context menu, every format the backend recognises, split
+  archives, encrypted ZIP/7z/RAR through a stdin-only password channel, and a
+  one-click install when the archive tool is missing.
+
+### Changed
+
+- TMDB is now an optional quality/localization upgrade rather than a hard
+  requirement. Existing `/api/videos/tmdb/*` routes and the `tmdb` response
+  envelope remain as compatibility aliases for the Android app and package
+  2.0.x; keyless refresh works even from the older package.
+- Video Station package 2.1.0 exposes the provider choice, source health,
+  “Fetch missing” / “Re-fetch all”, attribution and the optional TMDB key.
+  Requires this release (`min_ethos_version 2.13.0`).
+
+### Fixed
+
+- Metadata refresh progress/notifications now report the real
+  `titles_matched`/`files_matched` counts instead of always showing zero.
+
 ## [2.12.5] - 2026-11-22
 
 ### Fixed

@@ -32,10 +32,11 @@ REST:
 - DELETE /api/videos/list?path=...   — remove a path
 - GET  /api/videos/thumbnail?path=.  — ffmpeg frame grab, disk-cached (404 w/o ffmpeg)
 - GET  /api/videos/info?path=...     — ffprobe metadata, disk-cached
-- GET  /api/videos/tmdb/status       — TMDB key configured? + match count
-- POST /api/videos/tmdb/refresh      — fetch TMDB metadata (batch or one file),
-                                       downloads poster/backdrop to local disk
-- GET  /api/videos/tmdb/image?file=. — locally cached TMDB artwork
+- GET  /api/videos/metadata/status   — provider/keyless state + match counts
+- POST /api/videos/metadata/refresh  — fetch metadata (batch or one file) with
+                                       Cinemeta/TVmaze (keyless) or TMDB
+- GET  /api/videos/metadata/image    — locally cached poster/backdrop
+- GET  /api/videos/tmdb/*            — legacy aliases kept for Android 1.4.x
 """
 
 import asyncio
@@ -60,7 +61,9 @@ from pydantic import BaseModel
 # services/path_scope.py, so the caller's identity is enforced here too).
 from backend.config import settings
 from backend.routers.files import _sanitize
-from backend.services import path_scope, tmdb_service, user_data, video_engine, video_hls
+from backend.services import path_scope, task_registry, user_data, video_engine, video_hls
+from backend.services.metadata import service as metadata_service
+from backend.services.metadata.base import MetadataConfigError
 from backend.services.video_metadata import parse_video_name
 
 logger = logging.getLogger("ethos-nas.routers.video_station")
@@ -95,10 +98,6 @@ THUMB_DIR = DATA_DIR / "video_thumbs"
 INFO_CACHE_FILE = DATA_DIR / "video_info_cache.json"
 
 _INFO_STORE = json_store.get(INFO_CACHE_FILE)  # {path: info}
-TMDB_DIR = DATA_DIR / "tmdb_images"
-TMDB_MATCHES_FILE = DATA_DIR / "tmdb_matches.json"
-
-_MATCHES_STORE = json_store.get(TMDB_MATCHES_FILE)  # {path: match}
 
 DEFAULT_CONFIG = {
     "roots": [],
@@ -121,10 +120,13 @@ DEFAULT_CONFIG = {
         # falls back to software automatically per file.
         "hardware_decode": True,
     },
-    # TMDB (Phase 6) — display-only metadata + locally cached artwork. Files
-    # are never renamed or moved. api_key is masked in GET /config; an empty
-    # value on POST keeps the previously stored key.
-    "tmdb": {"api_key": "", "auto_fetch": True, "language": "pl-PL"},
+    # Metadata (Phase 6/9) — display-only metadata + locally cached artwork.
+    # The section keeps its historical `tmdb` name for API compatibility, but
+    # `provider` can be keyless (Cinemeta/TVmaze), auto, TMDB or off. api_key is
+    # masked in GET /config; an empty value on POST keeps the stored key and
+    # `clear_key` removes it explicitly.
+    "tmdb": {"api_key": "", "auto_fetch": True, "language": "pl-PL",
+             "provider": "auto"},
 }
 
 QUALITY_PRESETS = video_engine.QUALITY_PRESETS
@@ -168,34 +170,12 @@ _resume_lock = asyncio.Lock()
 
 
 def _sanitize_tmdb(tmdb_cfg, prev=None) -> dict:
-    """Validate the TMDB config section. An empty/missing api_key keeps the
-    previously stored key so a settings save never wipes it by accident."""
-    # Missing keys fall back to the previously stored values so a partial
-    # patch (e.g. saving only the API key) never resets other options.
-    out = {"api_key": (prev or {}).get("api_key", ""),
-           "auto_fetch": bool((prev or {}).get("auto_fetch", True)),
-           "language": (prev or {}).get("language") or DEFAULT_CONFIG["tmdb"]["language"]}
-    if isinstance(tmdb_cfg, dict):
-        k = tmdb_cfg.get("api_key")
-        if isinstance(k, str) and k.strip():
-            out["api_key"] = k.strip()[:64]
-        af = tmdb_cfg.get("auto_fetch")
-        if af is not None:
-            out["auto_fetch"] = bool(af)
-        lang = tmdb_cfg.get("language")
-        # Conservative TMDB-style code (pl-PL, en-US, de…); an invalid or empty
-        # value keeps the previous one — "no language" mode is unreachable.
-        if isinstance(lang, str) and re.fullmatch(r"[A-Za-z]{2,3}(-[A-Za-z]{2,4})?", lang.strip()):
-            out["language"] = lang.strip()
-    return out
+    """Validate the metadata section; partial patches keep previous values."""
+    return metadata_service.sanitize_config(tmdb_cfg, prev)
 
 def _mask_tmdb(tmdb_cfg: dict) -> dict:
-    """Config-safe view of the TMDB section (raw key never leaves the server)."""
-    key = (tmdb_cfg or {}).get("api_key", "")
-    return {"api_key_set": bool(key),
-            "api_key_masked": ("…" + key[-4:]) if key else "",
-            "auto_fetch": (tmdb_cfg or {}).get("auto_fetch", True),
-            "language": (tmdb_cfg or {}).get("language") or DEFAULT_CONFIG["tmdb"]["language"]}
+    """Config-safe view of the metadata section (raw key never leaves the server)."""
+    return metadata_service.mask_config(tmdb_cfg)
 
 def _sanitize_options(options: dict) -> dict:
     """Merge unknown/invalid values back to defaults; whitelist-validate the rest."""
@@ -303,7 +283,7 @@ def _list_dir(path: str, query: str = "") -> dict:
         except OSError:
             continue
 
-    _attach_tmdb(videos)
+    _attach_metadata(videos)
     return {
         "path": abs_path,
         "parent": os.path.dirname(abs_path) if abs_path != os.path.dirname(abs_path) else None,
@@ -392,7 +372,7 @@ def _walk_all(roots: list[str], query: str = "") -> dict:
         except OSError:
             continue
 
-    _attach_tmdb(videos)
+    _attach_metadata(videos)
     return {"path": None, "parent": None, "folders": top_folders, "videos": videos,
             "truncated": len(videos) >= ALL_VIDEOS_MAX_FILES}
 
@@ -730,6 +710,7 @@ async def bootstrap(limit: int = Query(default=12, ge=1, le=50)) -> dict:
     resumes = _load_resume_map()
     hw = await _ENGINE.status()
     username, role = path_scope.current_identity()
+    _schedule_auto_metadata(username, cfg, listing.get("videos", []))
     return {
         "config": {**cfg, "tmdb": _mask_tmdb(cfg.get("tmdb") or {}),
                    "allowed_roots": list(path_scope.allowed_roots(username, role))},
@@ -1207,234 +1188,158 @@ async def info(path: str = Query(...)) -> dict:
     }
     return {"info": result}
 
-# ── TMDB metadata + local artwork (Phase 6) ───────────────────────────────────
-_tmdb_cache_lock = asyncio.Lock()
-_tmdb_refresh_guard = asyncio.Lock()   # one refresh run at a time
-
-TMDB_MATCH_FIELDS = ("kind", "tmdb_id", "title", "year", "rating", "overview",
-                     "poster_file", "backdrop_file", "genres", "cast", "runtime")
-
-_matches_memo: tuple[int, int, dict] | None = None    # (mtime_ns, size, data)
+# ── Metadata + local artwork (Phase 9) ───────────────────────────────────────
+_metadata_refresh_guard = asyncio.Lock()   # one refresh run at a time
+_metadata_auto_last: dict[str, float] = {}
+_AUTO_FETCH_TTL = 6 * 3600
+_AUTO_FETCH_MAX_GROUPS = 20
 
 
-def _load_matches() -> dict:
-    """TMDB match cache (path → match), memoized on the file's mtime + size.
+def _metadata_config(cfg: dict) -> dict:
+    return cfg.get("tmdb") or {}
 
-    Every /library, /home and /browse request attaches metadata via this, so
-    re-parsing a multi-MB JSON on each call was pure overhead. Saves invalidate
-    the memo, and an mtime/size change (e.g. a hand edit) is detected too.
-    """
-    global _matches_memo
-    try:
-        st = os.stat(TMDB_MATCHES_FILE)
-    except OSError:
-        return {}
-    if _matches_memo and _matches_memo[0] == st.st_mtime_ns and _matches_memo[1] == st.st_size:
-        return _matches_memo[2]
-    try:
-        with open(TMDB_MATCHES_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, ValueError):
-        return {}
-    data = data if isinstance(data, dict) else {}
-    _matches_memo = (st.st_mtime_ns, st.st_size, data)
-    return data
 
-def _save_matches(m: dict) -> None:
-    global _matches_memo
-    if len(m) > 4000:   # keep the cache bounded; drop oldest matches first
-        items = sorted(m.items(), key=lambda kv: (kv[1].get("matched_at") or 0))
-        for k, _ in items[:len(m) - 3500]:
-            m.pop(k, None)
-    _MATCHES_STORE.save(m)
-    _matches_memo = None   # force a re-read (mtime granularity is coarse)
+def _attach_metadata(videos: list[dict]) -> None:
+    """Attach cached provider metadata to library items (cache only)."""
+    metadata_service.attach(videos)
 
-def _attach_tmdb(videos: list[dict]) -> None:
-    """Attach cached TMDB matches to library items (cache read only — no network)."""
-    m = _load_matches()
-    if not m:
+
+def _metadata_disabled(cfg: dict) -> str:
+    provider = _metadata_config(cfg).get("provider") or metadata_service.DEFAULT_PROVIDER
+    if provider == "off":
+        return "Metadata is disabled — choose a source in Settings → Metadata"
+    if provider == "tmdb" and not _metadata_config(cfg).get("api_key"):
+        return "TMDB API key is not configured — add it or choose a keyless source"
+    return ""
+
+
+async def _auto_metadata_fetch(groups: list, config: dict) -> None:
+    """Background metadata refresh; never blocks or fails the bootstrap call."""
+    await asyncio.sleep(2.0)
+    if _metadata_refresh_guard.locked():
         return
-    for v in videos:
-        hit = m.get(v["path"])
-        if hit:
-            v["tmdb"] = {k: hit[k] for k in TMDB_MATCH_FIELDS if k in hit}
-
-def _tmdb_query_for(item: dict):
-    """(kind, query, year, imdb_id) to search TMDB with, or None when not worth it.
-
-    Movies match on parsed title (+ year); episodes on the show name — but a
-    folder-derived show name this generic ("TV", "Series"…) is skipped so we
-    don't slap some random poster on an unparseable branch of the library.
-    An IMDb id embedded in the filename (tt\\d{7}) enables exact /find matching.
-    """
-    imdb_id = tmdb_service.extract_imdb_id(os.path.basename(item.get("path", "")))
-    if item.get("kind") == "episode":
-        show = (item.get("show") or "").strip()
-        if len(show) < 3 or show.lower() in tmdb_service.GENERIC_SHOW_NAMES:
-            return None
-        return ("tv", show, None, imdb_id)
-    title = (item.get("title") or "").strip()
-    if not title:
-        return None
-    return ("movie", title, item.get("year"), imdb_id)
-
-def _sweep_tmdb_images(matches: dict) -> None:
-    """Delete local artwork no longer referenced by any cached match (e.g. the
-    old w780/w342 files after an original-size re-download). Best-effort."""
-    try:
-        if not TMDB_DIR.is_dir():
-            return
-        referenced = set()
-        for hit in matches.values():
-            for k in ("poster_file", "backdrop_file"):
-                f = (hit or {}).get(k)
-                if f:
-                    referenced.add(f)
-        removed = 0
-        for p in TMDB_DIR.iterdir():
-            if p.is_file() and not p.name.endswith(".tmp") and p.name not in referenced:
-                p.unlink(missing_ok=True)
-                removed += 1
-        if removed:
-            logger.info("TMDB image sweep: removed %d unreferenced file(s)", removed)
-    except OSError as exc:
-        logger.warning("TMDB image sweep failed: %s", exc)
-
-def _tmdb_refresh_sync(api_key: str, single_path: str | None = None,
-                       language: str = "pl-PL") -> dict:
-    """Query TMDB for unmatched titles and persist matches + local artwork.
-
-    `single_path` limits the run to one file (per-card refresh). Batch runs do
-    one bounded walk over all roots and group files by search query so a whole
-    season costs exactly one API call; matches are saved incrementally so a
-    long batch survives a restart. Cached entries without the detail extras
-    (`genres`) are treated as stale and re-fetched, which upgrades pre-6b
-    caches to localized metadata + original-size artwork in place. Never
-    raises — network errors are counted.
-    """
-    stats: dict = {"titles_checked": 0, "titles_matched": 0, "files_matched": 0, "errors": 0}
-    matches = _load_matches()
-
-    if single_path:
-        name = os.path.basename(single_path)
-        folder = os.path.basename(os.path.dirname(single_path)) or None
-        item = {"path": single_path, **parse_video_name(name, folder=folder)}
-        q = _tmdb_query_for(item)
-        stats["titles_checked"] = 1 if q else 0
-        if q:
-            try:
-                m = tmdb_service.fetch_match(api_key, q[0], q[1], q[2], TMDB_DIR,
-                                             language=language, imdb_id=q[3])
-            except tmdb_service.TmdbError as exc:
-                logger.warning("TMDB refresh failed for %s: %s", single_path, exc)
-                stats["errors"] += 1
-            except Exception as exc:   # never let one title 500 the request
-                logger.warning("TMDB refresh crashed for %s: %s", single_path, exc)
-                stats["errors"] += 1
-            else:
-                if m:
-                    matches[single_path] = {**m, "matched_at": time.time()}
-                    _save_matches(matches)
-                    stats["titles_matched"] += 1
-                    stats["files_matched"] += 1
-        return {**stats, "match": matches.get(single_path)}
-
-    cfg = _load_config()
-    listing = _walk_all(cfg["roots"], "")
-    groups: dict[tuple, list] = {}
-    for v in listing.get("videos", []):
-        hit = matches.get(v["path"])
-        if hit and "genres" in hit:
-            continue   # fresh entry — already localized + detailed
-        q = _tmdb_query_for(v)
-        if not q:
-            continue
-        key = (q[0], q[1].lower(), q[2], q[3])
-        groups.setdefault(key, []).append((v["path"], q))
-
-    for _key, entries in groups.items():
-        kind, query, year, imdb_id = entries[0][1]
-        stats["titles_checked"] += 1
+    async with _metadata_refresh_guard:
         try:
-            m = tmdb_service.fetch_match(api_key, kind, query, year, TMDB_DIR,
-                                         language=language, imdb_id=imdb_id)
-        except tmdb_service.TmdbError as exc:
-            stats["errors"] += 1
-            if "401" in str(exc) or "403" in str(exc):
-                # Invalid/expired key — every remaining call fails the same way.
-                # Abort instead of logging one warning per title (hundreds on a
-                # large library, see app_events 2026-10-01).
-                logger.warning("TMDB batch refresh aborted: API key rejected by TMDB (%s) — fix it in Settings → Metadata", exc)
-                stats["aborted"] = "API key rejected by TMDB (HTTP 401/403) — check Settings → Metadata"
-                return stats
-            logger.warning("TMDB batch refresh failed for %s/%r: %s", kind, query, exc)
-            continue
-        except Exception as exc:   # never let one title abort the whole batch
-            stats["errors"] += 1
-            logger.warning("TMDB batch refresh crashed for %s/%r: %s", kind, query, exc)
-            continue
-        if not m:
-            continue   # no match — stays filename-only display
-        m = {**m, "matched_at": time.time()}
-        for path, _q in entries:
-            matches[path] = m
-            stats["files_matched"] += 1
-        stats["titles_matched"] += 1
-        try:
-            _save_matches(matches)
-        except Exception as exc:
-            logger.warning("Could not persist TMDB match cache: %s", exc)
-    _sweep_tmdb_images(matches)
-    return stats
+            stats = await asyncio.to_thread(
+                metadata_service.refresh, groups, config,
+                max_groups=_AUTO_FETCH_MAX_GROUPS,
+            )
+            logger.info("Metadata auto-fetch finished: %s", stats)
+        except Exception as exc:   # background work must never crash the app
+            logger.warning("Metadata auto-fetch failed: %s", exc)
+
+
+def _schedule_auto_metadata(username: str, cfg: dict, videos: list[dict]) -> None:
+    """One bounded auto-fetch per user per 6 h, only for missing titles."""
+    meta_cfg = _metadata_config(cfg)
+    if not meta_cfg.get("auto_fetch"):
+        return
+    provider = meta_cfg.get("provider") or metadata_service.DEFAULT_PROVIDER
+    if provider == "off" or (provider == "tmdb" and not meta_cfg.get("api_key")):
+        return
+    now = time.monotonic()
+    last = _metadata_auto_last.get(username, 0.0)
+    if now - last < _AUTO_FETCH_TTL:
+        return
+    matches = metadata_service.load_matches()
+    groups = metadata_service.build_groups(
+        videos, matches, max_groups=_AUTO_FETCH_MAX_GROUPS, only_missing=True,
+    )
+    if not groups or _metadata_refresh_guard.locked():
+        return
+    _metadata_auto_last[username] = now
+    task_registry.spawn(
+        _auto_metadata_fetch(groups, dict(meta_cfg)),
+        name=f"metadata-auto:{username}",
+    )
+
 
 @router.get("/tmdb/status")
-async def tmdb_status() -> dict:
-    """TMDB configuration state for the settings UI (key is masked)."""
+@router.get("/metadata/status")
+async def metadata_status() -> dict:
+    """Metadata provider/key state + match counts (raw key never returned)."""
     cfg = _load_config()
-    return {**_mask_tmdb(cfg.get("tmdb") or {}), "matched_count": len(_load_matches())}
+    return metadata_service.status(_metadata_config(cfg))
+
+
+@router.get("/metadata/test")
+async def metadata_test() -> dict:
+    """Check every configured source; keyless works without any API key."""
+    cfg = _load_config()
+    return await asyncio.to_thread(
+        metadata_service.test_providers, _metadata_config(cfg),
+    )
+
 
 @router.get("/tmdb/test")
-async def tmdb_test() -> dict:
-    """Validate the stored API key against TMDB's /configuration endpoint."""
+async def tmdb_test_legacy() -> dict:
+    """Legacy TMDB-only test used by package 2.0.x (keeps its 400 semantics)."""
     cfg = _load_config()
-    key = (cfg.get("tmdb") or {}).get("api_key", "")
+    key = _metadata_config(cfg).get("api_key", "")
     if not key:
-        raise HTTPException(status_code=400, detail="TMDB API key not configured — set it in Settings → Metadata")
-    return await asyncio.to_thread(tmdb_service.test_connection, key)
+        raise HTTPException(
+            status_code=400,
+            detail="TMDB API key not configured — use a keyless source or add a key",
+        )
+    result = await asyncio.to_thread(
+        metadata_service.test_providers, {**_metadata_config(cfg), "provider": "tmdb"},
+    )
+    return result
+
 
 @router.post("/tmdb/refresh")
-async def tmdb_refresh(payload: dict = Body(default={})) -> dict:
-    """Fetch TMDB metadata for the library (batch) or one file (`path`).
+@router.post("/metadata/refresh")
+async def metadata_refresh(payload: dict = Body(default={})) -> dict:
+    """Fetch metadata for the library (batch) or one file (`path`).
 
-    `force` re-queries a single file even when it already has a cached match.
-    Artwork is downloaded to disk per match; matches persist in
-    tmdb_matches.json keyed by absolute path. Display-only — files are never
-    renamed or moved.
+    Uses the configured provider chain: TMDB when a key is present, otherwise
+    Cinemeta and TVmaze. `force` re-queries cached entries (a provider switch or
+    "Re-fetch all"); without it fresh entries are skipped. Artwork is cached
+    locally; files are never renamed or moved.
     """
     cfg = _load_config()
-    key = (cfg.get("tmdb") or {}).get("api_key", "")
-    if not key:
-        raise HTTPException(status_code=400, detail="TMDB API key not configured — set it in Settings → Metadata")
+    meta_cfg = _metadata_config(cfg)
+    disabled = _metadata_disabled(cfg)
+    if disabled:
+        raise HTTPException(status_code=400, detail=disabled)
     single = payload.get("path") if isinstance(payload, dict) else None
     force = bool(payload.get("force")) if isinstance(payload, dict) else False
 
-    async with _tmdb_refresh_guard:
-        if single and force:
-            m = _load_matches()
-            abs_path = _sanitize(single)
-            m.pop(abs_path, None)
-            _save_matches(m)
-        lang = (cfg.get("tmdb") or {}).get("language") or DEFAULT_CONFIG["tmdb"]["language"]
-        result = await asyncio.to_thread(_tmdb_refresh_sync, key,
-                                        _sanitize(single) if single else None, lang)
+    async with _metadata_refresh_guard:
+        try:
+            if single:
+                abs_path = _sanitize(single)
+                result = await asyncio.to_thread(
+                    metadata_service.refresh_single, abs_path, meta_cfg, force=force,
+                )
+            else:
+                listing = await asyncio.to_thread(_walk_all, cfg["roots"], "")
+                groups = metadata_service.build_groups(
+                    listing.get("videos", []), only_missing=not force,
+                )
+                result = await asyncio.to_thread(
+                    metadata_service.refresh, groups, meta_cfg, force=force,
+                )
+        except MetadataConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(result, dict):
+        # Package 2.0.x read `matched`/`updated`; keep them working.
+        result.setdefault("matched", result.get("titles_matched", 0))
+        result.setdefault("updated", result.get("titles_matched", 0))
     return result
 
+
 @router.get("/tmdb/image")
-async def tmdb_image(file: str = Query(...)) -> FileResponse:
-    """Locally cached TMDB artwork (poster/backdrop downloaded at refresh)."""
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", file):
+@router.get("/metadata/image")
+async def metadata_image(file: str = Query(...)) -> FileResponse:
+    """Locally cached artwork from any provider (legacy TMDB dir included)."""
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", file):
         raise HTTPException(status_code=400, detail="Invalid image name")
-    p = TMDB_DIR / file
-    if not p.is_file():
+    path = metadata_service.image_path(file)
+    if not path:
         raise HTTPException(status_code=404, detail="Image not found")
-    return FileResponse(str(p), media_type="image/jpeg", headers={"Cache-Control": "max-age=604800"})
+    return FileResponse(
+        str(path),
+        media_type=metadata_service.image_media_type(path),
+        headers={"Cache-Control": "max-age=604800"},
+    )
