@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T22:20:48+00:00",
+  "generated_at": "2026-11-22T22:38:03+00:00",
   "latest": {
-    "version": "2.29.9",
-    "git_sha": "b50c1f9",
-    "git_sha_full": "b50c1f9a39a3c35a7fa91c1617a372f082a522d3",
-    "build": 235,
-    "released_at": "2026-11-22T22:20:48+00:00",
-    "notes": "Downloads: URL/path guards extracted into a service (no behaviour change)"
+    "version": "2.30.0",
+    "git_sha": "4a50446",
+    "git_sha_full": "4a50446aed97c4a7be8415100212021bc4edc16f",
+    "build": 238,
+    "released_at": "2026-11-22T22:38:03+00:00",
+    "notes": "Media pipeline moved out of the Files router: media_cache/thumbnails/transcode services; files.py 2133 → 1362 lines; no API or behaviour change."
   },
   "releases": [
+    {
+      "version": "2.30.0",
+      "git_sha": "4a50446",
+      "git_sha_full": "4a50446aed97c4a7be8415100212021bc4edc16f",
+      "build": 238,
+      "released_at": "2026-11-22T22:38:03+00:00",
+      "notes": "Media pipeline moved out of the Files router: media_cache/thumbnails/transcode services; files.py 2133 → 1362 lines; no API or behaviour change."
+    },
     {
       "version": "2.29.9",
       "git_sha": "b50c1f9",
@@ -201,14 +209,6 @@
       "build": 166,
       "released_at": "2026-11-22T14:43:27+00:00",
       "notes": "Host: zram now really uses zstd and the swap tuning is no longer overridden by an older sysctl file"
-    },
-    {
-      "version": "2.24.0",
-      "git_sha": "883aa9e",
-      "git_sha_full": "883aa9eb97c2933b90ccdec623f8243ae3b267d6",
-      "build": 164,
-      "released_at": "2026-11-22T14:38:50+00:00",
-      "notes": "Host: an optional setup script adds zram swap and stops systemd-oomd from killing sessions at 50 % pressure"
     }
   ]
 }
