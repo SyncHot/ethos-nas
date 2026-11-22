@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T08:58:03+00:00",
+  "generated_at": "2026-11-22T09:07:42+00:00",
   "latest": {
-    "version": "2.12.4",
-    "git_sha": "9b8d60b",
-    "git_sha_full": "9b8d60bd0911a24ef2daa90ac4b0a93cd2bcb197",
-    "build": 101,
-    "released_at": "2026-11-22T08:58:03+00:00",
-    "notes": "Tasks: OS updates keep a single progress row that finishes even when you leave Settings."
+    "version": "2.12.5",
+    "git_sha": "a6cf350",
+    "git_sha_full": "a6cf3504d2141953511802125a3f761c56cf5737",
+    "build": 103,
+    "released_at": "2026-11-22T09:07:42+00:00",
+    "notes": "Desktop: right-click menus stay inside the window, with wrapped labels on narrow screens."
   },
   "releases": [
+    {
+      "version": "2.12.5",
+      "git_sha": "a6cf350",
+      "git_sha_full": "a6cf3504d2141953511802125a3f761c56cf5737",
+      "build": 103,
+      "released_at": "2026-11-22T09:07:42+00:00",
+      "notes": "Desktop: right-click menus stay inside the window, with wrapped labels on narrow screens."
+    },
     {
       "version": "2.12.4",
       "git_sha": "9b8d60b",
@@ -201,14 +209,6 @@
       "build": 52,
       "released_at": "2026-11-20T10:44:19+00:00",
       "notes": "Files: reliable video thumbnails — one video stream at a time, thumbnail work yields to active playback"
-    },
-    {
-      "version": "2.3.13",
-      "git_sha": "89784eb",
-      "git_sha_full": "89784ebed7b299ef64fbab27a3b0cc05acdbe517",
-      "build": 46,
-      "released_at": "2026-11-18T10:17:53+00:00",
-      "notes": "Packages: Update all — every pending update runs sequentially, each with its own rollback"
     }
   ]
 }
