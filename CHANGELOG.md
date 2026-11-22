@@ -11,6 +11,17 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Share with other users (view-only).** A new **Sharing** app, a Settings →
+  Sharing section and a reusable “Share with users…” dialog let you grant files,
+  folders, Photos albums, Video Station folders and Music playlists to named
+  accounts or everyone. Recipients can view and stream but never edit, delete or
+  re-share; writes stay own-scope, `<DATA_DIR>` and Photos Private items can never
+  be shared. Recipients are notified with a targeted “Shared with you” event.
+  Photos/Video/Music/Books show a “Shared with me” section. Spec
+  `docs/sharing.md`; API `/api/sharing`.
+
 ## [2.13.3] - 2026-11-22
 
 ### Fixed
