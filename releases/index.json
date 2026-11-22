@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T17:33:59+00:00",
+  "generated_at": "2026-11-22T17:37:51+00:00",
   "latest": {
-    "version": "2.28.4",
-    "git_sha": "b77ffbc",
-    "git_sha_full": "b77ffbcfe2eaba16082a7cdc0e317bf177a16ed4",
-    "build": 188,
-    "released_at": "2026-11-22T17:33:59+00:00",
-    "notes": "Installer: allow installing inside an image build chroot (port check skipped)"
+    "version": "2.28.5",
+    "git_sha": "ebcf236",
+    "git_sha_full": "ebcf236e27f6a6bcab7690bb7f0d38afe06937b0",
+    "build": 191,
+    "released_at": "2026-11-22T17:37:51+00:00",
+    "notes": "Packages install even when their port is already taken: the published host port is re-mapped to a free one and kept stable across updates."
   },
   "releases": [
+    {
+      "version": "2.28.5",
+      "git_sha": "ebcf236",
+      "git_sha_full": "ebcf236e27f6a6bcab7690bb7f0d38afe06937b0",
+      "build": 191,
+      "released_at": "2026-11-22T17:37:51+00:00",
+      "notes": "Packages install even when their port is already taken: the published host port is re-mapped to a free one and kept stable across updates."
+    },
     {
       "version": "2.28.4",
       "git_sha": "b77ffbc",
@@ -201,14 +209,6 @@
       "build": 135,
       "released_at": "2026-11-22T13:00:52+00:00",
       "notes": "Videos: Select many films at once (phone and desktop) and download them in one go using your default version."
-    },
-    {
-      "version": "2.17.0",
-      "git_sha": "d6d8f0d",
-      "git_sha_full": "d6d8f0d7aad8bb11fcef426e2c3567ee7e27a5cf",
-      "build": 133,
-      "released_at": "2026-11-22T12:52:52+00:00",
-      "notes": "Music: the phone player is now the installable /music web app with offline playlist downloads; the Android APK is retired"
     }
   ]
 }
