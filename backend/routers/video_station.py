@@ -508,6 +508,10 @@ def _ffprobe_sync(abs_path: str) -> dict:
                 "codec": (s.get("codec_name") or "").lower(),
                 "language": ((s.get("tags") or {}).get("language") or "").strip().lower()[:3],
                 "channels": _int(s.get("channels")),
+                # Układ kanałów decyduje o AAC: „5.1(side)” (typowy dla DD+ w
+                # WEB-DL) nie ma odpowiednika w MPEG-4, więc ffmpeg zapisuje PCE,
+                # którego przeglądarki nie przyjmują w MSE.
+                "channel_layout": (s.get("channel_layout") or "").strip().lower(),
                 # Rola audio (np. "commentary", "main", "dub") — ffprobe wystawia
                 # ją w stream tags. Pomaga rozróżnić ścieżki o tym samym kodzie
                 # języka (np. PL main + PL commentary). Puste/null = brak metadanych.
@@ -530,8 +534,9 @@ async def _probe(abs_path: str) -> dict:
     async with _info_cache_lock:
         cache = _load_info_cache()
         hit = cache.get(key)
-        # schema 3 added pix_fmt; older entries are treated as misses.
-        if (hit and hit.get("schema") == 3 and hit.get("mtime") == st.st_mtime
+        # schema 3 added pix_fmt, schema 4 channel_layout; older entries are
+        # treated as misses.
+        if (hit and hit.get("schema") == 4 and hit.get("mtime") == st.st_mtime
                 and hit.get("size") == st.st_size):
             return {k: v for k, v in hit.items() if k not in ("mtime", "size", "schema")}
 
@@ -545,7 +550,7 @@ async def _probe(abs_path: str) -> dict:
 
     async with _info_cache_lock:
         cache = _load_info_cache()
-        cache[key] = {"schema": 3, "mtime": st.st_mtime, "size": st.st_size,
+        cache[key] = {"schema": 4, "mtime": st.st_mtime, "size": st.st_size,
                       "checked_at": __import__("time").time(), **info}
         try:
             _save_info_cache(cache)
@@ -1007,6 +1012,10 @@ async def hls_segment(sid: str, name: str) -> FileResponse:
     session = await _HLS.get(sid, user_data.current_username())
     if not session:
         raise HTTPException(status_code=404, detail="Stream session not found")
+    if session.failed:
+        # Enkoder padł w trakcie: 404 wygląda dla hls.js jak brak pliku i mieli
+        # w miejscu. 410 z powodem pozwala UI pokazać prawdziwą przyczynę.
+        raise HTTPException(status_code=410, detail=session.failure_detail())
     target = video_hls.segment_path(session, name)
     if target is None:
         raise HTTPException(status_code=404, detail="Segment not found")

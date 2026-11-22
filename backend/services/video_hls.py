@@ -31,6 +31,7 @@ MAX_SESSIONS = 2
 MAX_PER_USER = 1
 IDLE_TTL = 120.0
 DIR_TTL = 600.0
+FAILED_TTL = 30.0
 START_TIMEOUT = 15.0
 SEGMENT_NAME = re.compile(r"^(init\.mp4|seg\d{5}\.m4s)$")
 _MAP_URI = re.compile(r'(URI=")([^"]+)(")')
@@ -63,10 +64,20 @@ class HlsSession:
     last_access: float
     stderr: deque = field(default_factory=lambda: deque(maxlen=64))
     drain_task: asyncio.Task | None = None
+    watch_task: asyncio.Task | None = None
     limiter_held: bool = True
+    stopping: bool = False
+    failed: bool = False
+    failure_reason: str = ""
 
     def tail(self, limit: int = 2000) -> str:
         return b"".join(self.stderr).decode("utf-8", "replace")[-limit:]
+
+    def failure_detail(self) -> str:
+        """Short, user-safe reason for a session whose encoder died."""
+        reason = self.failure_reason or "Encoder exited"
+        tail = self.tail(600)
+        return f"{reason}: {tail}" if tail else reason
 
 
 class HlsManager:
@@ -81,6 +92,7 @@ class HlsManager:
         self.dir_ttl = dir_ttl
         self.start_timeout = start_timeout
         self._sessions: dict[str, HlsSession] = {}
+        self._reserved: dict[str, int] = {}
         self._lock: asyncio.Lock | None = None
         self._sweeper: asyncio.Task | None = None
 
@@ -99,11 +111,32 @@ class HlsManager:
         lock = self._ensure_lock()
         async with lock:
             self._prune_locked()
-            if len(self._sessions) >= self.max_sessions:
+            # Count starts that are still preparing a playlist: two clicks used
+            # to slip past MAX_PER_USER before either session was registered.
+            inflight = sum(self._reserved.values())
+            owner_inflight = self._reserved.get(owner, 0)
+            if len(self._sessions) + inflight >= self.max_sessions:
                 raise HlsLimitError("Too many active video streams — stop one and retry")
-            if sum(1 for s in self._sessions.values() if s.owner == owner) >= self.max_per_user:
+            if sum(1 for s in self._sessions.values() if s.owner == owner) + owner_inflight >= self.max_per_user:
                 raise HlsLimitError("You already have an active video stream")
+            self._reserved[owner] = owner_inflight + 1
+        try:
+            return await self._start_reserved(
+                owner, abs_path, cmd_factory, mode=mode, encoder=encoder, decode_hw=decode_hw,
+            )
+        finally:
+            async with lock:
+                left = self._reserved.get(owner, 0) - 1
+                if left > 0:
+                    self._reserved[owner] = left
+                else:
+                    self._reserved.pop(owner, None)
 
+    async def _start_reserved(self, owner: str, abs_path: str,
+                              cmd_factory: Callable[[str], list[str]], *,
+                              mode: str, encoder: str | None,
+                              decode_hw: bool) -> HlsSession:
+        lock = self._ensure_lock()
         if not await self.limiter.acquire(timeout=5.0):
             raise HlsLimitError("Transcoder is busy — try again in a moment")
 
@@ -134,6 +167,9 @@ class HlsManager:
             await self._terminate(session, remove=True)
             raise
 
+        session.watch_task = task_registry.spawn(
+            self._watch(session), name=f"video-hls-watch-{sid}",
+        )
         async with lock:
             self._sessions[sid] = session
         self._ensure_sweeper()
@@ -142,6 +178,35 @@ class HlsManager:
             sid, owner, mode, encoder or "none", "hw" if decode_hw else "sw", abs_path,
         )
         return session
+
+    async def _watch(self, session: HlsSession) -> None:
+        """Surface an encoder that dies mid-session and free its slot at once.
+
+        Without this the playlist simply stops growing: the client stalls on a
+        black frame, segment requests 404 and nothing is written to the log.
+        """
+        try:
+            rc = await session.process.wait()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("HLS watch failed | id=%s", session.sid, exc_info=True)
+            return
+        if session.stopping:
+            return
+        if session.limiter_held:
+            session.limiter_held = False
+            with contextlib.suppress(Exception):
+                await self.limiter.release()
+        if rc == 0:
+            logger.info("HLS encoder finished | id=%s input=%s", session.sid, session.path)
+            return
+        session.failed = True
+        session.failure_reason = f"Encoder exited (rc={rc})"
+        logger.error(
+            "HLS encoder exited mid-session | id=%s rc=%s input=%s\n--- stderr ---\n%s",
+            session.sid, rc, session.path, session.tail(1500) or "(empty)",
+        )
 
     async def _drain(self, session: HlsSession) -> None:
         assert session.process.stderr is not None
@@ -214,10 +279,12 @@ class HlsManager:
         self._sweeper = None
 
     async def _terminate(self, session: HlsSession, *, remove: bool) -> None:
-        if session.drain_task and not session.drain_task.done():
-            session.drain_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await session.drain_task
+        session.stopping = True
+        for task in (session.drain_task, session.watch_task):
+            if task and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
         if session.process.returncode is None:
             with contextlib.suppress(Exception):
                 session.process.kill()
@@ -231,14 +298,19 @@ class HlsManager:
             await asyncio.to_thread(shutil.rmtree, session.directory, ignore_errors=True)
 
     def _prune_locked(self) -> None:
-        """Drop sessions whose ffmpeg exited and that sat idle past the TTL."""
+        """Drop sessions whose ffmpeg exited and that sat past their TTL.
+
+        Failed sessions (non-zero exit) go after FAILED_TTL so a crashed
+        encoder cannot hold the per-user slot for the full idle window.
+        """
         if not self._sessions:
             return
         now = time.monotonic()
         for sid, session in list(self._sessions.items()):
             if session.process.returncode is None:
                 continue
-            if now - session.last_access > self.idle_ttl:
+            ttl = FAILED_TTL if session.failed else self.idle_ttl
+            if now - session.last_access > ttl:
                 self._sessions.pop(sid, None)
                 task_registry.spawn(self._terminate(session, remove=True),
                                     name=f"video-hls-stop-{sid}")
@@ -262,6 +334,7 @@ class HlsManager:
         now = time.monotonic()
         lock = self._ensure_lock()
         async with lock:
+            self._prune_locked()
             expired = [
                 session for session in self._sessions.values()
                 if now - session.last_access > self.idle_ttl

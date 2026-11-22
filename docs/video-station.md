@@ -405,6 +405,70 @@ attribution and a bounded auto-fetch. Existing `tmdb` envelopes and
 packages, and the old TMDB cache is migrated to `video_metadata_matches.json`.
 Full contract, security limits and attribution: `docs/video-metadata.md`.
 
+## Phase 10 — AAC channel layout: black-screen fix (2026-11-22)
+
+Symptom: some movies (mostly WEB-DL rips) opened a black player with
+“The stream could not be played. Try a lower quality or the legacy player.”
+while the server happily started an HLS session (`encoder=vaapi decode=hw`).
+
+### Root cause
+
+`ffprobe` of the failing title (Runner, 2160p AMZN WEB-DL) reports the Dolby
+Digital Plus track as **`5.1(side)`**. That layout has no MPEG-4 equivalent, so
+ffmpeg's AAC encoder writes a **Program Config Element** (`channelConfiguration=0`)
+instead of the standard 5.1 configuration. Chromium's MSE demuxer refuses such a
+track with `CHUNK_DEMUXER_ERROR_APPEND_FAILED` → the `SourceBuffer` errors, the
+`MediaSource` closes and `<video>` fires `MEDIA_ERR_SRC_NOT_SUPPORTED`. The same
+AAC went out over the legacy `/transcode` pipe, so the fallback failed too.
+BluRay rips carry AC-3 `5.1` (standard) and played fine — hence “only some
+movies”.
+
+Proof (Chromium 157, MSE append of a 6 s segment produced by the real
+pipeline):
+
+| segment audio | MSE result |
+|---|---|
+| AAC from `5.1(side)`, no filter | rejected on the init segment |
+| AAC + `aformat=channel_layouts=5.1` | buffered 0–5.0 s |
+| video only | buffered 0–5.0 s |
+| AAC stereo | buffered 0–5.0 s |
+
+### Fix
+
+- `services/video_engine.aac_layout_filter()` normalises the layout before the
+  AAC encoder: a non-standard layout is mapped from the channel count
+  (1→mono, 2→stereo, 6→5.1, 8→7.1, …) and emitted as
+  `-af aformat=channel_layouts=<layout>`; standard layouts add no filter.
+- `build_audio_args()` applies it to every AAC encode (HLS **and** the legacy
+  pipe). In remux mode an AAC track is copied only when its layout is standard
+  (or unknown) — a `5.1(side)` AAC source is re-encoded instead of copied.
+- `/api/videos/info` audio tracks now carry `channel_layout` (info cache schema
+  4, older entries re-probe once).
+
+### Diagnostics that were missing
+
+- `POST /api/videos/hls` failures (`HlsStartError`, ffmpeg stderr) are logged at
+  error level instead of only being returned in the HTTP body.
+- The HLS manager watches the encoder: a mid-session exit is logged with `rc`
+  and the stderr tail, the transcode slot is released immediately and segment
+  requests return **410** with the reason.
+- Session slots are reserved *before* ffmpeg spawns — two quick clicks used to
+  start two sessions for one user and occupy both global slots.
+- Package 2.1.1 logs the real `video.error` (`code`, `message`, mode, src),
+  retries the HLS stream once and shows the server detail with a “Try again”
+  button.
+
+### Verification
+
+- `tests/test_video_engine.py` (57 checks): layout normalisation, no filter on
+  standard layouts, AAC copy vs re-encode, the filter in the HLS command.
+- `tests/test_video_hls.py` (18): `channel_layout` in the probe, concurrent
+  starts capped, dead encoder flagged with its exit code.
+- Real browser (snap Chromium 157) on an isolated instance: `Runner` (2160p HEVC
+  + DD+ 5.1) plays; also verified `Other.Mommy` (H.264 + DDP 5.1 MP4 → remux),
+  `Steps` (10-bit HEVC + AC3) and `Heart of the Beast` (2160p Dolby Vision) —
+  all `readyState 4` with ~20 s buffered.
+
 ## Status
 - [x] Phase 1 — docs + metadata service + API enrichment + /home endpoint
 - [x] Phase 2 — frontend home/movies/series + player subtitle picker

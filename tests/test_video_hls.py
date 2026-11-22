@@ -65,6 +65,9 @@ async def run() -> int:
     info = _ffprobe_sync(sample)
     mode = ve.select_playback_mode(info, sample)
     check("HEVC sample needs transcode", mode == "transcode", mode)
+    tracks = info.get("audio_tracks") or []
+    check("probe reports the audio channel layout",
+          bool(tracks) and "channel_layout" in tracks[0], str(tracks))
 
     probe = ve.HardwareProbe(ffmpeg, ffprobe)
     status = await probe.status()
@@ -120,6 +123,43 @@ async def run() -> int:
     # After a stop, the transcode slot must be reusable.
     check("limiter slot released after stop", await limiter.acquire(timeout=0.2))
     await limiter.release()
+
+    # Two clicks used to start two sessions for one user before either was
+    # registered; the reservation must make concurrent starts serialise.
+    limiter2 = ve.TranscodeLimiter(3)
+    mgr2 = video_hls.HlsManager(limiter=limiter2, start_timeout=25)
+
+    def factory(out_dir: str) -> list[str]:
+        return ve.build_hls_cmd(
+            ffmpeg, sample, info, 0.0, status.get("encoder"), mode, 0,
+            "balanced", "128k", out_dir, decode_hw=False,
+            device=status.get("device"), list_size=4)
+
+    try:
+        results = await asyncio.gather(*[
+            mgr2.start("carol", sample, factory, mode=mode, encoder=status.get("encoder"))
+            for _ in range(3)
+        ], return_exceptions=True)
+        started = [r for r in results if isinstance(r, video_hls.HlsSession)]
+        refused = [r for r in results if isinstance(r, video_hls.HlsLimitError)]
+        check("concurrent starts honour the per-user cap",
+              len(started) == 1 and len(refused) == 2,
+              f"started={len(started)} refused={len(refused)}")
+
+        if started:
+            session2 = started[0]
+            session2.process.kill()
+            for _ in range(30):
+                await asyncio.sleep(0.1)
+                if session2.failed:
+                    break
+            check("dead encoder is flagged on the session", session2.failed)
+            check("failure detail names the exit code",
+                  "rc=" in session2.failure_detail(), session2.failure_detail())
+            check("dead session stays visible for a 410",
+                  await mgr2.get(session2.sid, "carol") is not None)
+    finally:
+        await mgr2.stop_all()
     return 0
 
 

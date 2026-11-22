@@ -24,6 +24,15 @@ BROWSER_AUDIO_OK = {"aac", "mp3", "opus"}
 BROWSER_VIDEO_OK = {"h264", "vp8", "vp9"}
 STREAMABLE_EXTS = {".mp4", ".m4v", ".webm", ".mov"}
 
+# MPEG-4 channel configurations the AAC encoder can express without a Program
+# Config Element (channelConfiguration 1-7). ffmpeg falls back to a PCE whenever
+# the source layout has no MPEG-4 equivalent — notably E-AC-3 "5.1(side)", the
+# usual layout of DD+ tracks in WEB-DL rips. Browsers refuse PCE audio in MSE
+# (Chrome: CHUNK_DEMUXER_ERROR_APPEND_FAILED) so those movies played a black
+# screen, while AC-3 "5.1" BluRay rips worked. Always normalise the layout.
+AAC_STANDARD_LAYOUTS = {"mono", "stereo", "3.0", "4.0", "quad", "5.0", "5.1", "7.1"}
+_AAC_LAYOUT_BY_CHANNELS = {1: "mono", 2: "stereo", 3: "3.0", 4: "4.0", 5: "5.0", 6: "5.1", 8: "7.1"}
+
 QUALITY_PRESETS = {
     # Tuned for a 4-core Celeron-class CPU (Intel N150): libx264 veryfast does
     # ~8 fps at 1440p, so downscaling is what keeps live playback watchable.
@@ -147,13 +156,36 @@ def build_video_args(
     return pre, video, filters
 
 
+def aac_layout_filter(track: dict) -> list[str]:
+    """``-af aformat=…`` that pins a standard MPEG-4 channel layout.
+
+    Returns an empty list when the detected layout is already standard. An
+    unknown layout is normalised from the channel count so the AAC encoder
+    writes a channelConfiguration instead of a Program Config Element.
+    """
+    layout = (track.get("channel_layout") or "").strip().lower()
+    if layout in AAC_STANDARD_LAYOUTS:
+        return []
+    try:
+        channels = int(track.get("channels") or 0)
+    except (TypeError, ValueError):
+        channels = 0
+    target = _AAC_LAYOUT_BY_CHANNELS.get(channels)
+    return ["-af", f"aformat=channel_layouts={target}"] if target else []
+
+
 def build_audio_args(info: dict, track_idx: int, mode: str, audio_bitrate: str) -> list[str]:
     tracks = info.get("audio_tracks") or []
     idx = min(max(0, int(track_idx)), max(0, len(tracks) - 1)) if tracks else 0
-    codec = (tracks[idx].get("codec") or "").lower() if idx < len(tracks) else ""
-    if mode == "remux" and codec == "aac":
+    track = tracks[idx] if idx < len(tracks) else {}
+    codec = (track.get("codec") or "").lower()
+    layout = (track.get("channel_layout") or "").strip().lower()
+    # Copy AAC only when it is already a standard layout — a PCE-based stream
+    # would break playback in the browser just like an encoded one.
+    if mode == "remux" and codec == "aac" and (not layout or layout in AAC_STANDARD_LAYOUTS):
         return ["-map", f"0:a:{idx}?", "-c:a", "copy"]
-    return ["-map", f"0:a:{idx}?", "-c:a", "aac", "-b:a", audio_bitrate]
+    return ["-map", f"0:a:{idx}?", "-c:a", "aac", "-b:a", audio_bitrate,
+            *aac_layout_filter(track)]
 
 
 def _av_args(
@@ -515,6 +547,7 @@ def prune_decode_cache(probe: HardwareProbe, max_items: int = 64) -> None:
 
 
 __all__ = [
+    "AAC_STANDARD_LAYOUTS",
     "AUDIO_BITRATES",
     "BROWSER_AUDIO_OK",
     "BROWSER_VIDEO_OK",
@@ -523,6 +556,7 @@ __all__ = [
     "QUALITY_PRESETS",
     "STREAMABLE_EXTS",
     "TranscodeLimiter",
+    "aac_layout_filter",
     "bitrate_for",
     "build_audio_args",
     "build_hls_cmd",

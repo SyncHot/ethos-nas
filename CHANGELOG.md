@@ -11,6 +11,21 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.13.2] - 2026-11-22
+
+### Fixed
+
+- **Movies that showed a black screen now play.** Dolby Digital Plus tracks
+  stored as `5.1(side)` — the usual layout in WEB-DL rips — made ffmpeg write a
+  PCE-based AAC track that Chrome refuses to demux
+  (`CHUNK_DEMUXER_ERROR_APPEND_FAILED`), so the player showed “The stream could
+  not be played” while the server reported a healthy HLS session. Audio is now
+  normalised to a standard 5.1/7.1 layout before encoding (HLS and the legacy
+  pipe), and an AAC track is only copied in remux when its layout is standard.
+  The player logs the real error, retries once and shows the reason with a
+  “Try again” button; an encoder that dies mid-session is logged with its ffmpeg
+  stderr and its slot is freed immediately.
+
 ## [2.13.1] - 2026-11-22
 
 ### Fixed

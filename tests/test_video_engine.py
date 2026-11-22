@@ -105,6 +105,44 @@ def test_audio_args() -> None:
     check("selected audio track is mapped", "0:a:1?" in args, str(args))
 
 
+def test_aac_channel_layout() -> None:
+    # Chrome rejects AAC muxed from a non-MPEG-4 layout (PCE): every E-AC-3
+    # "5.1(side)" WEB-DL played a black screen with CHUNK_DEMUXER_ERROR.
+    side = {"audio_tracks": [{"codec": "eac3", "channels": 6,
+                              "channel_layout": "5.1(side)"}]}
+    args = ve.build_audio_args(side, 0, "transcode", "192k")
+    check("5.1(side) is normalised to 5.1",
+          args[-2:] == ["-af", "aformat=channel_layouts=5.1"], str(args))
+
+    unknown = {"audio_tracks": [{"codec": "eac3", "channels": 6}]}
+    args = ve.build_audio_args(unknown, 0, "transcode", "192k")
+    check("unknown 6-channel layout is normalised too",
+          "aformat=channel_layouts=5.1" in " ".join(args), str(args))
+
+    standard = {"audio_tracks": [{"codec": "ac3", "channels": 6,
+                                  "channel_layout": "5.1"}]}
+    args = ve.build_audio_args(standard, 0, "transcode", "192k")
+    check("standard 5.1 adds no filter", "-af" not in args, str(args))
+
+    stereo = {"audio_tracks": [{"codec": "aac", "channels": 2,
+                                "channel_layout": "stereo"}]}
+    check("standard stereo adds no filter", ve.aac_layout_filter(stereo["audio_tracks"][0]) == [])
+
+    side_aac = {"audio_tracks": [{"codec": "aac", "channels": 6,
+                                  "channel_layout": "5.1(side)"}]}
+    args = ve.build_audio_args(side_aac, 0, "remux", "192k")
+    check("non-standard AAC is re-encoded instead of copied",
+          "copy" not in args and "aac" in args, str(args))
+    check("AAC re-encode still gets the 5.1 filter",
+          "aformat=channel_layouts=5.1" in " ".join(args), str(args))
+
+    cmd = ve.build_hls_cmd(
+        "ffmpeg", "/x/movie.mkv", side, 0, "vaapi", "transcode", 0,
+        "balanced", "192k", "/tmp/out", decode_hw=True, device="/dev/dri/renderD128")
+    check("HLS command carries the layout filter",
+          "aformat=channel_layouts=5.1" in " ".join(cmd), " ".join(cmd))
+
+
 def test_commands() -> None:
     cmd = ve.build_transcode_cmd(
         "ffmpeg", "/x/movie.mkv", HEVC, 12.5, "vaapi", "transcode", 0,
@@ -161,6 +199,7 @@ def main() -> int:
     test_bitrate()
     test_video_args()
     test_audio_args()
+    test_aac_channel_layout()
     test_commands()
     test_playlist_and_segments()
     asyncio.run(test_probe_without_ffmpeg())
