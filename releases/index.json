@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T22:04:08+00:00",
+  "generated_at": "2026-11-22T22:11:03+00:00",
   "latest": {
-    "version": "2.29.5",
-    "git_sha": "f8c88da",
-    "git_sha_full": "f8c88da595255ac642fdcd29c562313d3946ac72",
-    "build": 224,
-    "released_at": "2026-11-22T22:04:08+00:00",
-    "notes": "Downloads: watch-folder scan pass extracted into a service (no behaviour change)"
+    "version": "2.29.6",
+    "git_sha": "ba431c0",
+    "git_sha_full": "ba431c03f538171ef4789584c76355bc57dbaf00",
+    "build": 226,
+    "released_at": "2026-11-22T22:11:03+00:00",
+    "notes": "Downloads: queue order and retry timing extracted into a service (no behaviour change)"
   },
   "releases": [
+    {
+      "version": "2.29.6",
+      "git_sha": "ba431c0",
+      "git_sha_full": "ba431c03f538171ef4789584c76355bc57dbaf00",
+      "build": 226,
+      "released_at": "2026-11-22T22:11:03+00:00",
+      "notes": "Downloads: queue order and retry timing extracted into a service (no behaviour change)"
+    },
     {
       "version": "2.29.5",
       "git_sha": "f8c88da",
@@ -201,14 +209,6 @@
       "build": 160,
       "released_at": "2026-11-22T14:26:12+00:00",
       "notes": "System: EthOS pauses heavy work and skips the OOM killer when the box runs out of memory, and reports why it was killed"
-    },
-    {
-      "version": "2.22.0",
-      "git_sha": "f6637ab",
-      "git_sha_full": "f6637ab0c9fad84bfb732f961b86e50e20c53ebf",
-      "build": 158,
-      "released_at": "2026-11-22T14:12:32+00:00",
-      "notes": "Books: offline retry/cancel, locked-phone progress, offline reading without a session, faster large libraries, EPUB swipe and PDF pinch"
     }
   ]
 }
