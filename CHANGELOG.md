@@ -11,6 +11,35 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.21.1] - 2026-11-22
+
+### Fixed
+
+- **Tapping a search result plays the whole list instead of that one track.**
+  The player queue now follows whatever list you tapped in — search results,
+  a playlist, downloads or radio recents — so next/previous stay in context.
+- **A deleted download stays deleted.** Removing a track while it was still
+  queueing or streaming could let the worker write the row back a moment later;
+  the deletion now wins the race.
+- Deleting or cancelling a download no longer blocks the parallel slots, and a
+  manual (pinned) download is no longer dropped by the next playlist sync.
+
+### Added
+
+- The player queue can be edited on the phone (remove a track, clear the queue)
+  and survives a reload; hardware/back navigation returns to the previous view
+  and deep links (`?view=playlist&id=…`, `?view=podcast&id=…`) open it directly.
+- Search keeps paging (append-only) and its filters while you scroll, and the
+  radio tab lists recently played stations.
+- Download progress uses the shared task panel (`progress.css`) instead of a
+  music-only copy.
+
+### Changed
+
+- Downloads run four at a time by default (1/2/4/6 selectable), covers are
+  fetched only after the audio slot frees up, and progress repaints are
+  throttled — a playlist sync is visibly faster on a phone.
+
 ## [2.21.0] - 2026-11-22
 
 ### Added

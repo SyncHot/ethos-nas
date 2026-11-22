@@ -347,6 +347,7 @@ async function runDownload({ key, track, kind }) {
         return;
     }
     if (await quotaExceeded()) {
+        if (_cancelled.has(key)) return;             // deleted while the check ran
         _paused = true;
         _pauseReason = 'quota';
         upsert({ ...row, status: 'waiting', error: 'Brak miejsca na urządzeniu' });
@@ -362,6 +363,7 @@ async function runDownload({ key, track, kind }) {
         notifyChange();
         return;
     }
+    if (_cancelled.has(key)) return;              // deleted while the space check ran
 
     upsert({ ...row, status: 'downloading', error: '' });
     dbPut(ROWS, _index.get(key)).catch(() => {});

@@ -169,6 +169,12 @@ queue and emits one Notification Center warning instead of failing every track.
 - [x] Full player: Media Session, queue, shuffle/repeat, sleep timer, like
 - [x] `episode-audio` proxy with SSRF guard and size cap
 - [x] APK channel retired (endpoint 404, Settings row removed)
+- [x] Context queues (tap a result → the whole list plays), queue edit/clear, back nav, deep links
+- [x] Search paging + kept filters, radio recents, Media Session position scrubber
+- [x] Downloads: pinned manuals survive a sync, in-flight cancel, cover after slot, delete wins races
+- [x] Shared progress panel (`frontend/static/css/progress.css`) on `/music`
 - [x] Docs, guards and CHANGELOG updated
+- [ ] Optional: per-row cancel button and pause/resume directly in Pobrane
+- [ ] Optional: engine/yt-dlp update + About card in Settings; swipe-down player
 - [ ] Optional: user-set storage cap instead of the 92 % quota guard
 - [ ] Optional: deduplicate the phone UI and the desktop package UI

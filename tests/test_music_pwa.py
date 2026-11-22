@@ -111,7 +111,13 @@ def main() -> int:
             reply(state)
             return
         if path == "/api/music/radio/state":
-            reply({"favorites": [], "recents": []})
+            reply({"favorites": [], "recents": ["r1"]})
+            return
+        if path == "/api/music/radio/stations":
+            reply({"categories": ["Komercyjne"], "stations": [
+                {"id": "r1", "name": "RMF", "category": "Komercyjne", "stream_url": "https://x/rmf.mp3",
+                 "city": "Krakow", "logo": "", "tags": "pop", "hls": False},
+            ], "total": 1})
             return
         if path == "/api/sharing/incoming":
             reply({"grants": []})
@@ -120,17 +126,29 @@ def main() -> int:
             reply({"items": []})
             return
         if path == "/api/music/search":
-            reply({
-                "query": "test",
-                "tracks": {"items": [
-                    {"id": "vid12345678", "title": "Testowy utwór",
-                     "artist": "Test Artysta", "duration": 180, "thumbnail": ""},
-                    {"id": "vid87654321", "title": "Polubiony utwór",
-                     "artist": "Test Artysta", "duration": 200, "thumbnail": ""},
-                ], "total": 2, "has_more": False},
-                "podcasts": {"items": []}, "radio": {"items": []},
-                "library": {"items": []}, "playlists": {"items": []},
-            })
+            offset = int((urllib.parse.parse_qs(parsed.query).get("offset") or ["0"])[0])
+            if offset == 0:
+                reply({
+                    "query": "test",
+                    "tracks": {"items": [
+                        {"id": "vid12345678", "title": "Testowy utwór",
+                         "artist": "Test Artysta", "duration": 180, "thumbnail": ""},
+                        {"id": "vid87654321", "title": "Polubiony utwór",
+                         "artist": "Test Artysta", "duration": 200, "thumbnail": ""},
+                    ], "total": 3, "has_more": True, "offset": 0},
+                    "podcasts": {"items": []}, "radio": {"items": []},
+                    "library": {"items": []}, "playlists": {"items": []},
+                })
+            else:
+                reply({
+                    "query": "test",
+                    "tracks": {"items": [
+                        {"id": "vid33333333", "title": "Trzeci wynik",
+                         "artist": "Test Artysta", "duration": 150, "thumbnail": ""},
+                    ], "total": 3, "has_more": False, "offset": 2},
+                    "podcasts": {"items": []}, "radio": {"items": []},
+                    "library": {"items": []}, "playlists": {"items": []},
+                })
             return
         if path == "/api/music/stream":
             route.fulfill(status=200, content_type="audio/wav", body=WAV)
@@ -190,6 +208,17 @@ def main() -> int:
             page.wait_for_selector(".mu-row-title", timeout=8000)
             check("search renders a track", "Testowy utwór" in page.inner_text("#mu-results"))
 
+            # 3b. tapping a result plays the whole result list, not one track
+            page.wait_for_timeout(600)   # let a debounced re-search finish re-rendering
+            page.locator('.mu-row[data-key]').first.click()
+            page.wait_for_selector('[data-testid="music-player"]', state="visible", timeout=5000)
+            page.click("#mu-queue-btn")
+            check("tapping a search result queues the whole list",
+                  page.locator("#mu-queue-list .mu-row").count() == 2,
+                  str(page.locator("#mu-queue-list .mu-row").count()))
+            page.click("#mu-queue-close")
+            page.click("#mu-player-close")
+
             # 4. add to playlist → the playlist mirrors to the device
             page.click(".mu-row-more")
             page.get_by_role("button", name="Dodaj do playlisty").click()
@@ -247,6 +276,68 @@ def main() -> int:
             check("the playlist header shows the offline count",
                   "1 z 1" in page.inner_text("[data-playlist-download]"),
                   page.inner_text("[data-playlist-download]"))
+            page.click('[data-act="back"]')
+            page.wait_for_selector(".mu-h1", timeout=5000)
+            check("back returns to the library", "Biblioteka" in page.inner_text("#mu-content"))
+
+            # 4d. progress panel is actually styled on the phone page
+            styled = page.evaluate("""async () => {
+                const m = await import('/static/core/progress.js');
+                const task = m.startTask({ appId: 'music', title: 'probe' });
+                const panel = document.getElementById('taskProgressPanel');
+                const pos = panel ? getComputedStyle(panel).position : 'missing';
+                const width = panel ? panel.getBoundingClientRect().width : 0;
+                task.finish('done', { percent: 100 });
+                m.clearFinishedTasks(null, { globalOnly: true });
+                const linked = [...document.styleSheets].some((sheet) => (sheet.href || '').includes('progress.css'));
+                return { pos, width, linked };
+            }""")
+            check("the download progress panel is styled on /music",
+                  styled["pos"] == "fixed" and styled["width"] > 100 and styled["linked"], str(styled))
+
+            # 4e. radio recents are rendered
+            page.click('[data-testid="music-nav-radio"]')
+            page.wait_for_selector("#mu-radio-recent .mu-row", timeout=8000)
+            check("recently played stations are listed",
+                  "Ostatnio słuchane" in page.inner_text("#mu-radio-recent"))
+
+            # 4f. a manual (non-playlist) download is pinned across a re-sync
+            pinned = page.evaluate("""async () => {
+                const offline = await import('/static/music/offline.js');
+                const track = { id: 'vid00000000', title: 'Przypiety utwor', artist: 'Test', duration: 60, thumbnail: '' };
+                offline.downloadTrack(track);
+                for (let i = 0; i < 60; i++) {
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                    if (offline.hasLocal(track)) break;
+                }
+                const res = await fetch('/api/music/state', {
+                    headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
+                });
+                const state = await res.json();
+                offline.syncPlaylists(state.playlists);
+                await new Promise((resolve) => setTimeout(resolve, 500));
+                return {
+                    has: offline.hasLocal(track),
+                    rows: offline.downloadsSnapshot().map((row) => [row.track && row.track.title, row.status, !!row.pinned]),
+                };
+            }""")
+            check("a manual download outside a playlist survives a re-sync",
+                  pinned["has"] and any(row[0] == 'Przypiety utwor' and row[2] for row in pinned["rows"]),
+                  str(pinned))
+
+            cancelled = page.evaluate("""async () => {
+                const offline = await import('/static/music/offline.js');
+                const track = { id: 'vid11111111', title: 'Anulowany utwor', artist: 'Test', duration: 60, thumbnail: '' };
+                offline.downloadTrack(track);
+                await offline.deleteDownload(track);
+                await new Promise((resolve) => setTimeout(resolve, 900));
+                return {
+                    has: offline.hasLocal(track),
+                    rows: offline.downloadsSnapshot().map((row) => row.track && row.track.title),
+                };
+            }""")
+            check("deleting a download removes it and it stays gone",
+                  not cancelled["has"] and 'Anulowany utwor' not in cancelled["rows"], str(cancelled))
 
             # 4d. downloads are parallel by default and the setting sticks
             page.click('[data-testid="music-nav-settings"]')
@@ -270,14 +361,15 @@ def main() -> int:
 
             # 6. playback prefers the stored copy (blob, no network)
             stream_before = sum(1 for _m, path in calls if path == "/api/music/stream")
-            page.click("[data-act='play-download']")
+            page.locator(".mu-dl-list .mu-row", has_text="Testowy utwór").first.click()
             page.wait_for_selector('[data-testid="music-player"]', state="visible", timeout=8000)
             page.wait_for_timeout(1200)
             check("tapping a download opens the player",
                   page.is_visible('[data-testid="music-player"]'))
             check("the player shows the downloaded track",
                   any(title in page.inner_text('[data-testid="music-player"]')
-                      for title in ("Testowy utwór", "Polubiony utwór")))
+                      for title in ("Testowy utwór", "Polubiony utwór")),
+                  page.inner_text('[data-testid="music-player"]')[:120])
             stream_after = sum(1 for _m, path in calls if path == "/api/music/stream")
             check("offline playback does not hit the stream proxy", stream_after == stream_before,
                   f"{stream_before} -> {stream_after}")
