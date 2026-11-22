@@ -117,3 +117,36 @@ and uses the V2 proxy when it answers (it does — `2.0`).
 - Radarr import path: needs to match the Downloads `download_dir`
   (currently `/mnt/SharedDrive/torrents/downloads`).
 - Sonarr is not yet installed; will be a docker-compose addition.
+
+## Folders — one contract, three apps
+
+`download_dir` and `categories` are **per-user** since config v9, but the API key
+is NAS-wide and is *not* an account. A per-user lookup answered Radarr with a
+phantom `/home/qb-admin/Downloads`, so a grab was created outside the folder the
+admin maintains and the import pointed at a directory that does not exist. The
+shim now resolves everything through `_nas_view()` — the first active admin
+account, falling back to the system view on a fresh install.
+
+| Who | Folder it must use |
+|---|---|
+| Download Station (admin settings) | `download_dir` = `/mnt/SharedDrive/torrents/downloads` |
+| qBittorrent API (Radarr/Sonarr `movies`/`tv` category) | `<download_dir>/movies`, `<download_dir>/tv` — absolute, the same value the admin sees |
+| Radarr download client "Directory" | leave empty — the category decides |
+| Radarr/Sonarr **root folder** (library) | `/storage/media/movies`, `/storage/tv` (the *media* tree, never `torrents/…`) |
+| Video Station library roots | `/mnt/SharedDrive/media` only — a root pointing at `torrents/downloads` puts raw releases next to the imported copies |
+
+Rule of thumb: `torrents/downloads` is a **staging** area (debrid engine, then
+the *arr import), `media` is the **library** (Video Station scans it). Nothing in
+`media` should ever be a download target, and no root folder in Radarr/Sonarr
+should live inside `torrents`.
+
+Checklist when imports show up in the wrong place:
+
+1. `GET /api/downloads/qb/api/v2/app/preferences` → `save_path` must be the
+   media-drive download dir, never `/home/…`.
+2. Radarr → Settings → Media Management → Root Folders: remove any
+   `torrents/downloads` entry (Radarr then imports into `media/movies`).
+3. Video Station → Settings → library folders: media tree only.
+
+Tests: `tests/test_qb_compat.py` (preferences/`save_path` equal the admin's
+folder, categories persisted in the NAS view).

@@ -11,6 +11,19 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.23.1] - 2026-11-22
+
+### Fixed
+
+- **Radarr/Sonarr use the download folder you set.** The qBittorrent API key is
+  one NAS-wide credential, not an account, so the integration was reading its own
+  empty per-user settings and reporting a folder that does not exist
+  (`/home/qb-admin/Downloads`). Grabs are now created in the Download Station
+  folder of the admin account — and a `movies`/`tv` category resolves to
+  `<download folder>/movies` as an absolute path — so imports land where the
+  library expects them. Categories created by Radarr/Sonarr are stored in that
+  same settings view instead of a throwaway one.
+
 ## [2.23.0] - 2026-11-22
 
 ### Added

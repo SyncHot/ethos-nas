@@ -25,6 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SECRET = "qb-compat-test-secret"
+ADMIN = "qbarr-admin"
 _results: list[tuple[str, bool, str]] = []
 
 
@@ -44,10 +45,10 @@ def _b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
 
-def _admin_token() -> str:
+def _admin_token(username: str = "qb-admin") -> str:
     header = _b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
     payload = _b64(json.dumps({
-        "sub": "1", "username": "qb-admin", "role": "admin",
+        "sub": "1", "username": username, "role": "admin",
         "exp": int(time.time()) + 3600, "iat": int(time.time()),
     }).encode())
     sig = _b64(hmac.new(SECRET.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest())
@@ -103,6 +104,24 @@ def _q(base, method, path, sid="", form=None):
         return exc.code, body, dict(exc.headers)
 
 
+def _json(base, method, path, token, payload):
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(base + path, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode()
+            return resp.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        try:
+            body = json.loads(raw) if raw else None
+        except ValueError:
+            body = raw
+        return exc.code, body
+
+
 def _login(base, password):
     status, body, headers = _q(base, "POST", "/auth/login", form={"username": "admin", "password": password})
     sid = ""
@@ -119,6 +138,14 @@ def main() -> int:
     base = f"http://127.0.0.1:{port}"
     data_dir = Path(tempfile.mkdtemp(prefix="ethos-qb-test-"))
     log_path = data_dir / "server.log"
+    # A deterministic admin account: the NAS-wide qBittorrent key borrows its
+    # Download Station settings, so the test must control who that is.
+    (data_dir / "users.json").write_text(json.dumps([{
+        "id": "1", "username": ADMIN, "password_hash": "", "role": "admin",
+        "status": "active", "created_at": "2026-01-01T00:00:00Z", "last_login": None,
+    }]), encoding="utf-8")
+    download_dir = data_dir / "downloads"
+    download_dir.mkdir()
     env = {**os.environ, "ETHOS_PORT": str(port), "ETHOS_DATA_DIR": str(data_dir), "ETHOS_JWT_SECRET": SECRET}
     log = open(log_path, "w")
     proc = subprocess.Popen(
@@ -126,7 +153,7 @@ def main() -> int:
          "--host", "127.0.0.1", "--port", str(port)],
         cwd=str(ROOT), env=env, stdout=log, stderr=subprocess.STDOUT,
     )
-    admin = _admin_token()
+    admin = _admin_token(ADMIN)
     try:
         deadline = time.time() + 25
         ready = False
@@ -170,6 +197,23 @@ def main() -> int:
         check("preferences report dht=true (magnet support)",
               isinstance(prefs, dict) and prefs.get("dht") is True)
         check("preferences expose download_path", bool(isinstance(prefs, dict) and prefs.get("download_path")))
+
+        # Regression: the key is not an account. A per-user lookup used to answer
+        # with a phantom /home/<key-id>/Downloads, so Radarr imported from a folder
+        # that does not exist instead of the one configured in Download Station.
+        status, _body = _json(base, "POST", "/api/downloads/config", admin,
+                              {"download_dir": str(download_dir)})
+        check("saving the download dir succeeds", status == 200, f"HTTP {status}: {_body}")
+        status, owner_cfg, _h = _request(base, "GET", "/api/downloads/config", admin)
+        expected_dir = (owner_cfg or {}).get("download_dir") if isinstance(owner_cfg, dict) else ""
+        status, prefs, _h = _q(base, "GET", "/app/preferences", sid)
+        save_path = (prefs or {}).get("save_path") if isinstance(prefs, dict) else ""
+        check("admin download dir is the one just saved",
+              expected_dir == str(download_dir), f"{expected_dir!r}")
+        check("preferences report that folder, not a phantom key home",
+              save_path == str(download_dir), f"save_path={save_path!r}")
+        check("the key identity never leaks into a path",
+              "qb-admin" not in str(save_path) and "qb-admin" not in str(expected_dir), str(save_path))
 
         status, info, _h = _q(base, "GET", "/torrents/info", sid)
         check("torrents/info → array", status == 200 and isinstance(info, list))

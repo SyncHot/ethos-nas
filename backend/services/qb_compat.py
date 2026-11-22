@@ -96,6 +96,26 @@ def _prune_sessions() -> None:
             _qb_sessions.pop(sid, None)
 
 
+def _nas_view() -> str:
+    """Account whose Download Station settings the NAS-wide key works with.
+
+    Radarr/Sonarr hold the one NAS-wide qBittorrent key and that key is **not**
+    an account: a per-user config lookup used to answer with a phantom
+    ``/home/qb-admin/Downloads``, so grabs were created outside the folder the
+    admin configured and the *arr imports pointed at a directory that does not
+    exist. Use the first active admin account (the one whose Download Station
+    folder is maintained) and fall back to the system view on a fresh install.
+    """
+    try:
+        from backend.services import users_store
+        for user in users_store.load_cached():
+            if str(user.get("role") or "") == "admin" and users_store.is_active(user):
+                return str(user.get("username") or "") or "system"
+    except Exception:
+        logger.warning("qBittorrent: admin lookup failed, using the system view", exc_info=True)
+    return "system"
+
+
 def _parse_form(request_body: bytes) -> dict:
     try:
         return parse_qs(request_body.decode("utf-8", errors="replace"))
@@ -231,7 +251,11 @@ async def qb_app_preferences(request: Request):
     _require_auth(request)
 
     from backend.routers.downloads import _load_config
-    cfg = _load_config()
+    # Radarr/Sonarr authenticate with the NAS-wide key, which is not a real
+    # account: read the config as the system identity so the save path and the
+    # categories are the ones configured in Download Station (a per-user lookup
+    # would answer with a phantom /home/<key-id>/Downloads).
+    cfg = _load_config(view=_nas_view())
     dl_dir = cfg.get("download_dir", str(Path.home() / "Downloads"))
     per_task_limit = int((cfg.get("speed_limit") or {}).get("per_task_bps") or 0)
     sched = cfg.get("schedule") or {}
@@ -436,7 +460,7 @@ async def qb_torrents_add(request: Request):
     # is confined to the download dir: this endpoint is authenticated by an API
     # key, not by a user, so it must not become an arbitrary-write primitive.
     if save_path:
-        dl_dir = os.path.abspath(str(_load_config().get("download_dir") or ""))
+        dl_dir = os.path.abspath(str(_load_config(view=_nas_view()).get("download_dir") or ""))
         if os.path.isabs(save_path) or save_path.startswith("~"):
             sp = os.path.abspath(os.path.expanduser(save_path))
             if not dl_dir or not (sp == dl_dir or sp.startswith(dl_dir + os.sep)):
@@ -448,11 +472,19 @@ async def qb_torrents_add(request: Request):
     if not save_path and category:
         # A configured category save_path wins over the implicit <download_dir>/<name>.
         from backend.routers.downloads import _category_target
-        save_path = _category_target(_load_config(), category)
+        save_path = _category_target(_load_config(view=_nas_view()), category)
     if not save_path:
         safe_cat = _safe_category_dirname(category)
         if safe_cat:
-            save_path = safe_cat  # relative — add_task() joins it under download_dir
+            # Absolute, from the NAS-wide download dir: add_task() would join a
+            # relative folder under the *caller's* dir, and the qB API key is not
+            # a real account (that is where the phantom /home/qb-admin/Downloads
+            # came from — Radarr imported from it and Sonarr never did).
+            dl_dir = str(_load_config(view=_nas_view()).get("download_dir") or "")
+            if dl_dir:
+                save_path = os.path.abspath(os.path.join(dl_dir, safe_cat))
+            else:
+                save_path = safe_cat  # relative — add_task() joins it under download_dir
 
     try:
         payload = {"url": magnet, "folder": save_path or "", "category": category}
@@ -512,7 +544,7 @@ def _task_content(t: dict):
     """
     from backend.routers.downloads import _load_config
 
-    cfg = _load_config()
+    cfg = _load_config(view=_nas_view())
     selected = [f for f in (t.get("_files") or []) if f.get("is_selected")] or list(t.get("_files") or [])
     raw_path = str(t.get("path") or "").strip()
     base_dir = os.path.dirname(os.path.abspath(raw_path)) if raw_path else os.path.abspath(cfg.get("download_dir", ""))
@@ -750,7 +782,7 @@ async def qb_torrents_categories(request: Request):
 
     from backend.routers.downloads import _load_config, _owned, _tasks
     configured = {str(c.get("name")): str(c.get("save_path") or "")
-                  for c in (_load_config().get("categories") or [])}
+                  for c in (_load_config(view=_nas_view()).get("categories") or [])}
     implicit = {t.get("_qb_category", "") for t in _tasks
                 if _owned(t) and t.get("_qb_category")}
     names = sorted(set(configured) | implicit | _category_set())
@@ -777,7 +809,7 @@ async def qb_torrents_create_category(request: Request):
         # a personal API key stays inside its home plus /mnt and /media.
         save_path = path_scope.sanitize(save_path)
     _category_set().add(category)
-    _upsert_category(category, save_path)
+    _upsert_category(category, save_path, view=_nas_view())
     return PlainTextResponse(content="")
 
 
@@ -793,7 +825,7 @@ async def qb_torrents_delete_category(request: Request):
     if not category:
         return PlainTextResponse(content="Category name cannot be empty")
     _category_set().discard(category)
-    _remove_category(category)
+    _remove_category(category, view=_nas_view())
     return PlainTextResponse(content="")
 
 

@@ -192,8 +192,15 @@ def category_target(cfg: dict, name: str) -> str:
     return ""
 
 
-def upsert_category(name: str, save_path: str = "") -> list:
-    """Create/replace a category (used by the qBittorrent shim)."""
+def upsert_category(name: str, save_path: str = "", view: "str | None" = None) -> list:
+    """Create/replace a category (used by the qBittorrent shim).
+
+    ``view`` writes into another identity's slice — the *arr API key is not an
+    account, so its categories belong to the account that maintains the queue.
+    """
+    if view and view != user_data.current_username():
+        with path_scope.system_scope(view):
+            return upsert_category(name, save_path)
     cfg = load_config()
     cats = [c for c in (cfg.get("categories") or [])
             if str(c.get("name") or "").lower() != str(name).strip().lower()]
@@ -203,7 +210,10 @@ def upsert_category(name: str, save_path: str = "") -> list:
     return cfg["categories"]
 
 
-def remove_category(name: str) -> list:
+def remove_category(name: str, view: "str | None" = None) -> list:
+    if view and view != user_data.current_username():
+        with path_scope.system_scope(view):
+            return remove_category(name)
     cfg = load_config()
     cfg["categories"] = [c for c in (cfg.get("categories") or [])
                          if str(c.get("name") or "").lower() != str(name).strip().lower()]
@@ -299,7 +309,22 @@ def norm_package_limits(raw) -> dict:
     return out
 
 
-def load_config() -> dict:
+def load_config(view: "str | None" = None) -> dict:
+    """Merged download config for the calling identity.
+
+    ``view`` reads the config as another identity. The qBittorrent shim needs
+    it: Radarr/Sonarr authenticate with a NAS-wide API key, and that key is
+    **not** a real account, so the per-user default would be a phantom
+    ``/home/<key-id>/Downloads`` instead of the folder the admin configured in
+    Download Station.
+    """
+    if not view or view == user_data.current_username():
+        return _load_config()
+    with path_scope.system_scope(view):
+        return _load_config()
+
+
+def _load_config() -> dict:
     try:
         # json_store gives us quarantine-on-corruption, the migration and the
         # downgrade guard; it never raises for a missing/damaged file.
