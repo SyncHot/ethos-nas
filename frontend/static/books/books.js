@@ -81,14 +81,24 @@ const state = {
     view: 'library',
     query: '',
     filter: 'all',
+    sort: 'title',
+    limit: 60,
     loaded: false,
     offlineMode: false,
+    offlineOnly: false,
     reading: null,
     installPrompt: null,
     speeds: [0.75, 1, 1.25, 1.5, 1.75, 2],
     sleeps: [0, 15, 30, 45, 60],
     saveTimer: null,
+    searchTimer: null,
 };
+
+const SORT_KEY = 'ethos.books.sort';
+try {
+    const saved = localStorage.getItem(SORT_KEY);
+    if (['title', 'author', 'recent', 'size'].includes(saved)) state.sort = saved;
+} catch { /* private mode */ }
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -129,23 +139,102 @@ function badgesHtml(book) {
 }
 
 /** Cover object URLs are async (IndexedDB, then the package proxy). */
+const COVER_CONCURRENCY = 4;
+const _coverQueue = [];
+let _coverActive = 0;
+
 function hydrateCovers(root) {
-    root.querySelectorAll('[data-cover]').forEach(async (node) => {
-        const book = bookById(node.dataset.cover);
-        if (!book) return;
-        const url = await offline.coverUrl(book);
-        if (!url || !node.isConnected) return;
-        node.innerHTML = `<img src="${esc(url)}" alt="" loading="lazy" decoding="async">`
-            + (node.classList.contains('bk-cover') ? badgesHtml(book) : '');
-    });
+    const nodes = [...root.querySelectorAll('[data-cover]')];
+    if (!nodes.length) return;
+    if (!('IntersectionObserver' in window)) {
+        nodes.forEach((node) => enqueueCover(node));
+        return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            observer.unobserve(entry.target);
+            enqueueCover(entry.target);
+        }
+    }, { rootMargin: '400px' });
+    nodes.forEach((node) => observer.observe(node));
+}
+
+function enqueueCover(node) {
+    _coverQueue.push(node);
+    pumpCovers();
+}
+
+function pumpCovers() {
+    while (_coverActive < COVER_CONCURRENCY && _coverQueue.length) {
+        const node = _coverQueue.shift();
+        if (!node.isConnected) continue;
+        _coverActive += 1;
+        paintCover(node).finally(() => { _coverActive -= 1; pumpCovers(); });
+    }
+}
+
+async function paintCover(node) {
+    const book = bookById(node.dataset.cover);
+    if (!book) return;
+    const url = await offline.coverUrl(book);
+    if (!url || !node.isConnected) return;
+    node.innerHTML = `<img src="${esc(url)}" alt="" loading="lazy" decoding="async">`
+        + (node.classList.contains('bk-cover') ? badgesHtml(book) : '');
+}
+
+function fmtDuration(seconds) {
+    const total = Math.round(Number(seconds) || 0);
+    if (!total) return '';
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.round((total % 3600) / 60);
+    if (hours) return `${hours} h ${minutes} min`;
+    return `${minutes} min`;
 }
 
 function netPill(offlineMode) {
-    state.offlineMode = offlineMode;
+    state.offlineMode = !!offlineMode;
     if (!els.net) return;
     els.net.hidden = !offlineMode;
-    els.net.textContent = offlineMode ? 'Offline' : '';
+    els.net.textContent = typeof offlineMode === 'string' ? offlineMode
+        : (offlineMode ? 'Offline' : '');
 }
+
+// ── overlay history (Android Back closes the top overlay, not the app) ────
+
+const overlays = [];
+let _skipPop = false;
+
+/** Push an overlay; if one is already open (sheet → reader), reuse its entry. */
+function openOverlay(name, hide) {
+    const top = history.state?.bkOverlay;
+    const replaced = top ? overlays.findIndex((entry) => entry.name === top) : -1;
+    if (replaced >= 0) {
+        overlays.splice(replaced, 1);
+        overlays.push({ name, hide });
+        try { history.replaceState({ bkOverlay: name }, ''); } catch { /* ignore */ }
+        return;
+    }
+    overlays.push({ name, hide });
+    try { history.pushState({ bkOverlay: name }, ''); } catch { /* ignore */ }
+}
+
+function dropOverlay(name) {
+    const index = overlays.findIndex((entry) => entry.name === name);
+    if (index < 0) return;
+    const [entry] = overlays.splice(index, 1);
+    entry.hide();
+    if (history.state?.bkOverlay === name) {
+        _skipPop = true;
+        try { history.back(); } catch { _skipPop = false; }
+    }
+}
+
+window.addEventListener('popstate', () => {
+    if (_skipPop) { _skipPop = false; return; }
+    const entry = overlays.pop();
+    if (entry) entry.hide();
+});
 
 // ── auth ───────────────────────────────────────────────────────────────────
 
@@ -244,18 +333,30 @@ async function loadLibrary() {
 }
 
 async function refreshLibrary() {
+    if (state.offlineOnly) {
+        toast('Połącz się z siecią i zaloguj, aby odświeżyć bibliotekę.', 'info', 'Books');
+        return;
+    }
     await loadLibrary();
     renderView();
 }
 
 // ── boot ──────────────────────────────────────────────────────────────────
 
-async function startApp() {
+async function startApp({ offlineOnly = false, cached = null } = {}) {
     showApp();
+    state.offlineOnly = offlineOnly;
     await offline.initOffline(() => {
         if (state.view === 'downloads' || state.view === 'settings') renderView();
     });
-    await loadLibrary();
+    if (offlineOnly && cached) {
+        applyLibrary(cached);
+        netPill('Offline — tylko pobrane');
+        state.loaded = true;
+    } else {
+        await loadLibrary();
+    }
+    offline.reconcileDownloads().catch(() => {});
     engine.restoreSession();
     wireEngine();
     wirePublicUi();
@@ -270,6 +371,9 @@ async function startApp() {
         const book = bookById(deepLink);
         if (book) openSheet(book);
         else toast('Nie znaleziono tej książki w bibliotece.', 'warning');
+    }
+    if (offlineOnly) {
+        toast('Tryb offline: widoczne są tylko pobrane pozycje. Po połączeniu się z siecią zaloguj się ponownie, aby zsynchronizować.', 'info', 'Books');
     }
 }
 
@@ -304,16 +408,37 @@ function loadingHtml() {
 
 // ── library ───────────────────────────────────────────────────────────────
 
+function visibleBooks() {
+    const books = state.library.books || [];
+    return sortBooks(books.filter((book) => {
+        if (!matchesQuery(book, state.query)) return false;
+        if (state.filter === 'audiobooks') return isAudiobook(book);
+        if (state.filter === 'books') return !isAudiobook(book);
+        if (state.filter === 'finished') return !!progressFor(book)?.finished;
+        return true;
+    }));
+}
+
+function sortBooks(list) {
+    const byTitle = (a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'pl', { sensitivity: 'base' });
+    if (state.sort === 'author') {
+        return list.sort((a, b) => String(a.author || '~').localeCompare(String(b.author || '~'), 'pl')
+            || byTitle(a, b));
+    }
+    if (state.sort === 'recent') {
+        return list.sort((a, b) => String(b.added_at || '').localeCompare(String(a.added_at || '')));
+    }
+    if (state.sort === 'size') return list.sort((a, b) => (Number(b.size) || 0) - (Number(a.size) || 0));
+    return list.sort(byTitle);
+}
+
 function renderLibrary() {
     if (!state.loaded) { els.content.innerHTML = loadingHtml(); return; }
     const books = state.library.books || [];
     const shared = state.library.shared_books || [];
     const stats = state.library.stats || {};
-    const filtered = books.filter((book) => {
-        if (state.filter === 'audiobooks' && !isAudiobook(book)) return false;
-        if (state.filter === 'books' && isAudiobook(book)) return false;
-        return matchesQuery(book, state.query);
-    }).sort((a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'pl', { sensitivity: 'base' }));
+    const filtered = visibleBooks();
+    const shown = filtered.slice(0, state.limit);
 
     const continueRows = books
         .filter((book) => Number(progressFor(book)?.percent) > 0.001)
@@ -335,11 +460,18 @@ function renderLibrary() {
       <input class="bk-input" id="bk-search" type="search" placeholder="Szukaj tytułu lub autora…"
              value="${esc(state.query)}" data-testid="books-search" autocomplete="off">
       <div class="bk-row" style="margin:10px 0 12px;flex-wrap:wrap">
-        ${[['all', 'Wszystko'], ['audiobooks', 'Audiobooki'], ['books', 'Książki i PDF']].map(([key, label]) => `
+        ${[['all', 'Wszystko'], ['audiobooks', 'Audiobooki'], ['books', 'Książki i PDF'], ['finished', 'Skończone']].map(([key, label]) => `
           <button class="bk-btn small${state.filter === key ? ' primary' : ''}" type="button"
                   data-act="filter" data-filter="${key}">${label}</button>`).join('')}
+        <select class="bk-select" id="bk-sort" aria-label="Sortowanie" data-testid="books-sort"
+                style="margin-left:auto;min-width:150px">
+          ${[['title', 'Tytuł'], ['author', 'Autor'], ['recent', 'Najnowsze'], ['size', 'Rozmiar']].map(([key, label]) => `
+            <option value="${key}"${state.sort === key ? ' selected' : ''}>${label}</option>`).join('')}
+        </select>
       </div>
-      <div class="bk-grid" id="bk-cards">${cardsHtml(filtered)}</div>
+      <div class="bk-grid" id="bk-cards">${cardsHtml(shown)}</div>
+      ${filtered.length > state.limit ? `<button class="bk-btn" type="button" data-act="more"
+        data-testid="books-more" style="width:100%;margin-top:12px">Pokaż więcej (${filtered.length - state.limit})</button>` : ''}
       ${shared.length ? `
         <div class="bk-section-title"><h2>Udostępnione mi</h2><span class="count">${shared.length}</span></div>
         <div class="bk-list">${shared.filter((book) => matchesQuery(book, state.query)).map((book) => itemHtml(book, true)).join('')}</div>` : ''}
@@ -357,12 +489,14 @@ function cardsHtml(books) {
     return books.map((book) => {
         const progress = progressFor(book);
         const value = percentOf(book, progress);
+        const lengthText = fmtDuration(book.duration_s);
+        const sub = book.author || (isAudiobook(book) ? 'Audiobook' : 'Książka');
         return `
         <button class="bk-card" type="button" data-act="book" data-id="${esc(book.id)}" data-testid="books-card">
           ${coverHtml(book)}
           <span class="bk-card-body">
             <span class="bk-card-title">${esc(book.title || baseName(book.path))}</span>
-            <span class="bk-card-sub">${esc(book.author || (isAudiobook(book) ? 'Audiobook' : 'Książka'))}</span>
+            <span class="bk-card-sub">${esc(sub)}${lengthText ? ` · ${esc(lengthText)}` : ''}</span>
             ${value > 0 && value < 100 ? `<span class="bk-progress"><i style="width:${value}%"></i></span>` : ''}
           </span>
         </button>`;
@@ -376,12 +510,13 @@ function itemHtml(book, shared = false) {
     const sub = audio
         ? `${progress ? `Rozdział ${(Number(progress.locator) || 0) + 1} · ${fmtTime(progress.position_s)}` : `${bookTracks(book).length} rozdziałów`}`
         : (book.series || book.author || 'Książka');
+    const lengthText = fmtDuration(book.duration_s);
     return `
       <button class="bk-item" type="button" data-act="book" data-id="${esc(book.id)}" data-testid="books-item">
         ${coverHtml(book, 'thumb')}
         <span class="bk-item-main">
           <span class="bk-item-title">${esc(book.title || baseName(book.path))}</span>
-          <span class="bk-item-sub">${esc(sub)}</span>
+          <span class="bk-item-sub">${esc(sub)}${lengthText ? ` · ${esc(lengthText)}` : ''}</span>
           ${value > 0 ? `<span class="bk-progress" style="margin-top:4px"><i style="width:${value}%"></i></span>` : ''}
         </span>
         <span class="bk-item-side">${shared ? 'tylko odczyt' : `${value}%`}</span>
@@ -438,6 +573,8 @@ function renderDownloads() {
         const total = bookRows.length;
         const percent = total ? Math.round((done / total) * 100) : 0;
         const failed = bookRows.find((row) => row.status === 'failed');
+        const broken = bookRows.some((row) => ['failed', 'missing'].includes(row.status));
+        const active = bookRows.some((row) => ['queued', 'downloading', 'waiting'].includes(row.status));
         return `
           <div class="bk-item" style="cursor:default" data-testid="books-download-row">
             ${coverHtml(book || { id: '', kind: 'audiobook' }, 'thumb')}
@@ -447,8 +584,10 @@ function renderDownloads() {
               <span class="bk-progress" style="margin-top:4px"><i style="width:${percent}%"></i></span>
               ${failed ? `<span class="bk-item-sub" style="color:#ff8a80">${esc(failed.error || 'Błąd pobierania')}</span>` : ''}
             </span>
-            <span class="bk-item-side">
+            <span class="bk-item-side" style="display:grid;gap:6px">
               <button class="bk-btn small" type="button" data-act="open-download" data-id="${esc(book?.id || '')}">Otwórz</button>
+              ${active ? `<button class="bk-btn small" type="button" data-act="cancel-download" data-id="${esc(book?.id || '')}">Anuluj</button>` : ''}
+              ${broken ? `<button class="bk-btn small" type="button" data-act="retry-download" data-id="${esc(book?.id || '')}">Ponów</button>` : ''}
               <button class="bk-btn small danger" type="button" data-act="delete-download" data-id="${esc(book?.id || '')}">Usuń</button>
             </span>
           </div>`;
@@ -520,6 +659,8 @@ function renderSettings() {
 
 function saveSettings(patch) {
     state.library.settings = { ...settings(), ...patch };
+    try { state.reading?.refresh?.(state.library.settings); } catch { /* reader closed */ }
+    if (state.offlineOnly) return;
     if (state.saveTimer) clearTimeout(state.saveTimer);
     state.saveTimer = setTimeout(async () => {
         try {
@@ -536,6 +677,7 @@ function saveSettings(patch) {
 // ── sheet ─────────────────────────────────────────────────────────────────
 
 function openSheet(book) {
+    const wasOpen = !els.sheet.hidden;
     const progress = progressFor(book);
     const value = percentOf(book, progress);
     const audio = isAudiobook(book);
@@ -550,7 +692,7 @@ function openSheet(book) {
           <h3>${esc(book.title || baseName(book.path))}</h3>
           <p>${esc(book.author || 'Nieznany autor')}</p>
           ${book.series ? `<p>${esc(book.series)}${book.series_index ? ` · tom ${esc(book.series_index)}` : ''}</p>` : ''}
-          <p>${audio ? `${tracks.length} rozdziałów` : String(book.format || '').toUpperCase()} · ${esc(fmtBytes(book.size))}</p>
+          <p>${audio ? `${tracks.length} rozdziałów` : String(book.format || '').toUpperCase()} · ${esc(fmtBytes(book.size))}${fmtDuration(book.duration_s) ? ` · ${esc(fmtDuration(book.duration_s))}` : ''}</p>
           ${value > 0 ? `<p>${value}%${audio && progress ? ` · rozdział ${(Number(progress.locator) || 0) + 1}, ${esc(fmtTime(progress.position_s))}` : ''}</p>` : ''}
         </div>
       </div>
@@ -568,16 +710,21 @@ function openSheet(book) {
         ${book.shared ? 'Pozycja udostępniona przez inny profil — tylko odczyt.' : `Plik: ${esc(baseName(book.path))}`}
       </p>`;
     els.sheet.hidden = false;
+    if (!wasOpen) openOverlay('sheet', hideSheet);
     hydrateCovers(els.sheetBody);
 }
 
-function closeSheet() {
+function hideSheet() {
     els.sheet.hidden = true;
+}
+
+function closeSheet() {
+    dropOverlay('sheet');
 }
 
 // ── readers ───────────────────────────────────────────────────────────────
 
-function closeReader() {
+function hideReader() {
     if (state.reading) {
         try { state.reading.destroy?.(); } catch { /* already gone */ }
         state.reading = null;
@@ -590,16 +737,25 @@ function closeReader() {
     renderView();
 }
 
+function closeReader() {
+    dropOverlay('reader');
+}
+
 function readerNote(message, tone = 'info') {
     toast(message, tone);
 }
 
 function openReader(book) {
-    if (state.reading) closeReader();
+    if (state.reading) {
+        try { state.reading.destroy?.(); } catch { /* already gone */ }
+        state.reading = null;
+    }
+    if (!els.sheet.hidden) els.sheet.hidden = true;
     const value = settings();
     els.readerTitle.textContent = book.title || baseName(book.path);
     els.reader.className = `bk-reader theme-${readerThemeName(value)}`;
     els.reader.hidden = false;
+    openOverlay('reader', hideReader);
     els.readerBody.innerHTML = '';
     els.readerFoot.innerHTML = '<span>Wczytywanie…</span>';
     els.readerActions.innerHTML = '';
@@ -622,13 +778,13 @@ function openReader(book) {
 }
 
 function queue(bookId, payload) {
+    const stamped = { ...payload, updated_at: new Date().toISOString() };
     state.library.progress = state.library.progress || {};
     state.library.progress[bookId] = {
         ...(state.library.progress[bookId] || {}),
-        ...payload,
-        updated_at: new Date().toISOString(),
+        ...stamped,
     };
-    offline.queueProgress(bookId, payload);
+    offline.queueProgress(bookId, stamped);
 }
 
 // ── player wiring ─────────────────────────────────────────────────────────
@@ -665,7 +821,10 @@ function wireEngine() {
 
 function openPlayer(book, { autoplay = true } = {}) {
     engine.playBook(book, { settings: settings(), progress: progressFor(book), autoplay });
+    const wasOpen = !els.player.hidden;
+    if (!els.sheet.hidden) els.sheet.hidden = true;
     els.player.hidden = false;
+    if (!wasOpen) openOverlay('player', hidePlayer);
     els.tracks.hidden = true;
     renderTracks();
     updatePlayer();
@@ -681,10 +840,14 @@ function openPlayer(book, { autoplay = true } = {}) {
     engine.play();
 }
 
-function closePlayer() {
+function hidePlayer() {
     els.player.hidden = true;
     els.tracks.hidden = true;
     engine.saveProgress();
+}
+
+function closePlayer() {
+    dropOverlay('player');
 }
 
 function updatePlayer() {
@@ -730,9 +893,9 @@ function updateMini() {
         return;
     }
     els.miniTitle.textContent = book.title || 'Audiobook';
-    els.miniSub.textContent = engine.tracks.length > 1
+    els.miniSub.textContent = (engine.tracks.length > 1
         ? `Rozdział ${engine.index + 1} · ${trackTitle(engine.current)}`
-        : (book.author || 'Audiobook');
+        : (book.author || 'Audiobook')) + (engine.remaining ? ` · pozostało ${fmtTime(engine.remaining)}` : '');
     els.miniPlay.textContent = engine.isPlaying ? '⏸' : '▶';
     const value = pct(engine.percent());
     els.miniProgress.style.width = `${value}%`;
@@ -766,7 +929,12 @@ function wirePublicUi() {
 
     els.mini.addEventListener('click', (event) => {
         if (event.target.closest('#bk-mini-play')) return;
-        if (engine.book) { els.player.hidden = false; updatePlayer(); }
+        if (!engine.book) return;
+        if (els.player.hidden) {
+            els.player.hidden = false;
+            openOverlay('player', hidePlayer);
+        }
+        updatePlayer();
     });
     els.miniPlay.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -822,21 +990,34 @@ function wirePublicUi() {
     els.sheetBody.addEventListener('click', onSheetAction);
     els.sheetBody.addEventListener('change', onSettingsChange);
     els.content.addEventListener('change', onSettingsChange);
+    els.content.addEventListener('change', (event) => {
+        if (event.target.id !== 'bk-sort') return;
+        state.sort = event.target.value;
+        try { localStorage.setItem(SORT_KEY, state.sort); } catch { /* ignore */ }
+        state.limit = 60;
+        renderLibrary();
+    });
     els.content.addEventListener('input', (event) => {
         if (event.target.id !== 'bk-search') return;
         state.query = event.target.value;
-        const cards = $('bk-cards');
-        if (!cards) return;
-        const books = (state.library.books || []).filter((book) => {
-            if (state.filter === 'audiobooks' && !isAudiobook(book)) return false;
-            if (state.filter === 'books' && isAudiobook(book)) return false;
-            return matchesQuery(book, state.query);
-        }).sort((a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'pl', { sensitivity: 'base' }));
-        cards.innerHTML = cardsHtml(books);
-        hydrateCovers(cards);
+        if (state.searchTimer) clearTimeout(state.searchTimer);
+        state.searchTimer = setTimeout(() => {
+            state.limit = 60;
+            const found = visibleBooks();
+            const cards = $('bk-cards');
+            if (cards) {
+                cards.innerHTML = cardsHtml(found.slice(0, state.limit));
+                hydrateCovers(cards);
+            }
+            const count = $('books-count');
+            if (count) count.textContent = String(found.length);
+            const more = $('books-more');
+            if (more) more.hidden = found.length <= state.limit;
+        }, 200);
     });
 
     window.addEventListener('online', () => {
+        if (state.offlineOnly) { location.reload(); return; }
         netPill(false);
         offline.flushProgress().catch(() => {});
         refreshLibrary().catch(() => {});
@@ -875,7 +1056,15 @@ function onContentClick(event) {
         if (book) openSheet(book);
     } else if (action === 'filter') {
         state.filter = target.dataset.filter || 'all';
+        state.limit = 60;
         renderLibrary();
+    } else if (action === 'more') {
+        state.limit += 60;
+        renderLibrary();
+    } else if (action === 'retry-download') {
+        retryDownload(target.dataset.id);
+    } else if (action === 'cancel-download') {
+        cancelDownload(target.dataset.id);
     } else if (action === 'resume-downloads') {
         offline.resumeDownloads();
         renderDownloads();
@@ -899,7 +1088,6 @@ function onSheetAction(event) {
     const book = bookById(target.dataset.id);
     const action = target.dataset.act;
     if (action === 'open' && book) {
-        closeSheet();
         if (isAudiobook(book)) openPlayer(book);
         else openReader(book);
     } else if (action === 'download' && book) {
@@ -923,6 +1111,21 @@ async function deleteDownload(bookId) {
     toast('Usunięto z telefonu.', 'success');
     if (state.view === 'downloads') renderDownloads();
     else if (!els.sheet.hidden) openSheet(book);
+}
+
+async function cancelDownload(bookId) {
+    const cancelled = await offline.cancelBook({ id: bookId });
+    toast(cancelled ? 'Pobieranie anulowane.' : 'Nic nie było w toku.', 'info');
+    if (state.view === 'downloads') renderDownloads();
+}
+
+function retryDownload(bookId) {
+    const broken = offline.snapshot().filter((row) => row.bookId === bookId
+        && ['failed', 'missing'].includes(row.status));
+    if (!broken.length) return;
+    broken.forEach((row) => offline.retryRow(row.key));
+    toast('Ponawiam pobieranie…', 'info');
+    if (state.view === 'downloads') renderDownloads();
 }
 
 function onSettingsChange(event) {
@@ -951,7 +1154,16 @@ if (authed()) {
         showLogin(errorText(error));
     });
 } else {
-    showLogin();
-    els.loginForm.addEventListener('submit', login);
-    els.loginOffline.hidden = navigator.onLine;
+    (async () => {
+        const cached = await offline.loadLibrary().catch(() => null);
+        if (!navigator.onLine && cached?.books?.length) {
+            // Expired token + no network: keep the downloaded library usable.
+            try { await startApp({ offlineOnly: true, cached }); return; } catch (error) {
+                logWarn('Books offline boot failed', errorText(error));
+            }
+        }
+        showLogin();
+        els.loginForm.addEventListener('submit', login);
+        els.loginOffline.hidden = navigator.onLine;
+    })();
 }

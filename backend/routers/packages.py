@@ -450,29 +450,38 @@ async def package_ui_proxy(pkg_id: str, proxy_path: str, request: Request) -> Re
     content_type = request.headers.get("content-type")
     if content_type:
         headers["Content-Type"] = content_type
+    # Conditional GET: the package service answers 304 when nothing changed, so
+    # a phone start does not re-download a large library every time.
+    if request.headers.get("if-none-match"):
+        headers["If-None-Match"] = request.headers["if-none-match"]
     # Identity is server-derived: client-supplied X-Ethos-* headers are never copied.
     headers["X-Ethos-User"] = username[:64]
     headers["X-Ethos-Role"] = role[:16]
     headers["X-Ethos-Package"] = pkg_id
 
-    def _call() -> tuple[int, bytes, str]:
+    def _call() -> tuple[int, bytes, str, str]:
         req = urllib.request.Request(url, data=body, headers=headers, method=request.method)
         try:
             with urllib.request.urlopen(req, timeout=1800) as resp:
-                return resp.status, resp.read(16 * 1024 * 1024), resp.headers.get(
-                    "Content-Type", "application/octet-stream")
+                return (resp.status, resp.read(16 * 1024 * 1024), resp.headers.get(
+                    "Content-Type", "application/octet-stream"), resp.headers.get("ETag", ""))
         except urllib.error.HTTPError as exc:
-            return exc.code, exc.read(1024 * 1024), exc.headers.get(
-                "Content-Type", "application/json")
+            return (exc.code, exc.read(1024 * 1024), exc.headers.get(
+                "Content-Type", "application/json"), exc.headers.get("ETag", ""))
         except OSError as exc:
             raise PackageError(f"Package service is unavailable: {exc}", 503) from exc
 
     try:
-        status, payload, media_type = await asyncio.to_thread(_call)
+        status, payload, media_type, etag = await asyncio.to_thread(_call)
     except PackageError as exc:
         raise _http_error(exc) from None
+    response_headers = {"Cache-Control": "no-store"}
+    if etag:
+        # Private + revalidate: only this account's browser may keep a copy, and
+        # it must check with us before reusing it.
+        response_headers = {"Cache-Control": "private, no-cache", "ETag": etag}
     return Response(content=payload, status_code=status, media_type=media_type,
-                    headers={"Cache-Control": "no-store"})
+                    headers=response_headers)
 
 
 @router.get("/{pkg_id}")

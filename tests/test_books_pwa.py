@@ -63,6 +63,7 @@ AUDIOBOOK = {
     "series_index": 0,
     "language": "pl",
     "size": 2 * len(WAV),
+    "duration_s": 8.0,
     "modified": 0,
     "cover": False,
     "cover_ext": "webp",
@@ -70,8 +71,10 @@ AUDIOBOOK = {
     "added_at": "2026-11-20T10:00:00+00:00",
     "updated_at": "2026-11-20T10:00:00+00:00",
     "tracks": [
-        {"path": "/mnt/books/Test Book/01.mp3", "title": "Rozdział 1", "size": len(WAV), "modified": 0},
-        {"path": "/mnt/books/Test Book/02.mp3", "title": "Rozdział 2", "size": len(WAV), "modified": 0},
+        {"path": "/mnt/books/Test Book/01.mp3", "title": "Rozdział 1", "size": len(WAV),
+         "duration": 4.0, "modified": 0},
+        {"path": "/mnt/books/Test Book/02.mp3", "title": "Rozdział 2", "size": len(WAV),
+         "duration": 4.0, "modified": 0},
     ],
 }
 
@@ -250,7 +253,7 @@ def main() -> int:
     base = f"http://127.0.0.1:{port}"
     token = _create_token("books-pwa", "books-pwa", "admin")
 
-    mode = {"offline": False}
+    mode = {"offline": False, "failRaw": 1}
     calls: list[tuple[str, str]] = []
     progress: list[dict] = []
 
@@ -290,6 +293,12 @@ def main() -> int:
         if path == "/api/files/raw":
             source = (urllib.parse.parse_qs(urllib.parse.urlparse(request.url).query)
                       .get("path", [""])[0])
+            if source.endswith(".mp3") and mode["failRaw"] > 0:
+                # First transfer fails once: the UI must offer "Ponów".
+                mode["failRaw"] -= 1
+                route.fulfill(status=500, content_type="application/json",
+                              body=json.dumps({"detail": "simulated failure"}))
+                return
             if source.endswith(".epub"):
                 route.fulfill(status=200, content_type="application/epub+zip", body=EPUB_BYTES)
             elif source.endswith(".pdf"):
@@ -327,7 +336,22 @@ def main() -> int:
                   == "/manifest-books.webmanifest")
 
             # 2. signed-in session (JWT injected like an existing desktop session)
-            page.add_init_script(f"localStorage.setItem('token', {json.dumps(token)});")
+            page.add_init_script(
+                f"if (!localStorage.getItem('__booksNoToken')) "
+                f"localStorage.setItem('token', {json.dumps(token)});")
+            page.add_init_script("""
+                window.__psCalls = 0;
+                try {
+                    const session = navigator.mediaSession;
+                    if (session && session.setPositionState) {
+                        const original = session.setPositionState.bind(session);
+                        session.setPositionState = (value) => {
+                            window.__psCalls += 1;
+                            try { original(value); } catch (_) { /* headless */ }
+                        };
+                    }
+                } catch (_) { /* no Media Session in this build */ }
+            """)
             page.route("**/api/packages/ethos-books/**", handler)
             page.route("**/api/files/raw**", handler)
             page.goto(f"{base}/books", wait_until="domcontentloaded")
@@ -355,8 +379,11 @@ def main() -> int:
                 return frame && frame.contentDocument ? frame.contentDocument.body.innerText : '';
             }""")
             check("the EPUB reader renders the chapter", "Rozdział testowy" in epub_text, epub_text[:80])
-            page.click("#bk-reader-back")
-            page.wait_for_timeout(300)
+            page.go_back()
+            page.wait_for_timeout(400)
+            check("Android Back closes the reader instead of the app",
+                  page.is_hidden('[data-testid="books-reader"]')
+                  and page.is_visible('[data-testid="books-app"]'))
 
             page.locator(".bk-card", has_text="Testowy PDF").click()
             page.wait_for_selector('[data-act="open"]', timeout=6000)
@@ -374,6 +401,11 @@ def main() -> int:
                   page.is_visible('[data-act="download"]'))
             page.click('[data-act="download"]')
             page.wait_for_selector('[data-testid="books-download-row"]', timeout=8000)
+
+            # The mocked first transfer fails once → the row must offer a retry.
+            page.wait_for_selector('[data-act="retry-download"]', timeout=15000)
+            check("a failed download offers Ponów", page.is_visible('[data-act="retry-download"]'))
+            page.click('[data-act="retry-download"]')
 
             rows = []
             for _ in range(60):
@@ -415,6 +447,9 @@ def main() -> int:
             check("the player shows the book title",
                   "Testowy audiobook" in page.inner_text('[data-testid="books-player"]'))
             page.wait_for_timeout(1500)
+            check("the lock-screen position is updated while playing",
+                  page.evaluate("window.__psCalls > 0"),
+                  str(page.evaluate("window.__psCalls")))
             page.evaluate("window.dispatchEvent(new Event('pagehide'))")
             for _ in range(30):
                 if progress:
@@ -450,6 +485,36 @@ def main() -> int:
                   f"{file_calls_before} -> {file_calls_after}")
             check("the player is usable while offline",
                   page.is_visible("#bk-play") and page.is_visible("#bk-seek"))
+
+            # 7. an evicted cache entry is reported, not silently used
+            gone = page.evaluate("""async () => {
+                const cache = await caches.open('ethos-books-v1');
+                await cache.delete(new Request('/__books/bk_audio00001/t1'));
+                const module = await import('/static/books/offline.js');
+                const missing = await module.reconcileDownloads();
+                return { missing, row: module.rowFor('bk_audio00001', 1) };
+            }""")
+            check("an evicted file is marked missing",
+                  gone.get("missing") == 1 and gone.get("row", {}).get("status") == "missing",
+                  str(gone))
+            check("the download badge disappears for a missing file",
+                  bool(page.evaluate("""async () => {
+                      const module = await import('/static/books/offline.js');
+                      return !module.isDownloaded({ id: 'bk_audio00001', kind: 'audiobook',
+                          tracks: [{ path: 'a' }, { path: 'b' }] });
+                  }""")))
+
+            # 8. expired token + no network: the downloaded library stays usable
+            page.evaluate("localStorage.setItem('__booksNoToken', '1'); localStorage.removeItem('token')")
+            page.goto(f"{base}/books?view=downloads", wait_until="domcontentloaded")
+            page.wait_for_selector('[data-testid="books-app"]', state="visible", timeout=15000)
+            page.wait_for_selector('[data-testid="books-download-row"]', timeout=8000)
+            check("downloaded titles open without a valid token while offline",
+                  page.is_hidden('[data-testid="books-login"]')
+                  and "Testowy audiobook" in page.inner_text("#bk-content"))
+            check("the offline-only pill explains the mode",
+                  page.is_visible("#bk-net"))
+
             check("no uncaught page errors", not errors, "; ".join(errors))
             browser.close()
 

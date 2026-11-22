@@ -124,6 +124,33 @@ export function mountPdf({ book, body, foot, settings, progress, onProgress, not
         else if (event.target.closest('[data-zoom-in]')) { state.zoom = Math.min(3, state.zoom + 0.2); render(); }
         else if (event.target.closest('[data-zoom-out]')) { state.zoom = Math.max(0.5, state.zoom - 0.2); render(); }
     });
+
+    // Pinch-to-zoom on the page itself: two fingers scale, release re-renders
+    // once at the final scale (rendering on every move would stutter).
+    let pinchStart = 0;
+    let pinchBase = 1;
+    body.addEventListener('touchstart', (event) => {
+        if (event.touches?.length !== 2) return;
+        pinchStart = Math.hypot(
+            event.touches[0].clientX - event.touches[1].clientX,
+            event.touches[0].clientY - event.touches[1].clientY,
+        );
+        pinchBase = state.zoom;
+    }, { passive: true });
+    body.addEventListener('touchmove', (event) => {
+        if (!pinchStart || event.touches?.length !== 2) return;
+        const distance = Math.hypot(
+            event.touches[0].clientX - event.touches[1].clientX,
+            event.touches[0].clientY - event.touches[1].clientY,
+        );
+        state.zoom = Math.max(0.5, Math.min(3, pinchBase * (distance / pinchStart)));
+        if (event.cancelable) event.preventDefault();
+    }, { passive: false });
+    body.addEventListener('touchend', () => {
+        if (!pinchStart) return;
+        pinchStart = 0;
+        render();
+    });
     foot.querySelector('[data-page-input]')?.addEventListener('change', (event) => {
         const value = Number(event.target.value) || 1;
         state.page = Math.max(1, Math.min(doc.numPages, value));
@@ -137,5 +164,5 @@ export function mountPdf({ book, body, foot, settings, progress, onProgress, not
         body.innerHTML = `<div class="bk-empty"><span class="big">📄</span>Nie udało się otworzyć tego PDF-a.<br>${message.replace(/[<>&]/g, '')}</div>`;
     });
 
-    return { destroy };
+    return { destroy, refresh: () => { render(); } };
 }

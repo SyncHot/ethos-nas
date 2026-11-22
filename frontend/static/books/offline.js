@@ -51,6 +51,8 @@ let _batchTotal = 0;
 let _quotaNotified = false;
 let _flushTimer = null;
 let _flushing = false;
+const _aborts = new Map();
+let _batchFailed = 0;
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────
 
@@ -134,6 +136,40 @@ function upsert(row) {
     reindex();
     notifyChange();
     return _index.get(row.key);
+}
+
+/** True when at least one file is stored on the device. */
+export function hasAnyDownloads() {
+    return _rows.some((row) => row.status === 'done');
+}
+
+/**
+ * The browser can evict Cache Storage between launches. Rows are only a claim;
+ * verify them against the cache so a stale badge never promises offline
+ * playback that will fail (or silently fall back to the NAS).
+ */
+export async function reconcileDownloads() {
+    if (!('caches' in window)) return 0;
+    let missing = 0;
+    try {
+        const cache = await caches.open(CACHE);
+        for (const row of _rows.filter((entry) => entry.status === 'done')) {
+            const key = localKey(row.bookId, row.trackIndex);
+            const hit = await cache.match(new Request(key));
+            if (hit) continue;
+            missing += 1;
+            const next = { ...row, status: 'missing', error: 'Plik zniknął z pamięci — pobierz ponownie' };
+            upsert(next);
+            await dbPut(ROWS, next).catch(() => {});
+        }
+    } catch (error) {
+        logWarn('Books cache reconcile failed', String(error));
+    }
+    if (missing) {
+        logInfo('Books downloads missing from cache', String(missing));
+        notifyChange();
+    }
+    return missing;
 }
 
 export function snapshot() {
@@ -290,6 +326,10 @@ function enqueue(item) {
     upsert(row);
     dbPut(ROWS, row).catch((error) => logError('Books download row not saved', String(error)));
     if (!_queue.some((entry) => entry.key === key)) _queue.push({ ...item, key });
+    if (_task) {
+        _batchTotal += 1;
+        taskProgress();
+    }
 }
 
 async function pump() {
@@ -343,10 +383,12 @@ async function runDownload(item) {
     dbPut(ROWS, _index.get(item.key)).catch(() => {});
     ensureTask();
     const key = localKey(item.book.id, item.trackIndex);
+    const controller = new AbortController();
+    _aborts.set(item.key, controller);
     let cache = null;
     try {
         cache = await caches.open(CACHE);
-        const res = await apiFetch(rawPath(item.path));
+        const res = await apiFetch(rawPath(item.path), { signal: controller.signal });
         if (!res.ok) throw new Error(await errorDetail(res));
         const total = Number(res.headers.get('content-length')) || Number(item.size) || 0;
         const type = (res.headers.get('content-type') || 'application/octet-stream').split(';')[0];
@@ -378,6 +420,9 @@ async function runDownload(item) {
         const stored = await cache.match(new Request(key));
         if (!stored) throw new Error('Nie udało się zapisać pliku na urządzeniu');
         const size = Number(stored.headers.get('content-length')) || done || Number(item.size) || 0;
+        if (total && size && Math.abs(size - total) > 1) {
+            throw new Error('Pobranie niekompletne');
+        }
         const finished = upsert({
             ..._index.get(item.key),
             status: 'done',
@@ -394,6 +439,13 @@ async function runDownload(item) {
         // Cache the cover once, so offline cards keep their artwork.
         if (item.trackIndex == null) await coverUrl(item.book).catch(() => '');
     } catch (error) {
+        if (error?.name === 'AbortError') {
+            // Cancelled by the user: the row is already gone, keep the cache clean.
+            try { await cache?.delete(new Request(key)); } catch { /* nothing stored */ }
+            _aborts.delete(item.key);
+            notifyChange();
+            return;
+        }
         const quota = error?.name === 'QuotaExceededError';
         if (quota) {
             _paused = true;
@@ -405,11 +457,14 @@ async function runDownload(item) {
                 message: 'Pamięć telefonu prawie pełna — pobieranie wstrzymane.',
             });
         } else {
+            _batchFailed += 1;
             failRow(item.key, error?.detail || error?.message || 'Pobieranie nie powiodło się');
         }
         try { await cache?.delete(new Request(key)); } catch { /* nothing stored */ }
         dbPut(ROWS, _index.get(item.key)).catch(() => {});
         logError('Books download failed', `${key}: ${error?.detail || error?.message || error}`);
+    } finally {
+        _aborts.delete(item.key);
     }
     notifyChange();
 }
@@ -433,6 +488,7 @@ function failRow(key, message) {
 
 function ensureTask() {
     if (_task) return;
+    _batchFailed = 0;
     const pending = _rows.filter((row) => ['queued', 'downloading', 'waiting'].includes(row.status)).length;
     _batchDone = _rows.filter((row) => row.status === 'done').length;
     _batchTotal = Math.max(_batchDone + pending, 1);
@@ -455,6 +511,16 @@ function finishBatch() {
     if (!_task) return;
     _task.finish('done', { percent: 100, detail: 'Gotowe — dostępne bez sieci' });
     _task = null;
+    if (_batchFailed) {
+        notify({
+            kind: 'warning',
+            title: 'Books',
+            message: `Nie udało się pobrać ${_batchFailed} ${_batchFailed === 1 ? 'pliku' : 'plików'} — otwórz „Pobrane” i ponów.`,
+        });
+    } else if (_batchDone) {
+        notify({ kind: 'success', title: 'Books', message: 'Pobrano — działa bez sieci.' });
+    }
+    _batchFailed = 0;
 }
 
 // ── delete / retry ────────────────────────────────────────────────────────
@@ -473,6 +539,34 @@ export async function deleteBook(book) {
 export async function deleteRow(key) {
     await removeRow(key, { silent: false });
     await refreshStorage();
+}
+
+/** Cancel every queued/running transfer of one title and drop its partial files. */
+export async function cancelBook(book) {
+    const bookId = book?.id;
+    if (!bookId) return false;
+    let cancelled = false;
+    _queue = _queue.filter((item) => {
+        if (item.book?.id !== bookId) return true;
+        cancelled = true;
+        return false;
+    });
+    for (const [key, controller] of [..._aborts.entries()]) {
+        if (!key.startsWith(`${bookId}:`)) continue;
+        controller.abort();
+        cancelled = true;
+    }
+    const active = _rows.filter((row) => row.bookId === bookId
+        && ['queued', 'downloading', 'waiting'].includes(row.status));
+    for (const row of active) {
+        cancelled = true;
+        await removeRow(row.key, { silent: true });
+    }
+    if (cancelled) {
+        notifyChange();
+        await refreshStorage();
+    }
+    return cancelled;
 }
 
 async function removeRow(key, { silent = false } = {}) {
@@ -534,6 +628,24 @@ export async function loadLibrary() {
     try {
         const row = await dbGet(META, 'library');
         return row?.state || null;
+    } catch {
+        return null;
+    }
+}
+
+// ── EPUB locations cache ──────────────────────────────────────────────────
+// Generating the locations index costs a few seconds on a large novel; keeping
+// it per book makes reopening the same title instant.
+
+export async function saveLocations(bookId, locations) {
+    if (!bookId || !Array.isArray(locations) || !locations.length) return;
+    try { await dbPut(META, { k: `locations:${bookId}`, locations }); } catch { /* optional */ }
+}
+
+export async function loadLocations(bookId) {
+    try {
+        const row = await dbGet(META, `locations:${bookId}`);
+        return Array.isArray(row?.locations) && row.locations.length ? row.locations : null;
     } catch {
         return null;
     }

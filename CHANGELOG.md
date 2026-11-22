@@ -11,6 +11,38 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.22.0] - 2026-11-22
+
+### Added
+
+- **Books on the phone, round two.** The lock-screen progress bar now moves with playback, the
+  player shows how much time is left, and a new **Anuluj** / **Ponów** pair manages downloads
+  (a failed or evicted file can be retried without deleting the whole title). A finished batch
+  reports through the Notification Center.
+- **Pobrane titles work without a valid session.** After the 24 h token expires on a phone with no
+  network, `/books` opens in an offline-only mode from the saved library; positions queue and sync
+  on the next login.
+- **Library sorting and a “Skończone” filter**, and the grid renders 60 cards at a time with
+  “Pokaż więcej” and lazy, concurrent cover loading — a 20 000-title library no longer stalls the
+  phone.
+- **Reading gestures**: horizontal swipe inside EPUB chapters, cached locations (reopening a long
+  novel is instant) and pinch-to-zoom in PDFs.
+- **Books package 1.2.0** (separate signed store): the scan now reads each new audio track's
+  duration and extracts the cover embedded in M4B/M4A/MP3 files, so audiobooks show artwork in the
+  grid and on the lock screen. The library answers `ETag`/`304`, so an unchanged catalogue is
+  revalidated instead of downloaded again.
+
+### Fixed
+
+- **Android Back closes the book sheet, reader and player** instead of leaving the app.
+- **Phone and desktop agree on progress** — the phone used a size-weighted percentage while the
+  desktop used an even per-track one; both now use the same formula.
+- **An evicted download is no longer trusted**: finished files are re-checked against the cache on
+  every start, marked missing and offered for retry instead of silently streaming from the NAS.
+- **A late progress flush can no longer rewind the position** another device reached; the package
+  keeps the newest `updated_at`.
+- **Reader settings apply to an open book** (theme, font, size) without closing it.
+
 ## [2.21.1] - 2026-11-22
 
 ### Fixed

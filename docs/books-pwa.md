@@ -43,12 +43,19 @@ and the phone still goes through `/api/files/raw` (path scope) and the package p
 
 ## Features
 
-- **Biblioteka** — cover grid with search, "Wszystko / Audiobooki / Książki i PDF" filters and a
-  shared-titles section; a title opens a detail sheet.
-- **Słucham** — everything in progress, newest first, with a position bar.
-- **Pobrane** — device storage, per-title progress, retry and delete.
+- **Biblioteka** — cover grid with search, "Wszystko / Audiobooki / Książki i PDF / Skończone"
+  filters, sorting (title, author, newest, size) and a shared-titles section; a title opens a
+  detail sheet. The grid renders 60 cards at a time with a "Pokaż więcej" step and loads covers
+  only when visible (four at a time), so a 20 000-title library stays responsive.
+- **Słucham** — everything in progress, newest first, with a position bar and total length
+  (durations come from the package since 1.2.0).
+- **Pobrane** — device storage, per-title progress, **Anuluj** for a running transfer, **Ponów**
+  for a failed or evicted file, delete, and a notification when a batch finishes.
 - **Ustawienia** — the package's reader/player settings (theme, font, size, margin, line height,
-  flow, skip, speed), written back so the desktop picks them up.
+  flow, skip, speed), written back so the desktop picks them up; an open reader re-applies them
+  immediately.
+- **Android Back** closes the detail sheet, reader or player instead of leaving the app (the
+  overlays are history entries).
 - **No scanning.** Folders and scans stay in the desktop window; an empty library explains that.
 
 Navigation is `?view=…` inside the single `/books` path, so the worker only has one shell to keep.
@@ -61,6 +68,9 @@ One `Audio` element plus the **Media Session** API:
 - play, pause, previous/next chapter, ±skip and absolute seek from the lock screen or headset;
 - `setPositionState` keeps the system seek bar in sync;
 - speed, sleep timer and per-track skip come from the package settings;
+- track durations (read by the package scan) drive the "pozostało …" line and the percentage,
+  which uses the **same formula as the desktop** (`(track + fraction) / track count`) so neither
+  client rewinds the other;
 - the position is written every 5 s, on pause, on chapter end and on `pagehide`/hidden tab.
 
 Expectations: playback continues when the screen turns off and when another app is in front.
@@ -82,8 +92,13 @@ Two stores, mirroring `/videos`:
   seeking works offline; a missing entry answers `404` and the player falls back to the NAS once.
 - One file at a time; a full device pauses the queue at 92 % usage (persistent storage requested),
   reports through `core/progress.js` and warns through the Notification Center.
-- Interrupted transfers are marked failed with "Przerwane — pobierz ponownie"; retry re-queues only
-  the missing tracks, so a partial audiobook resumes where it stopped.
+- Every stored file is checked against `Content-Length`; a short body is discarded rather than kept.
+- `reconcileDownloads()` re-checks finished rows against Cache Storage on every start. A file the
+  browser evicted is marked **missing** (badge gone, "pobierz ponownie") instead of pretending to
+  work offline.
+- **Anuluj** aborts the running `fetch` (AbortController), drops the queue for that title and deletes
+  partial entries; **Ponów** re-queues only the failed/missing tracks, so a partial audiobook resumes.
+- Interrupted transfers are marked failed with "Przerwane — pobierz ponownie".
 - Deleting a title removes its rows and its cache entries; the NAS copy is never touched.
 
 ## Progress sync
@@ -97,8 +112,16 @@ Two stores, mirroring `/videos`:
 | Audiobook | track index (string) | seconds inside the track |
 
 Writes are local-first: the newest payload per book is stored in IndexedDB and PUT when the NAS is
-reachable (2.5 s debounce, on `online`, on tab focus and on close). A 4xx (the book was forgotten)
-drops the entry; a network error keeps it. Last write wins.
+reachable (2.5 s debounce, on `online`, on tab focus and on close). Every payload carries
+`updated_at`; the package keeps the **newest write** (`PUT` returns the stored record with
+`skipped: true` for an older one), so a phone that was offline for days cannot rewind the position
+the desktop reached afterwards. A 4xx (the book was forgotten) drops the entry; a network error
+keeps it.
+
+**Expired token + no network.** When the JWT is older than 24 h and the phone is offline, the app
+opens in an offline-only mode: the library comes from the IndexedDB snapshot, downloaded titles play
+and read, positions queue into the outbox, the pill says "Offline — tylko pobrane". Reconnecting
+reloads the page so the normal sign-in runs and the outbox flushes.
 
 ## Readers
 
@@ -107,9 +130,10 @@ Vendored in the core (`frontend/static/vendor/`, same pinned builds as the packa
 
 - **EPUB** — epub.js 0.3.93 + JSZip 3.10.1. Paginated or scrolled, light/sepia/dark, font, size,
   margins and line height from the shared settings, table of contents, tap zones in paginated mode,
-  CFI resume, percentage from generated locations.
+  horizontal swipe inside the chapter, CFI resume, percentage from generated locations (cached per
+  book in IndexedDB, so reopening a long novel is instant).
 - **PDF** — pdf.js 3.11.174 with its worker. Canvas at device pixel ratio, page navigation + input,
-  zoom, page resume.
+  button zoom and **pinch-to-zoom**, page resume.
 - Both prefer `/__books/<id>` and fall back to `/api/files/raw`.
 
 ## Files
@@ -145,11 +169,13 @@ asserts that offline playback never touches the NAS.
 - [x] Public `/books` page, manifest, icon set, Settings link
 - [x] Library, search, filters, continue list, shared titles
 - [x] Audiobook player with Media Session, speed, skip, sleep timer, session restore
-- [x] Episode-style progress sync (local-first outbox, package locator format)
-- [x] Offline downloads into Cache Storage with Range playback, quota guard and retry
-- [x] EPUB reader (paginated/scrolled, themes, TOC, CFI resume)
-- [x] PDF reader (canvas, zoom, page resume)
-- [x] `tests/test_books_pwa.py` + `test_pwa_assets.py` guards
+- [x] Episode-style progress sync (local-first outbox, package locator format, newest write wins)
+- [x] Offline downloads into Cache Storage with Range playback, quota guard, retry/cancel, eviction check
+- [x] EPUB reader (paginated/scrolled, themes, TOC, CFI resume, swipe, cached locations)
+- [x] PDF reader (canvas, zoom, pinch, page resume)
+- [x] Android Back closes overlays; downloaded titles work offline without a valid token
+- [x] Windowed library grid, sorted/filtered, concurrent cover loading
+- [x] `tests/test_books_pwa.py` (27 checks) + `test_pwa_assets.py` guards
 - [ ] M4B chapter list (one track per file today)
 - [ ] Folder add + scan from the phone (deliberately desktop-only for now)
 - [ ] iOS tuning (storage cap, older Media Session behaviour)

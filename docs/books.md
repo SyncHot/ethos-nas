@@ -99,7 +99,9 @@ and a service worker's scope is its own directory, so a page under `/api/package
 installed. It reads the same per-account API through the package proxy and streams bytes from
 `/api/files/raw`, so `path_scope` stays the only filesystem gate. Audiobooks play in the background
 (Media Session), downloaded titles live in Cache Storage (`/__books/…`), progress uses the same
-`locator`/`position_s` contract, and the EPUB/PDF readers reuse the same pinned libraries. Full
+`locator`/`position_s` contract, and the EPUB/PDF readers reuse the same pinned libraries. Package
+1.2.0 adds per-track durations and embedded audio covers to the scan, merges progress by
+`updated_at` and answers `ETag`/`304` so the phone revalidates instead of re-downloading. Full
 spec: [`docs/books-pwa.md`](books-pwa.md). Folder management and scanning stay in this window.
 
 ## Decisions & constraints

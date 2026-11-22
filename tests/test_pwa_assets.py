@@ -320,7 +320,21 @@ def main() -> int:
     check("worker serves /__books from its own cache with Range",
           "BOOKS_CACHE" in sw and "'/__books/'" in sw
           and "serveMedia(request, url, BOOKS_CACHE" in sw and "Content-Range" in sw)
-    check("books shell cache version was bumped", max(shell_versions or [0]) >= 8, str(shell_versions))
+    check("books shell cache version was bumped", max(shell_versions or [0]) >= 9, str(shell_versions))
+    books_js = (FRONTEND / "static" / "books" / "books.js").read_text()
+    check("books pwa has history-backed overlays (Android Back)",
+          "openOverlay" in books_js and "popstate" in books_js)
+    check("books pwa retries and cancels downloads from the UI",
+          "retry-download" in books_js and "cancel-download" in books_js)
+    check("books pwa opens downloaded titles without a valid token offline",
+          "offlineOnly" in books_js and "offline.loadLibrary" in books_js)
+    check("books pwa renders the library in windows with more pages",
+          "data-act=\"more\"" in books_js and "visibleBooks" in books_js)
+    check("books pwa caches EPUB locations and swipes pages",
+          "saveLocations" in (FRONTEND / "static" / "books" / "offline.js").read_text()
+          and "__bkSwipe" in (FRONTEND / "static" / "books" / "epub.js").read_text())
+    check("books pwa supports pinch-zoom in PDFs",
+          "pinchStart" in (FRONTEND / "static" / "books" / "pdf.js").read_text())
 
     books_offline = (FRONTEND / "static" / "books" / "offline.js").read_text()
     check("books downloads stream into Cache Storage (no whole-file Blob in RAM)",

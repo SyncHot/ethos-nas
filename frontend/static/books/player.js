@@ -32,16 +32,23 @@ export class Engine {
         this._subs = {};
         this._lastSession = 0;
         this._lastSave = 0;
+        this._lastPositionState = 0;
         this._sleepTimer = null;
         this._sleepAt = 0;
         this._restored = false;
 
         this.audio.addEventListener('timeupdate', () => {
-            this._emit('time', { pos: this.audio.currentTime || 0, dur: this.audio.duration || 0 });
             const now = Date.now();
+            this._emit('time', { pos: this.audio.currentTime || 0, dur: this.audio.duration || 0 });
             if (now - this._lastSession > 5000) { this._lastSession = now; this.saveSession(); }
             if (now - this._lastSave > 5000) { this._lastSave = now; this.saveProgress(); }
+            // The lock-screen scrubber needs a fresh position, not just metadata.
+            if (now - this._lastPositionState > 1000) {
+                this._lastPositionState = now;
+                this._setPositionState();
+            }
         });
+        this.audio.addEventListener('ratechange', () => this._setPositionState());
         this.audio.addEventListener('loadedmetadata', () => {
             this._emit('time', { pos: this.audio.currentTime || 0, dur: this.audio.duration || 0 });
             this._updateMediaSession();
@@ -92,6 +99,9 @@ export class Engine {
             const cover = await offline.coverUrl(this.book, { fetch: false });
             if (cover) artwork = [{ src: cover, sizes: '512x512', type: 'image/webp' }];
         } catch { /* cover is optional */ }
+        if (!artwork.length) {
+            artwork = [{ src: '/static/icons/books-512.png', sizes: '512x512', type: 'image/png' }];
+        }
         try {
             navigator.mediaSession.metadata = new MediaMetadata({
                 title: String(this.book.title || 'Audiobook'),
@@ -307,19 +317,30 @@ export class Engine {
 
     // ── progress ──────────────────────────────────────────────────────────
 
-    /** Weighted by track size, so a book with uneven chapters still advances evenly. */
+    /**
+     * Same formula as the desktop player (`(index + fraction) / tracks`), so a
+     * position written here never jumps when the desktop opens the same book.
+     */
     percent() {
         if (!this.book || !this.tracks.length) return 0;
-        const sizes = this.tracks.map((track) => Number(track.size) || 0);
-        const anySize = sizes.some((size) => size > 0);
-        const weight = (index) => (anySize ? sizes[index] : 1);
-        const total = anySize ? sizes.reduce((sum, size) => sum + size, 0) : this.tracks.length;
+        const fraction = this.audio.duration
+            ? Math.min(1, (this.audio.currentTime || 0) / this.audio.duration)
+            : 0;
+        return Math.max(0, Math.min(1, (this.index + fraction) / this.tracks.length));
+    }
+
+    /** Total book length in seconds when the package knows the track durations. */
+    get totalDuration() {
+        if (Number(this.book?.duration_s) > 0) return Number(this.book.duration_s);
+        const sum = this.tracks.reduce((total, track) => total + (Number(track.duration) || 0), 0);
+        return sum > 0 ? sum : 0;
+    }
+
+    /** Listening time left, or 0 when durations are unknown. */
+    get remaining() {
+        const total = this.totalDuration;
         if (!total) return 0;
-        let done = 0;
-        for (let i = 0; i < this.index; i += 1) done += weight(i);
-        const fraction = this.audio.duration ? Math.min(1, (this.audio.currentTime || 0) / this.audio.duration) : 0;
-        done += weight(this.index) * fraction;
-        return Math.max(0, Math.min(1, done / total));
+        return Math.max(0, Math.round(total * (1 - this.percent())));
     }
 
     payload(finished = false) {

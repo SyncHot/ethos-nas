@@ -12,7 +12,7 @@
 
 import { apiFetch } from '../core/api.js';
 import { localKey, rawPath } from './api.js';
-import { CACHE } from './offline.js';
+import { CACHE, loadLocations, saveLocations } from './offline.js';
 
 const VENDORS = [
     '/static/vendor/jszip.min.js',
@@ -121,7 +121,10 @@ export async function bookBuffer(book) {
  * @returns {{destroy: Function}}
  */
 export function mountEpub({ book, body, foot, actions, settings, progress, onProgress, note }) {
-    const state = { destroyed: false, epub: null, rendition: null, locations: null, lastPercent: Number(progress?.percent) || 0 };
+    const state = {
+        destroyed: false, epub: null, rendition: null, locations: null,
+        lastPercent: Number(progress?.percent) || 0, lastCfi: '', settings,
+    };
     body.innerHTML = '<div class="bk-epub-host" data-epub-host></div>';
     const host = body.querySelector('[data-epub-host]');
     foot.innerHTML = '<span data-reader-position>Wczytywanie…</span>';
@@ -135,6 +138,15 @@ export function mountEpub({ book, body, foot, actions, settings, progress, onPro
         try { state.epub?.destroy(); } catch { /* already gone */ }
         state.epub = null;
         state.rendition = null;
+    };
+
+    /** Re-apply typography after the shared reader settings changed. */
+    const refresh = (next) => {
+        if (next) state.settings = next;
+        try {
+            (state.rendition?.getContents?.() || []).forEach((contents) => applyTheme(contents, state.settings));
+            state.rendition?.themes?.fontSize(`${Number(state.settings.font_size) || 100}%`);
+        } catch { /* reader not ready yet */ }
     };
 
     (async () => {
@@ -156,7 +168,35 @@ export function mountEpub({ book, body, foot, actions, settings, progress, onPro
             allowScriptedContent: false,
         });
         state.rendition = rendition;
-        rendition.hooks.content.register((contents) => applyTheme(contents, settings));
+        rendition.hooks.content.register((contents) => {
+            applyTheme(contents, state.settings);
+            // Swipe inside the iframe: horizontal drag turns the page. Tap
+            // zones stay for single-handed reading; both work in paginated
+            // and scrolled mode (a mostly-vertical drag is ignored).
+            const doc = contents?.document;
+            if (!doc || doc.__bkSwipe) return;
+            try { doc.__bkSwipe = true; } catch { return; }
+            let startX = 0;
+            let startY = 0;
+            let tracking = false;
+            doc.addEventListener('touchstart', (event) => {
+                if (event.touches?.length !== 1) { tracking = false; return; }
+                tracking = true;
+                startX = event.touches[0].clientX;
+                startY = event.touches[0].clientY;
+            }, { passive: true });
+            doc.addEventListener('touchend', (event) => {
+                if (!tracking) return;
+                tracking = false;
+                const touch = event.changedTouches?.[0];
+                if (!touch) return;
+                const dx = touch.clientX - startX;
+                const dy = touch.clientY - startY;
+                if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+                if (dx < 0) rendition.next();
+                else rendition.prev();
+            }, { passive: true });
+        });
 
         const report = (value, cfi) => {
             if (positionLabel) positionLabel.textContent = `${Math.round(value * 100)}%${local ? ' · offline' : ''}`;
@@ -180,21 +220,39 @@ export function mountEpub({ book, body, foot, actions, settings, progress, onPro
             report(state.lastPercent, start.cfi || '');
         });
 
-        // Percentage needs the locations index; generate it in the background
-        // so the first page paints immediately (a novel takes a moment), then
-        // report the real percentage for the page already on screen.
-        Promise.resolve(state.epub.ready).then(() => state.epub.locations.generate(1600))
-            .then((locations) => {
-                state.locations = locations;
-                if (!state.lastCfi) return;
-                let value;
-                try { value = locations.percentageFromCfi(state.lastCfi); } catch { /* ignore */ }
-                if (Number.isFinite(value)) {
-                    state.lastPercent = Math.max(0, Math.min(1, value));
-                    report(state.lastPercent, state.lastCfi);
-                }
-            })
-            .catch(() => { /* percentage falls back to page counts */ });
+        // Percentage needs the locations index. Reuse the one saved for this
+        // book (reopening a 600-page novel is instant) and generate it in the
+        // background otherwise, then report the real percentage for the page
+        // already on screen.
+        (async () => {
+            const cached = await loadLocations(book.id).catch(() => null);
+            if (state.destroyed) return;
+            if (cached) {
+                try {
+                    state.epub.locations.load(cached);
+                    state.locations = state.epub.locations;
+                } catch { /* regenerate below */ }
+            }
+            if (!state.locations) {
+                await new Promise((resolve) => { Promise.resolve(state.epub.ready).then(resolve, resolve); });
+                if (state.destroyed) return;
+                const generated = await state.epub.locations.generate(1600).catch(() => null);
+                if (!generated || state.destroyed) return;
+                state.locations = generated;
+                try {
+                    const saved = state.epub.locations.save();
+                    const list = typeof saved === 'string' ? JSON.parse(saved) : saved;
+                    await saveLocations(book.id, Array.isArray(list) ? list : []);
+                } catch { /* cache is optional */ }
+            }
+            if (!state.lastCfi) return;
+            let value;
+            try { value = state.locations.percentageFromCfi(state.lastCfi); } catch { /* ignore */ }
+            if (Number.isFinite(value)) {
+                state.lastPercent = Math.max(0, Math.min(1, value));
+                report(state.lastPercent, state.lastCfi);
+            }
+        })().catch(() => { /* percentage falls back to page counts */ });
 
         rendition.on('keyup', (event) => {
             if (event?.key === 'ArrowLeft') rendition.prev();
@@ -260,5 +318,5 @@ export function mountEpub({ book, body, foot, actions, settings, progress, onPro
         body.innerHTML = `<div class="bk-empty"><span class="big">📕</span>Nie udało się otworzyć tego EPUB-a.<br>${message.replace(/[<>&]/g, '')}</div>`;
     });
 
-    return { destroy };
+    return { destroy, refresh };
 }
