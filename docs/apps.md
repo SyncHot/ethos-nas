@@ -25,7 +25,7 @@ and one status line — matching the native package windows.
 | Overview | `apps/overview.js` | `/ws/stats` (primary), `/api/system/status` (fallback), `/api/containers` (read) |
 | Docker Manager | `ethos-packages/ethos-docker/frontend/app.js` (package) | `/api/docker`, `/api/containers`, `/api/images`, `/api/volumes`, `/api/compose/projects` |
 | Container logs | `apps/logs.js` (unified viewer) | `/api/logs`, `/ws/logs?source=…` |
-| Cleaner | `ethos-packages/ethos-cleaner/frontend/app.js` (package) | `/api/disk-clean` |
+| Cleaner | `ethos-packages/ethos-cleaner/frontend/app.js` (package 2.0) | `/api/disk-clean` (scan jobs, suggestions, trash/permanent delete, cache reclaim, history) + `/api/storage/partitions`, `/api/system/storage-usage`, `/api/files/ops`; spec `docs/disk-cleaner.md` |
 | Cron | `apps/cron.js` | `/api/cron` |
 | Process manager | `apps/processes.js` | `/api/processes` |
 | Services | `apps/services.js` | `/api/systemd`, `/api/ethos-nas-service` |

@@ -11,6 +11,33 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.31.0] - 2026-11-22
+
+### Added
+
+- **Disk Cleaner 2.0 backend**: scans run as background jobs with live entry counts, a
+  cooperative Cancel and a partial-result flag instead of a 120 s timeout; `/suggestions`
+  computes each junk root in one pass and caches the sweep for two minutes; new
+  `GET /api/disk-clean/history`, `POST /api/disk-clean/caches/clean` and an optional
+  `{areas:[…]}` body on `POST /api/system/retention/sweep`.
+- **Recoverable deletes**: `POST /api/disk-clean/delete` accepts `mode:"trash"` (per-user
+  recycle bin, restore from Files) and `async` for byte-level progress through
+  `/api/files/ops`; the legacy synchronous response is unchanged for 1.0.x clients.
+- **Protected-tree policy**: the cleaner now also refuses `<DATA_DIR>`, the EthOS checkout,
+  `/var/lib/docker`, `/etc/ethos-nas` and any ancestor of a protected path, and mounts
+  `path_scope.scope_request` on every route.
+
+### Changed
+
+- **Shared trash/permanent deletion workers**: the cleaner hands deletes to
+  `files_service.start_trash_operation` / `start_hard_delete_operation`, so chunked progress,
+  per-path failure reporting and the deletion audit are the File Manager's.
+
+### Tests
+
+- New `tests/test_disk_clean.py` (41 checks: scan jobs, cancel, suggestion cache/summary,
+  protected paths, trash + restore, permanent delete, cache purge, history, area sweep).
+
 ## [2.30.3] - 2026-11-22
 
 ### Added

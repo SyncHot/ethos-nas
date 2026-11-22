@@ -39,7 +39,7 @@ from backend.services import (
     files_service, json_store, path_scope, retention_service, task_registry, trash_service,
 )
 
-logger = logging.getLogger("ethos-nas.services.disk_clean")
+logger = logging.getLogger("ethos-nas.services.disk_clean_service")
 
 # ── Limits ───────────────────────────────────────────────────────────────────
 

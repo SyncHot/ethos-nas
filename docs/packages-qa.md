@@ -59,7 +59,7 @@ scheme · `S17` catalog copy · `S18` language · `A01–A06` live API/health/lo
 | `download-manager` | 1.1.1 | native | — | own tokens (26) + dark | 49 | 0 |
 | `ethos-antivirus` | 2.1.6 | native | 8092 | own tokens (28) + dark | 0 | 0 |
 | `ethos-books` | 1.2.1 | native | 8089 | own tokens (21) + dark | 67 | 0 |
-| `ethos-cleaner` | 1.0.1 | native | — | host tokens (46) | 13 | 0 |
+| `ethos-cleaner` | 2.0.0 | native | — | own tokens (31) + 2 themes | 52 | 0 |
 | `ethos-docker` | 1.0.5 | native | — | own tokens (21) + dark | 52 | 0 |
 | `ethos-editor` | 1.0.2 | native | — | own tokens (26) + 2 themes | 229 | 0 |
 | `ethos-git` | 1.0.1 | window | 3005 | — | 0 | 0 |
@@ -157,9 +157,9 @@ blocked.
   parsed "the rest of the changelog" as the newest entry, so the totals (2.7–3.5 KB) looked like one
   entry; the real entries were 240–430 chars. Long **descriptions** are informational: the catalog
   table shows 150 chars, the dialog shows all of it.
-- **Theme scheme drift.** `ethos-cleaner`, `ethos-git-diff`, `ethos-kanban`, `ethos-photos` style
-  themselves with the core's `--text-1/--surface-*` variables instead of their own palette. All four
-  follow light/dark correctly, but a redesign has to learn a different vocabulary in each app.
+- **Theme scheme drift.** `ethos-git-diff`, `ethos-kanban` and `ethos-photos` style themselves with
+  the core's `--text-1/--surface-*` variables instead of their own palette. All three follow
+  light/dark correctly, but a redesign has to learn a different vocabulary in each app.
   `ethos-editor` now declares `--vs-*` with a dark default and `.light` overrides, which the sweep
   accepts as a palette pair.
 - **Inline handlers.** `ethos-kanban` 1.0.3 replaced its 12 `onclick`/`onchange`/`ondblclick`
