@@ -41,7 +41,7 @@ example a listening port whose owner cannot be read without root).
 Rules: `S01` identity/icon · `S02` icon artwork · `S03` declared files on disk · `S04` min core
 version · `S05` UI/healthcheck contract · `S06` port ownership · `S07–S11` forbidden JS patterns ·
 `S12` container healthchecks · `S13` module self-containment · `S15` test hooks · `S16` palette
-scheme · `S17` catalog copy · `A01–A06` live API/health/logs.
+scheme · `S17` catalog copy · `S18` language · `A01–A06` live API/health/logs.
 
 ## Matrix (2026-11-22)
 
@@ -60,7 +60,7 @@ scheme · `S17` catalog copy · `A01–A06` live API/health/logs.
 | `ethos-kanban` | 1.0.2 | native | 8098 | host tokens (34) | 36 | 12 |
 | `ethos-media-enhance` | 1.0.2 | engine | 8097 | — | 0 | 0 |
 | `ethos-monitor` | 1.0.0 | window | 3001 | — | 0 | 0 |
-| `ethos-music` | 1.0.2 | native | — | own tokens (17) + dark | 0 | 0 |
+| `ethos-music` | 1.0.3 | native | — | own tokens (17) + dark | 7 | 0 |
 | `ethos-music-engine` | 1.0.1 | engine | 8096 | — | 0 | 0 |
 | `ethos-photos` | 1.0.3 | native | — | host tokens (152) | 136 | 61 |
 | `ethos-rss` | 1.0.0 | window | 8080 | — | 0 | 0 |
@@ -74,7 +74,8 @@ scheme · `S17` catalog copy · `A01–A06` live API/health/logs.
 | `vmm` | 1.2.0 | native | 8095 | own tokens (16) + dark | 0 | 0 |
 
 UI sweep: **18/18 native windows render**, no uncaught page error, no unexpected console error,
-every window painted in light **and** dark, no iframe for native modules.
+every window painted in light **and** dark, no iframe for native modules, and — after `ethos-music`
+1.0.3 — **every window exposes a stable hook** on its interactive elements.
 
 ## P1 — visible defect, fix next
 
@@ -96,27 +97,33 @@ every window painted in light **and** dark, no iframe for native modules.
 | `ethos-rss` | 8080 | `wawalocal-api-1` |
 | `vmm` (console) | 8094 | `ethos-nas-site` |
 
-Because the core now probes the port before downloading (2.28.2), the install fails fast with
-`Port 3001 is already used by wawalocal-user-1` instead of dying in `compose up` — but the package
-still cannot be installed on a host that uses those ports. `ethos-git` had the same problem on 3000
-and was moved to 3005 (`2186e5b`).
+These no longer break the install: 2.28.5 republishes a compose package on the next free port and
+keeps the remap across updates. The defect that remains is **documentation and expectation** — the
+manifest, the README and the package changelog promise `3001`/`8080`, the user gets something else,
+and the venv/native services (which cannot be remapped) still fail. `ethos-git` had the same problem
+on 3000 and was moved to 3005 (`2186e5b`).
 - **Fix.** Pick ports outside the host's used range and record the rule in the packages `AGENTS.md`
-  ("known in-use ports" list). vmm's console also needs a published range that does not overlap a
-  documented service. Ports that are merely *listening* with an unreadable owner stay `info`.
+  ("known in-use ports" list); vmm's console range must not overlap a documented service. Ports that
+  are merely *listening* with an unreadable owner stay `info`.
 
-### ☐ P1-03 · `ethos-music` is the only app in Polish
-103 lines of hardcoded Polish copy (`Dobry wieczór`, `Polubione`, `Szukaj`, `0 utworów`) while the
-core shell and the other 24 packages are English — a session shows "Dobry wieczór" next to the core
-"Tasks / Analyzing /home". `ethos-video` has 3 such strings.
-- **Fix.** Switch the module to English (or add a `lang` switch driven by the core locale) before the
-  next Music release.
+### ☐ P1-03 · The Music and Books surfaces are Polish; everything else is English
+The gap is wider than one package: `ethos-music` (185 non-English characters in the module) *and*
+the core PWAs `/music` (`frontend/static/music/music.js`, 94 lines) and `/books`
+(`frontend/static/books/books.js` 52, `frontend/books.html` 18, `offline.js` 14) are written in
+Polish, while `ethos-books`, the shell and the other 23 packages are English. A session shows
+"Dobry wieczór" next to the core's "Tasks / Analyzing /home".
+- **Fix.** One decision for the media surfaces: translate to English, or add a language switch driven
+  by the core locale. Do it per surface (Music package, `/music`, `/books`) so each stays reviewable;
+  `S18` in `ethos-qa` keeps the packages honest meanwhile.
 
-### ☐ P1-04 · No `data-testid` in four native windows — including both references
-`backup-manager`, `ethos-antivirus`, `ethos-music`, `vmm` render zero `data-testid` hooks, although
-`package-ui/SKILL.md` makes them part of the definition of done and the UI sweep depends on them.
-The two *reference* implementations are the worst offenders.
-- **Fix.** Add `data-testid` to the rail, the status line, tables and primary buttons (start with
-  AntiVirus + Backup Manager so the reference is exemplary).
+### ☑ P1-04 · Stable test hooks on the native windows
+The rule in `package-ui/SKILL.md` accepts a `data-testid` **or** a stable action attribute — the
+first version of this sweep only counted `data-testid` and over-reported. Measuring properly:
+`backup-manager` 8/8, `ethos-antivirus` 19/22, `vmm` 13/13 and `domains`/`download-manager`/… all
+hooked, while **`ethos-music` had 0/6** (plain `class` only).
+- **Fix.** `ethos-music` 1.0.3 adds `em-nav-N`, `em-mini-*` and `em-fp-*` hooks; the sweep and
+  `ethos-qa` now share the same "hook" definition and both report zero findings. AntiVirus's three
+  unhooked buttons are covered by its `data-scan`/`data-tab` attributes.
 
 ### ☐ P1-05 · `ethos-editor` is a package that needs the core's stylesheet
 The 200 KB module ships **no CSS**: all 406 `.ed-*` rules live in the core

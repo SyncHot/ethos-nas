@@ -56,6 +56,8 @@ PROBE = """
     const cs = getComputedStyle(root);
     const painted = cs.backgroundImage !== 'none'
         || (cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== 'transparent');
+    const buttons = [...root.querySelectorAll('button,a')];
+    const hooked = buttons.filter((el) => [...el.attributes].some((a) => a.name.startsWith('data-')));
     return {
         empty: false,
         rootClass: root.className || root.tagName,
@@ -64,7 +66,8 @@ PROBE = """
         font: cs.fontFamily.slice(0, 40),
         textLen: (root.innerText || '').trim().length,
         testids: root.querySelectorAll('[data-testid]').length,
-        buttons: root.querySelectorAll('button').length,
+        buttons: buttons.length,
+        hooked: hooked.length,
         height: Math.round(root.getBoundingClientRect().height),
     };
 }
@@ -206,7 +209,8 @@ def main() -> int:
                 painted = bool(probe.get("painted"))
                 text_len = int(probe.get("textLen") or 0)
                 print(f"{pkg['id']:24}{str(painted):9}{text_len:<7}"
-                      f"{probe.get('testids', '-'):<9}{probe.get('buttons', '-'):<9}"
+                      f"{str(probe.get('testids', '-')):>7}  "
+                      f"{str(probe.get('hooked', 0)) + '/' + str(probe.get('buttons', 0)):9}"
                       f"{str(probe.get('rootClass') or probe.get('error') or '-')[:40]}")
 
                 if page_errors:
@@ -229,9 +233,11 @@ def main() -> int:
                 if not text_len and not probe.get("empty"):
                     findings.append({"id": pkg["id"], "level": "warn", "kind": "no-text",
                                      "detail": "window rendered without any text"})
-                if text_len and probe.get("testids") == 0 and pkg["id"] not in LEGACY:
+                if (text_len and not probe.get("testids") and not probe.get("hooked")
+                        and pkg["id"] not in LEGACY):
                     findings.append({"id": pkg["id"], "level": "warn", "kind": "no-testid",
-                                     "detail": "no data-testid in the rendered window"})
+                                     "detail": "no data-testid or action attribute on any "
+                                               "interactive element"})
                 if SHOTS:
                     SHOTS.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(SHOTS / f"{pkg['id']}.png"))

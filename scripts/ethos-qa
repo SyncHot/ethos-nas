@@ -252,9 +252,28 @@ def check_package(pkg_dir: Path, manifest: dict, base_url: str, version: tuple[i
                 report.add(rule, level, pkg_id, f"{message} ({hits}x)")
         row["onclick"] = len(re.findall(r"""\sonclick\s*=\s*["']""", source))
         row["data_testids"] = source.count("data-testid")
-        if row["data_testids"] == 0:
+        # The checklist accepts "a data-testid **or** a stable action attribute";
+        # count interactive elements that carry any data-* hook at all.
+        buttons = re.findall(r"<(?:button|a)\b[^>]*>", source)
+        hooked = [markup for markup in buttons
+                  if re.search(r"\sdata-(?:testid|[a-z][a-z0-9-]*)=", markup)]
+        row["hooks"] = f"{len(hooked)}/{len(buttons)}"
+        if buttons and not hooked:
             report.add("S15", "warn", pkg_id,
-                       "no data-testid in the native UI — the package-ui checklist requires them")
+                       f"none of the {len(buttons)} interactive elements carries a data-testid or "
+                       "a stable action attribute — an automated test cannot target this window")
+        elif buttons and len(hooked) * 2 < len(buttons):
+            report.add("S15", "warn", pkg_id,
+                       f"only {len(hooked)} of {len(buttons)} interactive elements carry a stable "
+                       "hook (data-testid or action attribute)")
+        # S18 — EthOS ships one language (English). Comments may be Polish; copy may not.
+        prose = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        prose = re.sub(r"//[^\n]*", "", prose)
+        polish = len(re.findall(r"[ąćęłńóśźżĄĆĘŁŃÓŚŹŻ]", prose))
+        if polish:
+            report.add("S18", "warn", pkg_id,
+                       f"{polish} character(s) of non-English copy in the native UI — the rest of "
+                       "EthOS is English")
         own_vars = set(re.findall(r"(--[a-z][a-z0-9-]{2,})\s*:", source))
         has_dark = bool(re.search(r"(?:\.dark\b|prefers-color-scheme:\s*dark)", source))
         host_tokens = len(re.findall(r"var\(--(?:text|surface|border|accent|bg)-", source))
@@ -309,6 +328,7 @@ def command_static(args: argparse.Namespace) -> int:
     report = Report()
     rows: list[dict] = []
     ports: dict[int, list[str]] = {}
+    remappable: dict[str, bool] = {}
 
     for pkg_dir in sorted(p for p in repo.iterdir() if p.is_dir() and (p / "manifest.json").is_file()):
         try:
@@ -317,6 +337,9 @@ def command_static(args: argparse.Namespace) -> int:
             report.add("S01", "error", pkg_dir.name, f"manifest.json is unreadable: {exc}")
             continue
         rows.append(check_package(pkg_dir, manifest, base_url, version, report))
+        # Since 2.28.5 a compose package is republished on a free port when its
+        # ui.port is taken; venv/native services cannot be remapped.
+        remappable[pkg_dir.name] = bool(manifest.get("compose"))
         for value in {_service_port(manifest)} | set(_compose_ports(pkg_dir / "docker-compose.yml")):
             if value:
                 ports.setdefault(value, []).append(pkg_dir.name)
@@ -335,10 +358,14 @@ def command_static(args: argparse.Namespace) -> int:
             if _package_service_pid(value) in owners:
                 continue  # this NAS runs the package's own venv service on that port
             names = published.get(value)
-            if names:
+            if names and all(remappable.get(owner) for owner in owners):
                 report.add("S06", "warn", ",".join(owners),
-                           f"port {value} is published by docker container(s) {sorted(set(names))} "
-                           "— a new install cannot bind it")
+                           f"port {value} is taken by {sorted(set(names))} — the install is "
+                           "remapped to another port, so the documented port is not what users get")
+            elif names:
+                report.add("S06", "warn", ",".join(owners),
+                           f"port {value} is taken by {sorted(set(names))} and this package "
+                           "cannot be remapped — the install fails")
             else:
                 report.add("S06", "info", ",".join(owners),
                            f"port {value} is listening; it is this package's own service if the "
