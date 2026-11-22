@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T21:45:01+00:00",
+  "generated_at": "2026-11-22T21:47:58+00:00",
   "latest": {
-    "version": "2.29.2",
-    "git_sha": "e6c3e68",
-    "git_sha_full": "e6c3e68160f3334c74137e80e2d0b3025b9c9adb",
-    "build": 218,
-    "released_at": "2026-11-22T21:45:01+00:00",
-    "notes": "API: typed request bodies reject typos with a 422; file search extracted into a service"
+    "version": "2.29.3",
+    "git_sha": "38bb2fa",
+    "git_sha_full": "38bb2fa26c35daa5ff42d64a4f083b5cbb2c2c79",
+    "build": 220,
+    "released_at": "2026-11-22T21:47:58+00:00",
+    "notes": "Packages: uninstalling a window-only package (Cameras) can now delete its configuration, and leftover core state is reclaimable under Unused package data"
   },
   "releases": [
+    {
+      "version": "2.29.3",
+      "git_sha": "38bb2fa",
+      "git_sha_full": "38bb2fa26c35daa5ff42d64a4f083b5cbb2c2c79",
+      "build": 220,
+      "released_at": "2026-11-22T21:47:58+00:00",
+      "notes": "Packages: uninstalling a window-only package (Cameras) can now delete its configuration, and leftover core state is reclaimable under Unused package data"
+    },
     {
       "version": "2.29.2",
       "git_sha": "e6c3e68",
@@ -201,14 +209,6 @@
       "build": 154,
       "released_at": "2026-11-22T14:06:49+00:00",
       "notes": "Videos on the phone now browses series with seasons, subtitles, up-next autoplay, playback speed and cast, works offline with saved progress and without a valid session, and estimates download sizes."
-    },
-    {
-      "version": "2.20.2",
-      "git_sha": "739f72e",
-      "git_sha_full": "739f72e924953e785de4a8ee807b4cb0a97c763d",
-      "build": 149,
-      "released_at": "2026-11-22T13:50:37+00:00",
-      "notes": "System: a core update now restarts in seconds instead of being hard-killed after 90 s, and no longer reports interrupted downloads"
     }
   ]
 }
