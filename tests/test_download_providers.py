@@ -207,6 +207,29 @@ def main() -> int:
         check("hoster list is normalised and deduplicated",
               hosts == ["rapidgator.net", "k2s.cc", "nitroflare.com"], str(hosts))
 
+        print("\nLink provider fallback order")
+        both = {"debrid": {"provider": "alldebrid", "link_provider": "tb7",
+                           "alldebrid_api_key": "ADKEY1234567890",
+                           "tb7_username": USERNAME, "tb7_password": PASSWORD}}
+        order = [pid for pid, _c in providers.link_candidates(both, "https://rapidgator.net/file/x")]
+        check("the configured slot is tried first", order == ["tb7", "alldebrid"], str(order))
+        check("every configured link provider is a candidate",
+              [pid for pid, _c in providers.configured_link_providers(both)] == ["tb7", "alldebrid"])
+        ad_only = [pid for pid, _c in providers.link_candidates(both, "https://example.com/f.zip")]
+        check("an unlisted host still resolves via AllDebrid", ad_only == ["alldebrid"], str(ad_only))
+        ad_primary = {"debrid": {"link_provider": "alldebrid", "alldebrid_api_key": "ADKEY1234567890",
+                                 "tb7_username": USERNAME, "tb7_password": PASSWORD}}
+        check("switching the slot reorders the candidates",
+              [pid for pid, _c in providers.link_candidates(ad_primary, "https://rapidgator.net/f")]
+              == ["alldebrid", "tb7"])
+        incomplete = {"debrid": {"link_provider": "tb7", "tb7_username": USERNAME}}
+        check("a provider without credentials is not a candidate",
+              providers.link_candidates(incomplete, "https://rapidgator.net/f") == [])
+        check("a RapidGator page is a known hoster",
+              providers.is_known_hoster("https://rapidgator.net/file/x/Perfect.Liars.mkv.html"))
+        check("a direct file URL is not a known hoster",
+              not providers.is_known_hoster("https://example.com/archive.zip"))
+
         print("\ntb7 unlock flow")
         result = tb7.resolve_link(creds, "https://rapidgator.net/file/abc")
         check("unlock returns a direct link", result["url"] == f"http://localhost:{server.server_address[1]}/file.bin",

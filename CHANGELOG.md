@@ -11,6 +11,29 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.29.7] - 2026-11-22
+
+### Added
+
+- **Downloads: a second link provider now works as a fallback.** The slot in
+  Settings → Providers is a preference, not the only option: when tb7.pl cannot unlock a
+  RapidGator/hoster link, the engine immediately retries with the AllDebrid account already
+  stored (which unlocks any host). A host tb7.pl does not list is routed straight to
+  AllDebrid, and resetting a failed link re-tries the whole chain — the task then shows
+  which provider actually fetched it.
+- **Downloads: a premium hoster page is never saved as HTML.** Pasting a RapidGator (or
+  other file-host) link without a provider that can unlock it now answers 400 with the
+  configured providers instead of downloading the landing page.
+
+### Fixed
+
+- **Progress panel: × stays dismissed.** A progress tick re-opened the panel every
+  250 ms and an empty queue showed a blank panel — both are fixed (b350d62).
+- **Videos: offline downloads resume** after a reload, a locked screen or a dropped
+  connection instead of restarting a multi-GB file from zero (72c0efb).
+- **Music: offline downloads resume** from the last stored byte, with parts assembled only
+  after the final part lands (6ef6425).
+
 ## [2.29.6] - 2026-11-22
 
 ### Changed

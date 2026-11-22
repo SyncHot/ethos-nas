@@ -25,6 +25,7 @@ from fastapi import HTTPException  # noqa: E402
 
 from backend.routers import downloads  # noqa: E402
 from backend.services import download_config  # noqa: E402
+from backend.services import download_retry as retry_policy  # noqa: E402
 from backend.services import path_scope  # noqa: E402
 
 FAILURES = []
@@ -67,18 +68,18 @@ def main() -> int:
     check("duplicate policy defaults to rename", defaults.get("duplicate_policy") == "rename")
 
     print("[retry classification]")
-    check("connection reset is retryable", downloads._is_retryable("Connection reset by peer"))
-    check("HTTP 502 is retryable", downloads._is_retryable("HTTP 502: Bad Gateway"))
-    check("429 is retryable", downloads._is_retryable("HTTP 429: Too Many Requests"))
+    check("connection reset is retryable", retry_policy.is_retryable("Connection reset by peer"))
+    check("HTTP 502 is retryable", retry_policy.is_retryable("HTTP 502: Bad Gateway"))
+    check("429 is retryable", retry_policy.is_retryable("HTTP 429: Too Many Requests"))
     check("dead hoster link is permanent",
-          not downloads._is_retryable(
+          not retry_policy.is_retryable(
               "AllDebrid: This link is not available on the file hoster website"))
-    check("bad debrid key is permanent", not downloads._is_retryable("Invalid API key (bad_token)"))
+    check("bad debrid key is permanent", not retry_policy.is_retryable("Invalid API key (bad_token)"))
     check("missing provider is permanent",
-          not downloads._is_retryable("Debrid provider is no longer configured"))
-    check("backoff doubles", [downloads._retry_delay({"retry_delay": 60}, n) for n in (1, 2, 3)]
+          not retry_policy.is_retryable("Debrid provider is no longer configured"))
+    check("backoff doubles", [retry_policy.retry_delay({"retry_delay": 60}, n) for n in (1, 2, 3)]
           == [60, 120, 240])
-    check("backoff is capped", downloads._retry_delay({"retry_delay": 3600}, 10) <= 6 * 3600)
+    check("backoff is capped", retry_policy.retry_delay({"retry_delay": 3600}, 10) <= 6 * 3600)
 
     print("[failure / backoff]")
     wakes: list[str] = []

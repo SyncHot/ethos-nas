@@ -49,6 +49,27 @@ be active at the same time:
 `torrent_provider(cfg)` / `link_provider(cfg)` return `(id, credentials)` only when
 the configured id supports that capability.
 
+### Link provider candidates (fallback chain)
+
+`configured_link_providers(cfg)` lists every link provider whose credentials are
+complete, and `link_candidates(cfg, url)` keeps the ones whose `hoster_match`
+accepts the URL's host. The provider in `debrid.link_provider` is always first;
+the rest are ordered fallbacks. Both the router (task creation) and the debrid
+worker read this list, so a second account is not wasted:
+
+- a RapidGator page goes to tb7.pl first, and when its unlock fails (inactive
+  link, premium limit, hoster temporarily down) the worker immediately retries
+  with the stored AllDebrid account, which unlocks any host;
+- a host tb7.pl does not list is routed straight to AllDebrid;
+- a task created earlier keeps working: the worker rebuilds the chain from the
+  current config, so Reset recovers a failed link after the slot was changed;
+- on success the task records the provider that actually unlocked the file.
+
+A premium file hoster (`KNOWN_HOSTERS` in `download_providers.py`) is never
+routed to the plain HTTP engine — that would only save the HTML landing page.
+When no configured provider can handle it, `POST /api/downloads/tasks` answers
+400 with the configured providers and a pointer to Settings → Providers.
+
 ## Data model
 
 `downloads_config.json` (json_store version **9**):
@@ -80,7 +101,7 @@ resume without re-unlocking.
 | POST | `/api/downloads/verify` | admin | Body `{provider, key?}` (legacy single secret) or `{provider, credentials:{…}}`. Masked/blank secrets verify the stored value. Returns `{ok, provider, account?}`. 401 = rejected credentials, 429 = provider rate limit, 502 = unreachable. |
 | GET | `/api/downloads/config` | JWT | `debrid` block with every secret masked. |
 | POST | `/api/downloads/config` | admin for engine fields | `debrid.provider` / `debrid.link_provider` are validated against capabilities; credential fields are merged (masked/absent keeps the stored value). |
-| POST | `/api/downloads/tasks` | JWT | `magnet:` → torrent slot; http(s) → hoster-link slot when `host_match` passes, else the built-in HTTP engine. |
+| POST | `/api/downloads/tasks` | JWT | `magnet:` → torrent slot; http(s) → any matching link-provider candidate (primary slot first, other configured providers as fallbacks), else the built-in HTTP engine. A known file-hoster page without a matching provider is refused with 400. |
 
 Task kinds are unchanged: `http`, `debrid`, `debrid_link` (`debrid_link` now means
 "resolved by the configured link provider", not "AllDebrid only").
@@ -135,6 +156,9 @@ uses it for everything provider-related:
 - **`kind="debrid_link"` retained** for task/qBittorrent compatibility.
 - **tb7 uses `hoster_match="list"`**; AllDebrid keeps `any` so its previous behaviour
   is unchanged.
+- **Link providers fall back to each other.** The configured slot is a preference,
+  not a hard requirement: the first configured provider that can unlock the host
+  wins, and a failed unlock tries the next one instead of failing the download.
 - **No HEAD pre-probe** of generated links (may be single-use / consume quota);
   Reset re-unlocks and can cost provider transfer.
 - Clean-room implementation: EthOS is MIT, pyload is GPLv3. pyload was used only as
@@ -151,6 +175,8 @@ uses it for everything provider-related:
 - [x] Package UI (provider selects, credential blocks, verify, hints)
 - [x] Offline unit tests + isolated-instance API/E2E tests
 - [x] Package manifest 1.1.0, README, changelog
+- [x] Link-provider fallback chain (`link_candidates`) + known-hoster guard
+      (`tests/test_download_link_fallback.py`)
 - [ ] Live verification against a real tb7.pl account (user supplies credentials + a small supported-host link)
 - [ ] Phase 2 — direct-hoster plugin framework
 

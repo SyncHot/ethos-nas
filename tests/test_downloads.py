@@ -390,7 +390,7 @@ def main() -> int:
         os.environ["ETHOS_DATA_DIR"] = str(data_dir)
         sys.path.insert(0, str(ROOT))
         from datetime import datetime  # noqa: E402
-        from backend.routers.downloads import _in_schedule_window  # noqa: E402
+        from backend.services.download_schedule import in_window as _in_schedule_window  # noqa: E402
         day = {"schedule": {"enabled": True, "start": "01:00", "end": "06:00"}}
         night = {"schedule": {"enabled": True, "start": "23:00", "end": "02:00"}}
         check("day window open at 02:00", _in_schedule_window(day, datetime(2026, 1, 1, 2, 0)))

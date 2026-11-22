@@ -220,6 +220,15 @@ def main() -> int:
               and set((body or {}).get("slots", {}).get("link") or []) == {"alldebrid", "tb7"})
         check("no provider is active yet", (body or {}).get("active") == {"torrent": "", "link": ""})
 
+        print("\nHoster link without a provider")
+        status, body = _call(base, "POST", "/api/downloads/tasks", admin, {
+            "url": "https://rapidgator.net/file/01c2f90394aaa63e0d40aa05e7d1a71b/Example.mkv.html",
+        })
+        detail = str((body or {}).get("detail") or "") if isinstance(body, dict) else ""
+        check("a hoster page without a link provider → 400", status == 400, f"HTTP {status}: {body}")
+        check("the error asks for a link provider", "link provider" in detail, detail)
+        check("the error names AllDebrid as the any-host option", "AllDebrid" in detail, detail)
+
         print("\nSave credentials")
         status, cfg = _call(base, "POST", "/api/downloads/config", admin, {
             "download_dir": str(download_dir),

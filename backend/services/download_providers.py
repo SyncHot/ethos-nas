@@ -243,6 +243,16 @@ def link_provider(cfg: dict) -> tuple:
     return name, provider_credentials(cfg, name)
 
 
+# Premium file hosters serve an HTML landing page, not the file itself: such a
+# link can only be downloaded through a link provider. Used to refuse routing
+# them to the plain HTTP engine (which would save the web page).
+KNOWN_HOSTERS = (
+    "rapidgator.net", "nitroflare.com", "turbobit.net", "hitfile.net",
+    "katfile.com", "1fichier.com", "ddownload.com", "filefactory.com",
+    "uploadgig.com", "k2s.cc", "keep2share.cc", "filejoker.net", "mega.nz",
+)
+
+
 # ── Hoster routing ───────────────────────────────────────────────────────────
 
 def _url_host(url: str) -> str:
@@ -275,6 +285,40 @@ def hosters(provider: str) -> list:
     if provider == "tb7":
         return tb7.hosters()
     return []
+
+
+def is_known_hoster(url: str) -> bool:
+    """True for a premium file-host landing page (never a direct file URL)."""
+    host = _url_host(url)
+    if not host:
+        return False
+    return any(host == known or host.endswith("." + known) for known in KNOWN_HOSTERS)
+
+
+def configured_link_providers(cfg: dict) -> list:
+    """Every link provider with complete credentials, primary slot first."""
+    preferred = str(((cfg or {}).get("debrid") or {}).get("link_provider") or "").strip()
+    found = []
+    for spec in _PROVIDERS:
+        if CAP_LINK_UNLOCK not in spec.capabilities:
+            continue
+        creds = provider_credentials(cfg, spec.id)
+        if credentials_complete(spec.id, creds):
+            found.append((spec.id, creds))
+    # Stable sort: the configured slot stays first, the rest keep registry order.
+    found.sort(key=lambda pair: 0 if pair[0] == preferred else 1)
+    return found
+
+
+def link_candidates(cfg: dict, url: str) -> list:
+    """Configured link providers that can unlock `url`, primary slot first.
+
+    Every configured provider is a candidate, not only the one in
+    `debrid.link_provider`: a second account (AllDebrid unlocks any host) takes
+    over when the primary one does not list the hoster or its unlock fails.
+    """
+    return [(pid, creds) for pid, creds in configured_link_providers(cfg)
+            if host_matches(pid, url)]
 
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
