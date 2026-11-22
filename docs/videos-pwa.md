@@ -31,6 +31,13 @@ page itself asks for the login form; the token is the normal desktop JWT
 needs it, including `/exports/*/download` and the `?token=` forms used by
 `<video>`.
 
+**Install over HTTPS.** Service workers, Cache Storage and the install prompt
+only exist in a secure context, so open the page on the NAS hostname that has a
+TLS certificate (e.g. `https://nas.example.com/videos`) or on `localhost`.
+A plain-http LAN address (`http://192.168.x.x:9000/videos`) still plays and
+streams, but downloads refuse with an explicit “needs HTTPS” message and no
+icon can be pinned.
+
 ## Offline downloads
 
 1. `POST /api/videos/exports {path, q, a}` → `202` with a job

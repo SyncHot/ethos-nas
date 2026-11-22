@@ -201,6 +201,11 @@ async function waitForRender(jobId, task) {
  * @param {string} quality  fast | balanced | high
  */
 export async function downloadItem(item, quality = 'fast', { onChange, onDone } = {}) {
+    // Cache Storage only exists in a secure context: plain-http LAN installs
+    // would otherwise fail deep inside with an opaque error.
+    if (!window.isSecureContext || !('caches' in window)) {
+        throw new Error('Offline downloads need HTTPS — open this page over https:// or on localhost');
+    }
     const previous = _onChange;
     if (onChange) _onChange = onChange;
     const title = item.tmdb?.title || item.title || item.name || String(item.path).split('/').pop();

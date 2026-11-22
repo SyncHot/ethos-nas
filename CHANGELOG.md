@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.15.1] - 2026-11-22
+
+### Fixed
+
+- **Videos download on a plain-http address now explains itself.** Offline
+  downloads need HTTPS (or `localhost`) because browsers only expose Cache
+  Storage in a secure context; the app says so instead of failing silently.
+  Streaming and playback still work over plain HTTP.
+
 ## [2.15.0] - 2026-11-22
 
 ### Added
