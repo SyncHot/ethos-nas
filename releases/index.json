@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T21:47:58+00:00",
+  "generated_at": "2026-11-22T21:54:14+00:00",
   "latest": {
-    "version": "2.29.3",
-    "git_sha": "38bb2fa",
-    "git_sha_full": "38bb2fa26c35daa5ff42d64a4f083b5cbb2c2c79",
-    "build": 220,
-    "released_at": "2026-11-22T21:47:58+00:00",
-    "notes": "Packages: uninstalling a window-only package (Cameras) can now delete its configuration, and leftover core state is reclaimable under Unused package data"
+    "version": "2.29.4",
+    "git_sha": "04a8e28",
+    "git_sha_full": "04a8e28575f02f14f3f4e3be88d3b316e4261e7e",
+    "build": 222,
+    "released_at": "2026-11-22T21:54:14+00:00",
+    "notes": "Downloads: transfer window and retry policy extracted into services (no behaviour change)"
   },
   "releases": [
+    {
+      "version": "2.29.4",
+      "git_sha": "04a8e28",
+      "git_sha_full": "04a8e28575f02f14f3f4e3be88d3b316e4261e7e",
+      "build": 222,
+      "released_at": "2026-11-22T21:54:14+00:00",
+      "notes": "Downloads: transfer window and retry policy extracted into services (no behaviour change)"
+    },
     {
       "version": "2.29.3",
       "git_sha": "38bb2fa",
@@ -201,14 +209,6 @@
       "build": 156,
       "released_at": "2026-11-22T14:11:13+00:00",
       "notes": ""
-    },
-    {
-      "version": "2.21.0",
-      "git_sha": "7389ef5",
-      "git_sha_full": "7389ef5fda3404ae1c46eba4afa6a2cf84a6668b",
-      "build": 154,
-      "released_at": "2026-11-22T14:06:49+00:00",
-      "notes": "Videos on the phone now browses series with seasons, subtitles, up-next autoplay, playback speed and cast, works offline with saved progress and without a valid session, and estimates download sizes."
     }
   ]
 }
