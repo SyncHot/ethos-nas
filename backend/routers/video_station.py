@@ -24,6 +24,14 @@ REST:
     transcode — full re-encode (VA-API/QSV when available, libx264 otherwise) +
                 hardware decode when the per-file probe accepts it + AAC audio.
 - GET  /api/videos/subtitles?path=.. — sibling .srt/.vtt files for a video
+- GET  /api/videos/download-settings — default offline-download version (per user)
+- POST /api/videos/download-settings — save the default version
+- POST /api/videos/exports           — queue an offline MP4 render (many allowed)
+- GET  /api/videos/exports           — queue + stage + defaults + limits
+- GET  /api/videos/exports/{id}      — one job (poll while it renders)
+- POST /api/videos/exports/{id}/consumed — device stored it → free the NAS copy
+- DELETE /api/videos/exports/{id}    — cancel a queued/rendering job or delete a file
+- GET  /api/videos/exports/{id}/download — finished MP4 (Range, attachment)
 - GET  /api/videos/resume?path=...   — saved playback position (or null)
 - POST /api/videos/resume            — save/clear playback position
 - DELETE /api/videos/resume?path=... — remove from Continue Watching
@@ -119,6 +127,9 @@ DEFAULT_CONFIG = {
         # Decode with VA-API/QSV when the probe says the codec is supported;
         # falls back to software automatically per file.
         "hardware_decode": True,
+        # Default version for offline downloads ("Original" copies an H.264
+        # stream instead of re-encoding it, so it is usually the fastest).
+        "download_quality": "balanced",
     },
     # Metadata (Phase 6/9) — display-only metadata + locally cached artwork.
     # The section keeps its historical `tmdb` name for API compatibility, but
@@ -130,6 +141,9 @@ DEFAULT_CONFIG = {
 }
 
 QUALITY_PRESETS = video_engine.QUALITY_PRESETS
+
+# Offline-export versions. "high" is playback-only (source-resolution encode).
+EXPORT_QUALITIES = video_engine.EXPORT_QUALITIES
 
 AUDIO_BITRATES = video_engine.AUDIO_BITRATES
 
@@ -187,7 +201,8 @@ def _sanitize_options(options: dict) -> dict:
             if v is None:
                 continue
             if (k == "quality" and v in QUALITY_PRESETS) or \
-                    (k == "audio_bitrate" and v in AUDIO_BITRATES):
+                    (k == "audio_bitrate" and v in AUDIO_BITRATES) or \
+                    (k == "download_quality" and v in EXPORT_QUALITIES):
                 base[k] = v
             elif k in ("sort", "view") and isinstance(v, str) and v:
                 base[k] = v[:32]
@@ -1045,17 +1060,59 @@ async def hls_segment(sid: str, name: str) -> FileResponse:
 
 class RenderRequest(BaseModel):
     path: str
-    q: str = "fast"
+    q: str | None = None   # fast | balanced | original; omitted = the account default
     a: int = 0
+
+
+class DownloadSettings(BaseModel):
+    quality: str
+
+
+EXPORT_QUALITY_CHOICES = (
+    {"value": "original", "label": "Original · no re-encode"},
+    {"value": "balanced", "label": "1080p"},
+    {"value": "fast", "label": "720p · small"},
+)
+
+
+@router.get("/download-settings")
+async def get_download_settings() -> dict:
+    """Default offline-download version for this account (shared by both UIs)."""
+    options = _load_config()["options"]
+    return {
+        "quality": options.get("download_quality", "balanced"),
+        "qualities": list(EXPORT_QUALITY_CHOICES),
+    }
+
+
+@router.post("/download-settings")
+async def set_download_settings(payload: DownloadSettings) -> dict:
+    quality = (payload.quality or "").strip().lower()
+    if quality not in EXPORT_QUALITIES:
+        raise HTTPException(status_code=400, detail="Unknown download quality")
+
+    def _apply(data):
+        if not isinstance(data, dict):
+            data = {}
+        options = {**(data.get("options") or {}), "download_quality": quality}
+        data["options"] = _sanitize_options(options)
+        return data["options"]
+
+    options = _config_store().update(_apply)
+    logger.info("Download settings saved | quality=%s user=%s",
+                options["download_quality"], user_data.current_username())
+    return {"quality": options["download_quality"],
+            "qualities": list(EXPORT_QUALITY_CHOICES)}
 
 
 @router.post("/exports", status_code=202)
 async def create_export(payload: RenderRequest) -> dict:
-    """Prepare a compact MP4 (H.264 + AAC) for offline playback on a phone.
+    """Queue a compact MP4 (H.264 + AAC) for offline playback on a phone.
 
-    Returns 202 with the job; poll ``GET /exports/{id}`` until ``done`` and then
-    download ``/exports/{id}/download``. One active render per user, three stored
-    copies, 2 GiB free-space preflight, 7-day retention.
+    ``q`` defaults to the account's ``download_quality``. "original" copies the
+    existing H.264 stream (passthrough/remux — seconds) and falls back to a
+    1080p encode for HEVC/10-bit sources. Many jobs may be queued: they render
+    one at a time and are reaped after the device stored them.
     """
     abs_path = _sanitize_read(payload.path)
     if not os.path.isfile(abs_path):
@@ -1064,31 +1121,40 @@ async def create_export(payload: RenderRequest) -> dict:
         raise HTTPException(status_code=503, detail="ffmpeg not available")
 
     info = await _probe(abs_path)
-    quality = payload.q if payload.q in QUALITY_PRESETS else "fast"
     cfg_options = _load_config()["options"]
+    requested = (payload.q or cfg_options.get("download_quality") or "balanced").strip().lower()
+    if requested not in EXPORT_QUALITIES:
+        requested = "balanced"
+    mode, note = video_engine.download_mode(
+        info, requested, os.path.splitext(abs_path)[1], payload.a)
+    # "Original" on an unsupported source is honestly reported as a 1080p copy.
+    quality = "balanced" if (requested == "original" and mode == "transcode") else requested
     audio_bitrate = cfg_options["audio_bitrate"]
     engine_status = await _ENGINE.status()
     encoder = engine_status.get("encoder")
     decode_hw = False
-    if encoder and cfg_options.get("hardware_decode", True):
+    if mode == "transcode" and encoder and cfg_options.get("hardware_decode", True):
         decode_hw, _reason = await _ENGINE.can_decode_hw(
             abs_path, info, encoder, engine_status.get("device"),
         )
 
     def _factory(out_path: str) -> list[str]:
+        if mode == "passthrough":
+            return []  # the original file is served as is — ffmpeg never runs
         return video_engine.build_render_cmd(
             FFMPEG_BIN, abs_path, info, encoder, payload.a, quality,
             audio_bitrate, out_path, decode_hw=decode_hw,
             device=engine_status.get("device"), loglevel=settings.FFMPEG_LOGLEVEL,
+            mode=mode,
         )
 
     try:
         st = os.stat(abs_path)
-        source_key = f"{abs_path}|{st.st_size}|{int(st.st_mtime)}|{quality}|{payload.a}"
+        source_key = f"{abs_path}|{st.st_size}|{int(st.st_mtime)}|{quality}|{payload.a}|{mode}"
         job = await _RENDER.start(
             owner=user_data.current_username(), abs_path=abs_path, info=info,
             quality=quality, audio_idx=payload.a, source_key=source_key,
-            cmd_factory=_factory,
+            cmd_factory=_factory, mode=mode, note=note,
         )
     except video_render.RenderBusy as exc:
         raise HTTPException(status_code=429, detail=str(exc),
@@ -1102,8 +1168,17 @@ async def create_export(payload: RenderRequest) -> dict:
 
 @router.get("/exports")
 async def list_exports() -> dict:
-    """This user's offline renders (newest first)."""
-    return {"jobs": [job.public() for job in _RENDER.list_for(user_data.current_username())]}
+    """This user's offline renders (newest first) plus the queue limits/defaults."""
+    options = _load_config()["options"]
+    return {
+        "jobs": [job.public() for job in _RENDER.list_for(user_data.current_username())],
+        "defaults": {"quality": options.get("download_quality", "balanced")},
+        "limits": {
+            "queued": video_render.MAX_QUEUED_PER_USER,
+            "window": video_render.PREPARED_WINDOW,
+            "ttl": video_render.TTL_SECONDS,
+        },
+    }
 
 
 @router.get("/exports/{job_id}")
@@ -1112,6 +1187,17 @@ async def export_status(job_id: str) -> dict:
         return _RENDER.get(job_id, user_data.current_username()).public()
     except video_render.RenderNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/exports/{job_id}/consumed")
+async def consume_export(job_id: str) -> dict:
+    """The device stored the file — free the NAS copy."""
+    owner = user_data.current_username()
+    try:
+        job = _RENDER.consume(job_id, owner)
+    except video_render.RenderNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return job.public()
 
 
 @router.delete("/exports/{job_id}")
@@ -1138,6 +1224,7 @@ async def download_export(job_id: str) -> FileResponse:
         path = _RENDER.download_path(job_id, owner)
     except video_render.RenderNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _RENDER.mark_delivered(job_id, owner)
     stem = os.path.splitext(os.path.basename(job.path))[0][:120] or "video"
     label = video_render.QUALITY_LABELS.get(job.quality, job.quality)
     return FileResponse(

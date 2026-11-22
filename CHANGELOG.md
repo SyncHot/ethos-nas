@@ -11,6 +11,34 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.16.0] - 2026-11-22
+
+### Added
+
+- **Videos: a real download queue for your holiday.** Films can now be queued
+  many at a time; the NAS prepares them one by one and the Downloads list shows
+  each stage (**Queued #3 → Preparing 42% → Ready → On this device**) with
+  progress, version and cancel/retry. A reload or a closed app no longer loses
+  the queue — it reconciles with the NAS instead of saying “interrupted”.
+- **Download versions: Original / 1080p / 720p**, with the default chosen once
+  in Settings and shared by the desktop Video Station and the `/videos` phone
+  app. “Original” copies an H.264 video stream instead of re-encoding it, so a
+  film that used to take an hour can be ready in seconds.
+- **Video Station (package 2.2.0):** a Downloads page showing the same queue,
+  “Save to this computer”, a version picker on the movie page and the download
+  default in Settings.
+
+### Changed
+
+- Video downloads stream straight into the phone’s Cache Storage instead of
+  buffering the whole film in memory, and the NAS frees each prepared file as
+  soon as a device stored it (rolling window of five copies, 40 queued jobs).
+
+### Fixed
+
+- Re-opening Videos showed no download at all even though the NAS was still
+  rendering it; the app now restores the real state.
+
 ## [2.15.1] - 2026-11-22
 
 ### Fixed

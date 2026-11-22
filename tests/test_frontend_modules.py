@@ -129,8 +129,13 @@ def _check_sw_not_precaching_removed(errors: list[str]) -> None:
     if not SW.exists():
         return
     for match in JS_REF_RE.finditer(SW.read_text(encoding="utf-8")):
-        if Path(match.group(1)).stem in MOVED_TO_PACKAGES:
-            errors.append(f"sw.js precaches '{match.group(1)}', removed from core")
+        ref = match.group(1)
+        # Only the old desktop app paths moved into packages; standalone PWA
+        # modules under /static/videos/ or /static/music/ are still core shell.
+        if not ref.startswith("/static/apps/"):
+            continue
+        if Path(ref).stem in MOVED_TO_PACKAGES:
+            errors.append(f"sw.js precaches '{ref}', removed from core")
 
 
 def main() -> int:

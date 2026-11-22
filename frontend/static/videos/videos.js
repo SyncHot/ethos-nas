@@ -15,7 +15,8 @@ import { notify } from '../core/notification-center.js';
 import { logError, logInfo, logWarn, setLogContext } from '../core/logger.js';
 import '../core/error-reporter.js';
 import {
-    initOffline, downloadsSnapshot, downloadItem, deleteDownload, localMediaUrl, storageInfo,
+    initOffline, downloadsSnapshot, queueDownload, pumpDownloads, syncDownloads,
+    cancelDownload, retryDownload, deleteDownload, localMediaUrl, storageInfo,
     refreshStorage,
 } from './offline.js';
 
@@ -33,6 +34,9 @@ const state = {
     list: new Set(),
     query: '',
     downloads: [],
+    downloadQuality: 'balanced',
+    downloadQualities: [],
+    downloadTimer: null,
     installPrompt: null,
     offline: !navigator.onLine,
     localOnly: false,
@@ -56,7 +60,10 @@ const els = {
     sheetBody: $('vd-sheet-body'),
     downloads: $('vd-downloads'),
     downloadsList: $('vd-downloads-list'),
+    downloadsSummary: $('vd-downloads-summary'),
     storage: $('vd-storage'),
+    settings: $('vd-settings'),
+    qualityOptions: $('vd-quality-options'),
     player: $('vd-player'),
     video: $('vd-video'),
     playerUi: $('vd-player-ui'),
@@ -238,6 +245,17 @@ function downloadFor(path) {
     return state.downloads.find((d) => d.path === path && d.status === 'done') || null;
 }
 
+function pendingFor(path) {
+    return state.downloads.find((d) => d.path === path
+        && d.status !== 'done' && d.status !== 'failed') || null;
+}
+
+function qualityLabel(value) {
+    const hit = (state.downloadQualities || []).find((q) => q.value === value);
+    if (hit) return hit.label;
+    return value === 'original' ? 'Original' : value === 'fast' ? '720p' : '1080p';
+}
+
 async function boot() {
     renderLoading('Reading your library…');
     try {
@@ -356,6 +374,7 @@ function findItem(path) {
 function openSheet(item) {
     const tm = item.tmdb || {};
     const dm = downloadFor(item.path);
+    const pending = pendingFor(item.path);
     const inList = state.list.has(item.path);
     const meta = [
         tm.rating != null ? `★ ${tm.rating}` : '',
@@ -364,6 +383,19 @@ function openSheet(item) {
         (item.video_codec || '').toUpperCase(),
         (item.audio_codec || '').toUpperCase(),
     ].filter(Boolean);
+    const downloadBlock = dm
+        ? `<button class="vd-btn" type="button" data-action="delete-download" data-path="${esc(item.path)}" data-id="${esc(dm.id)}">Delete download</button>`
+        : pending
+            ? `<button class="vd-btn" type="button" data-action="cancel-download" data-id="${esc(pending.id)}">Cancel · ${esc(stageText(pending))}</button>`
+            : `<button class="vd-btn primary" type="button" data-action="download" data-path="${esc(item.path)}">⬇ Download · ${esc(qualityLabel(state.downloadQuality))}</button>`;
+    const versionRow = dm || pending ? '' : `<div class="vd-quality-row" aria-label="Download version">
+            ${(state.downloadQualities.length ? state.downloadQualities : [
+                { value: 'original', label: 'Original · no re-encode' },
+                { value: 'balanced', label: '1080p' },
+                { value: 'fast', label: '720p · small' },
+            ]).map((q) => `<button class="vd-btn small" type="button" data-action="download-q"
+                    data-q="${esc(q.value)}" data-path="${esc(item.path)}">${esc(q.label)}</button>`).join('')}
+        </div>`;
     els.sheetBody.innerHTML = `<div class="vd-detail">
         <div class="vd-detail-head">
             <div class="vd-detail-poster"><img src="${esc(artUrl(item))}" alt=""></div>
@@ -379,15 +411,10 @@ function openSheet(item) {
         <div class="vd-detail-actions">
             <button class="vd-btn primary" type="button" data-action="play" data-path="${esc(item.path)}">▶ Play</button>
             <button class="vd-btn" type="button" data-action="list" data-path="${esc(item.path)}">${inList ? '✓ My List' : '+ My List'}</button>
-            ${dm ? '<button class="vd-btn" type="button" data-action="delete-download" data-path="' + esc(item.path) + '">Delete download</button>'
-                : '<button class="vd-btn" type="button" data-action="download" data-path="' + esc(item.path) + '">⬇ Download</button>'}
+            ${downloadBlock}
         </div>
-        <p class="vd-hint">Downloads are rendered by the NAS as a compact MP4 (H.264 + AAC) and stored on this device.</p>
-        <div class="vd-quality-row" id="vd-quality-row" hidden>
-            <button class="vd-btn" type="button" data-action="download-q" data-q="fast" data-path="${esc(item.path)}">720p · small</button>
-            <button class="vd-btn" type="button" data-action="download-q" data-q="balanced" data-path="${esc(item.path)}">1080p</button>
-            <button class="vd-btn" type="button" data-action="download-q" data-q="high" data-path="${esc(item.path)}">Source</button>
-        </div>
+        <p class="vd-hint">Downloads are prepared by the NAS (H.264 + AAC) and stored on this device. “Original” copies the video without re-encoding when the file allows it.</p>
+        ${versionRow}
     </div>`;
     els.sheet.hidden = false;
 }
@@ -395,6 +422,7 @@ function openSheet(item) {
 function closeSheets() {
     els.sheet.hidden = true;
     els.downloads.hidden = true;
+    if (els.settings) els.settings.hidden = true;
 }
 
 function toggleList(path) {
@@ -412,65 +440,140 @@ function toggleList(path) {
 // ── downloads ─────────────────────────────────────────────────────────────
 
 function updateDownloadsBadge() {
-    const active = state.downloads.filter((d) => d.status !== 'done').length;
+    const active = state.downloads.filter((d) => d.status !== 'done' && d.status !== 'failed').length;
     const done = state.downloads.filter((d) => d.status === 'done').length;
     const badge = els.downloadsBadge;
     badge.hidden = !(active + done);
     badge.textContent = String(active + done);
+    badge.dataset.tone = active ? 'active' : 'idle';
+}
+
+function stageText(d) {
+    const progress = d.bytesTotal
+        ? Math.min(100, (d.bytesDone / d.bytesTotal) * 100)
+        : (Number(d.percent) || 0);
+    if (d.status === 'queued') {
+        return Number(d.queuePosition) > 1 ? `In the queue · #${d.queuePosition}` : 'In the queue';
+    }
+    if (d.status === 'rendering') return `Preparing on the NAS… ${Math.round(Number(d.percent) || 0)}%`;
+    if (d.status === 'ready') return 'Ready on the NAS — saving to this device…';
+    if (d.status === 'downloading') {
+        return d.bytesTotal
+            ? `Saving… ${Math.round(progress)}% · ${fmtBytes(d.bytesDone)} / ${fmtBytes(d.bytesTotal)}`
+            : `Saving… ${Math.round(progress)}%`;
+    }
+    if (d.status === 'done') return d.size ? `${fmtBytes(d.size)} · offline` : 'Offline';
+    if (d.status === 'failed') return d.error || 'Failed';
+    return d.status;
+}
+
+function stageTone(d) {
+    if (d.status === 'done') return 'ok';
+    if (d.status === 'failed') return 'bad';
+    if (d.status === 'ready') return 'gold';
+    return 'busy';
+}
+
+function downloadRowHtml(d) {
+    const item = findItem(d.path) || d.item || { path: d.path, title: d.title };
+    const progress = d.bytesTotal
+        ? Math.min(100, (d.bytesDone / d.bytesTotal) * 100)
+        : (Number(d.percent) || 0);
+    const active = ['queued', 'rendering', 'ready', 'downloading'].includes(d.status);
+    const version = d.qualityLabel || qualityLabel(d.quality);
+    const meta = [version, d.note, d.status === 'queued' && d.queuePosition ? `#${d.queuePosition}` : '']
+        .filter(Boolean).join(' · ');
+    return `<div class="vd-dl" data-testid="vd-download-row">
+        <div class="vd-dl-art"><img src="${esc(d.posterUrl || artUrl(item))}" alt="" loading="lazy"></div>
+        <div class="vd-dl-copy">
+            <b>${esc(displayTitle(item))}</b>
+            <span class="vd-dl-stage" data-tone="${esc(stageTone(d))}">${esc(stageText(d))}</span>
+            ${meta ? `<span class="vd-dl-meta">${esc(meta)}</span>` : ''}
+            ${active ? `<div class="vd-dl-bar"><i style="width:${progress.toFixed(1)}%"></i></div>` : ''}
+        </div>
+        <div class="vd-dl-actions">
+            ${d.status === 'done' ? `<button class="vd-icon-btn" type="button" data-action="play-local" data-path="${esc(d.path)}" aria-label="Play offline">▶</button>` : ''}
+            ${d.status === 'failed' ? `<button class="vd-icon-btn" type="button" data-action="retry-download" data-id="${esc(d.id)}" aria-label="Retry">↻</button>` : ''}
+            ${active ? `<button class="vd-icon-btn" type="button" data-action="cancel-download" data-id="${esc(d.id)}" aria-label="Cancel">✕</button>` : ''}
+            <button class="vd-icon-btn" type="button" data-action="delete-download" data-path="${esc(d.path)}" data-id="${esc(d.id)}" aria-label="Delete">🗑</button>
+        </div>
+    </div>`;
 }
 
 function renderDownloads() {
     const info = storageInfo();
-    els.storage.textContent = info ? `Device storage: ${fmtBytes(info.usage)} used · ${fmtBytes(info.quota)} available to this app` : '';
+    els.storage.textContent = info
+        ? `Device storage: ${fmtBytes(info.usage)} used · ${fmtBytes(info.quota)} available to this app`
+        : '';
+    const groups = {
+        active: state.downloads.filter((d) => ['queued', 'rendering', 'downloading'].includes(d.status)),
+        ready: state.downloads.filter((d) => d.status === 'ready'),
+        done: state.downloads.filter((d) => d.status === 'done'),
+        failed: state.downloads.filter((d) => d.status === 'failed'),
+    };
+    if (els.downloadsSummary) {
+        const bits = [
+            groups.active.length ? `${groups.active.length} downloading` : '',
+            groups.ready.length ? `${groups.ready.length} ready to save` : '',
+            groups.done.length ? `${groups.done.length} on this device` : '',
+        ].filter(Boolean);
+        els.downloadsSummary.textContent = bits.join(' · ') || 'Nothing queued';
+    }
     if (!state.downloads.length) {
-        els.downloadsList.innerHTML = '<div class="vd-empty"><b>Nothing downloaded</b>Open a movie and choose Download to keep it on this device.</div>';
+        els.downloadsList.innerHTML = '<div class="vd-empty"><b>Nothing downloaded</b>Open a movie and choose Download to keep it on this device. You can queue as many as you like — the NAS prepares them one by one.</div>';
         return;
     }
-    els.downloadsList.innerHTML = state.downloads.map((d) => {
-        const item = findItem(d.path) || d.item || { path: d.path, title: d.title };
-        const progress = d.bytesTotal ? Math.min(100, (d.bytesDone / d.bytesTotal) * 100) : (d.percent || 0);
-        const statusText = d.status === 'done' ? `${fmtBytes(d.size || d.bytesDone)} · offline`
-            : d.status === 'failed' ? `Failed: ${d.error || 'unknown error'}`
-                : d.status === 'rendering' ? `Preparing on the NAS… ${progress.toFixed(0)}%`
-                    : `Downloading… ${progress.toFixed(0)}%`;
-        return `<div class="vd-dl">
-            <div class="vd-dl-art"><img src="${esc(d.posterUrl || artUrl(item))}" alt="" loading="lazy"></div>
-            <div class="vd-dl-copy">
-                <b>${esc(displayTitle(item))}</b>
-                <span>${esc(statusText)}</span>
-                ${d.status !== 'done' && d.status !== 'failed' ? `<div class="vd-dl-bar"><i style="width:${progress.toFixed(1)}%"></i></div>` : ''}
-            </div>
-            <div class="vd-dl-actions">
-                ${d.status === 'done' ? `<button class="vd-icon-btn" type="button" data-action="play-local" data-path="${esc(d.path)}" aria-label="Play offline">▶</button>` : ''}
-                ${d.status === 'failed' ? `<button class="vd-icon-btn" type="button" data-action="retry-download" data-path="${esc(d.path)}" aria-label="Retry">↻</button>` : ''}
-                <button class="vd-icon-btn" type="button" data-action="delete-download" data-path="${esc(d.path)}" aria-label="Delete">🗑</button>
-            </div>
-        </div>`;
-    }).join('');
+    const section = (title, rows, hint = '') => (rows.length
+        ? `<section class="vd-dl-group"><h3>${esc(title)}</h3>${hint ? `<p class="vd-dl-hint">${esc(hint)}</p>` : ''}
+           ${rows.map((d) => downloadRowHtml(d)).join('')}</section>`
+        : '');
+    els.downloadsList.innerHTML = [
+        section('Preparing', groups.active, 'The NAS renders the next film while the previous one saves.'),
+        section('Ready to save', groups.ready),
+        section('On this device', groups.done),
+        section('Failed', groups.failed),
+    ].join('');
 }
 
-async function startDownload(item, quality) {
-    closeSheets();
+async function syncDownloadState() {
+    if (!authed()) return;
     try {
-        await downloadItem(item, quality, {
-            onChange: (list) => { state.downloads = list; updateDownloadsBadge(); if (!els.downloads.hidden) renderDownloads(); },
-            onDone: (entry) => {
-                state.downloads = downloadsSnapshot();
-                updateDownloadsBadge();
-                toast(`${displayTitle(item)} is ready offline`, 'success');
-                render();
-                if (!els.downloads.hidden) renderDownloads();
-                logInfo('Download finished', `${entry.id} ${fmtBytes(entry.size || 0)}`);
-            },
-        });
+        const list = await syncDownloads();
+        state.downloads = list;
+        updateDownloadsBadge();
+        if (!els.downloads.hidden) renderDownloads();
+        pumpDownloads();
+    } catch (error) {
+        logWarn('Download sync failed', String(error));
+    }
+}
+
+function startDownloadPolling() {
+    if (state.downloadTimer) return;
+    state.downloadTimer = setInterval(() => {
+        const busy = state.downloads.some((d) => ['queued', 'rendering', 'ready', 'downloading'].includes(d.status));
+        if (!busy && els.downloads.hidden) return;
+        if (document.visibilityState === 'hidden' && els.downloads.hidden) return;
+        syncDownloadState();
+    }, 2000);
+}
+
+async function queueOne(item, quality) {
+    try {
+        await queueDownload(item, quality || undefined);
+        state.downloads = downloadsSnapshot();
+        updateDownloadsBadge();
+        renderDownloads();
+        render();
+        toast(`${displayTitle(item)} queued`, 'success');
     } catch (error) {
         toast(`Download failed: ${apiError(error)}`, 'error');
         renderDownloads();
     }
 }
 
-async function removeDownload(path) {
-    const entry = downloadFor(path);
+async function removeDownload(path, id) {
+    const entry = (id && state.downloads.find((d) => d.id === id)) || downloadFor(path);
     if (!entry) return;
     await deleteDownload(entry.id);
     state.downloads = downloadsSnapshot();
@@ -478,6 +581,68 @@ async function removeDownload(path) {
     renderDownloads();
     render();
     toast('Download deleted', 'success');
+}
+
+async function cancelOne(id) {
+    await cancelDownload(id);
+    state.downloads = downloadsSnapshot();
+    updateDownloadsBadge();
+    renderDownloads();
+    render();
+}
+
+async function retryOne(id) {
+    try {
+        await retryDownload(id);
+        state.downloads = downloadsSnapshot();
+        updateDownloadsBadge();
+        renderDownloads();
+        toast('Download queued again', 'success');
+    } catch (error) {
+        toast(`Retry failed: ${apiError(error)}`, 'error');
+    }
+}
+
+// ── settings ──────────────────────────────────────────────────────────────
+
+function renderSettings() {
+    if (!els.qualityOptions) return;
+    const choices = state.downloadQualities.length ? state.downloadQualities : [
+        { value: 'original', label: 'Original · no re-encode' },
+        { value: 'balanced', label: '1080p' },
+        { value: 'fast', label: '720p · small' },
+    ];
+    els.qualityOptions.innerHTML = choices.map((q) => `<label class="vd-choice">
+        <input type="radio" name="vd-download-quality" value="${esc(q.value)}"
+               ${state.downloadQuality === q.value ? 'checked' : ''}>
+        <span>${esc(q.label)}</span>
+    </label>`).join('');
+}
+
+async function openSettings() {
+    els.menu.hidden = true;
+    els.settings.hidden = false;
+    renderSettings();
+    try {
+        const data = await apiJson('/api/videos/download-settings');
+        state.downloadQuality = data.quality || 'balanced';
+        state.downloadQualities = Array.isArray(data.qualities) ? data.qualities : [];
+        renderSettings();
+    } catch (error) {
+        toast(`Settings unavailable: ${apiError(error)}`, 'error');
+    }
+}
+
+async function saveDownloadQuality(value) {
+    try {
+        const data = await apiPost('/api/videos/download-settings', { quality: value });
+        state.downloadQuality = data.quality || value;
+        state.downloadQualities = Array.isArray(data.qualities) ? data.qualities : state.downloadQualities;
+        renderSettings();
+        toast('Default download version saved', 'success');
+    } catch (error) {
+        toast(`Could not save: ${apiError(error)}`, 'error');
+    }
 }
 
 // ── player ────────────────────────────────────────────────────────────────
@@ -909,11 +1074,13 @@ function bindEvents() {
         els.menu.hidden = true;
     });
     $('vd-logout').addEventListener('click', logout);
+    $('vd-settings-btn').addEventListener('click', openSettings);
     els.downloadsBtn.addEventListener('click', () => {
         state.downloads = downloadsSnapshot();
         renderDownloads();
         els.downloads.hidden = false;
         storeInfo().then(() => renderDownloads());
+        syncDownloadState();
     });
     els.install.addEventListener('click', async () => {
         if (!state.installPrompt) return;
@@ -935,24 +1102,34 @@ function bindEvents() {
     els.sheetBody.addEventListener('click', (event) => {
         const el = event.target.closest('[data-action]');
         if (!el) return;
+        const action = el.dataset.action;
+        if (action === 'delete-download') { removeDownload(el.dataset.path, el.dataset.id); return; }
+        if (action === 'cancel-download') { cancelOne(el.dataset.id); return; }
         const item = findItem(el.dataset.path);
         if (!item) return;
-        const action = el.dataset.action;
         if (action === 'play') { closeSheets(); openPlayer(item); }
         else if (action === 'list') toggleList(item.path);
-        else if (action === 'download') $('vd-quality-row').hidden = false;
-        else if (action === 'download-q') startDownload(item, el.dataset.q || 'fast');
-        else if (action === 'delete-download') removeDownload(item.path);
+        else if (action === 'download') queueOne(item, state.downloadQuality);
+        else if (action === 'download-q') queueOne(item, el.dataset.q || undefined);
     });
     els.downloadsList.addEventListener('click', (event) => {
         const el = event.target.closest('[data-action]');
         if (!el) return;
-        const item = findItem(el.dataset.path);
         const action = el.dataset.action;
-        if (action === 'delete-download') removeDownload(el.dataset.path);
-        else if (action === 'play-local' && item) { closeSheets(); openPlayer(item, { local: true }); }
-        else if (action === 'retry-download' && item) startDownload(item, localStorage.getItem('vd-last-quality') || 'fast');
+        if (action === 'delete-download') removeDownload(el.dataset.path, el.dataset.id);
+        else if (action === 'cancel-download') cancelOne(el.dataset.id);
+        else if (action === 'retry-download') retryOne(el.dataset.id);
+        else if (action === 'play-local') {
+            const item = findItem(el.dataset.path);
+            if (item) { closeSheets(); openPlayer(item, { local: true }); }
+        }
     });
+    if (els.qualityOptions) {
+        els.qualityOptions.addEventListener('change', (event) => {
+            const input = event.target.closest('input[name="vd-download-quality"]');
+            if (input) saveDownloadQuality(input.value);
+        });
+    }
     document.querySelectorAll('[data-close]').forEach((el) => {
         el.addEventListener('click', closeSheets);
     });
@@ -1000,6 +1177,7 @@ function bindEvents() {
     document.addEventListener('visibilitychange', () => {
         const player = state.player;
         if (player && document.visibilityState === 'visible' && !els.video.paused) acquireWakeLock(player);
+        if (document.visibilityState === 'visible') syncDownloadState();
     });
     window.addEventListener('pagehide', () => {
         const player = state.player;
@@ -1095,6 +1273,8 @@ async function main() {
     await boot();
     state.downloads = downloadsSnapshot();
     updateDownloadsBadge();
+    await syncDownloadState();
+    startDownloadPolling();
     if (new URLSearchParams(location.search).get('view') === 'downloads') {
         renderDownloads();
         els.downloads.hidden = false;

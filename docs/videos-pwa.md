@@ -40,35 +40,47 @@ icon can be pinned.
 
 ## Offline downloads
 
-1. `POST /api/videos/exports {path, q, a}` → `202` with a job
-   (`queued → rendering → done`); the server renders **one finite MP4**
-   (`-movflags +faststart`, standard AAC layout) under
-   `<DATA_DIR>/video_exports/files/<job>.mp4`.
-2. The page polls `GET /api/videos/exports/{id}` (1.5 s) and mirrors progress
-   into the global Progress panel (`core/progress.js`).
-3. When done it streams `GET /api/videos/exports/{id}/download` into **Cache
-   Storage** (`ethos-media-v1`) under the synthetic URL `/__media/<job id>`,
-   stores the poster, an `.srt → .vtt` subtitle copy and an IndexedDB row
-   (`ethos-videos-db`), so the film list, artwork and playback all work with the
-   network off.
-4. Playback uses `localMediaUrl(id)` → `/__media/<id>`; the service worker
+1. `POST /api/videos/exports {path, q?, a}` → `202` with a job
+   (`queued → rendering → done`). `q` (`original`, `balanced`, `fast`) is
+   optional; omitted means the account default from
+   `GET/POST /api/videos/download-settings`. Many jobs may be queued: the NAS
+   renders them **one at a time** and `queue_position` drives the UI.
+2. `original` is the fast path: an H.264 4:2:0 source is copied (MKV → MP4
+   remux) or served as is when it already is a phone-playable MP4
+   (`mode=passthrough`); HEVC/10-bit sources fall back to a 1080p encode with a
+   visible `note`. `fast`/`balanced` always re-encode (720p/1080p).
+3. The page polls `GET /api/videos/exports` (2 s while the sheet is open or a
+   job is active) and **reconciles on every start**: a render that continued
+   while the app was closed reappears with its stage and position instead of
+   being marked lost. Only the transfer needs the page — the NAS queue does not.
+4. When a job is `done` the page streams `GET /api/videos/exports/{id}/download`
+   through a counting `TransformStream` straight into **Cache Storage**
+   (`ethos-media-v1`, key `/__media/<job id>`) — a multi-GB film never sits in
+   RAM as one Blob. Poster + `.srt → .vtt` subtitle and an IndexedDB row
+   (`ethos-videos-db`) follow.
+5. After storing, the page calls `POST /api/videos/exports/{id}/consumed`, so
+   the NAS frees that file immediately (it also expires with the TTL).
+6. Playback uses `localMediaUrl(id)` → `/__media/<id>`; the service worker
    answers it **with Range support** (synthesised `206`/`416` slices of the
    cached Blob) so seeking works offline.
 
-Server-side rules (`services/video_render.py`):
+Server-side rules (`services/video_render.py`, `services/video_engine.py`):
 
 | Limit | Value |
 |---|---|
-| active renders per user | 1 (second request → `429` + `Retry-After`) |
-| stored downloads per user | 3 (`409`) |
-| total area | 20 GiB, free-space preflight 2 GiB (`507`) |
-| job TTL | 7 days, swept by the retention loop |
+| queued + rendering jobs per user | 40 (over the cap → `409`) |
+| allowed download versions | `original`, `balanced`, `fast` |
+| prepared files kept per user | rolling window of 5 (oldest reaped) |
+| total area | 50 GiB, free-space preflight 5 GiB (`507`) |
+| job TTL | 7 days; “saved on device” rows drop after 1 day |
 | worker timeout | 6 h |
 
 Renders run on their **own** `TranscodeLimiter(1)` so a download never starves
-live playback. The same file+quality is deduplicated by
-`source_key = path|size|mtime|quality|audio`. `public()` never exposes server
-paths — only `name`.
+live playback. The same file+version is deduplicated by
+`source_key = path|size|mtime|quality|audio|mode` — a queued or finished job is
+returned instead of a duplicate. `public()` exposes the owner's own `path` (the
+same value `/library` returns) so both UIs can match a job to a library item
+after a reload; nothing outside the caller's scope is ever returned.
 
 ## Player
 
@@ -102,12 +114,17 @@ paths — only `name`.
 
 ## Tests
 
-- `tests/test_video_render.py` — queue, dedupe, caps, busy, cancel, failure,
+- `tests/test_video_render.py` — queue (many jobs, one render at a time),
+  dedupe, caps, rolling window, consume, passthrough, cancel, failure,
   ownership, expiry, restart recovery (fake ffmpeg, no GPU).
-- `tests/test_video_api.py` — `202` + poll to `done`, `Content-Disposition`,
-  `Range 206`, `no-store`, dedupe, cross-user `404`, scope `403`, delete.
-- `tests/test_video_engine.py` — `build_render_cmd` (faststart, `-progress`,
-  hw/software filters, `-an`, opus).
+- `tests/test_video_api.py` — `202` + poll to `done`, default version from
+  `/download-settings`, queued second job, `queue_position`, `/consumed`,
+  `Content-Disposition`, `Range 206`, `no-store`, dedupe, cross-user `404`,
+  scope `403`, delete.
+- `tests/test_video_engine.py` — `build_render_cmd` copy mode (remux),
+  `download_mode` passthrough/fallback, plus faststart/`-progress`/hw/`-an`.
+- `tests/test_videos_pwa.py` — static guards: reload reconciles with the NAS
+  queue, streaming into Cache Storage, no whole-file Blob, version settings.
 - `tests/test_pwa_assets.py` — manifest, icons, public paths, worker precache,
   media cache survival, `/__media` Range.
 - `tests/test_retention.py` — `video_exports` is measured but never swept by
@@ -119,6 +136,8 @@ paths — only `name`.
 - [x] Library, search, detail sheet, My List, continue watching
 - [x] HLS player with codec negotiation, fullscreen, wake lock, Media Session
 - [x] Finite MP4 render queue with caps, dedupe and notifications
+- [x] Server-backed multi-film queue, rolling window and `original` copy mode
+  (core 2.16.0)
 - [x] Cache Storage downloads with Range-capable offline playback
 - [x] Service worker precache + `/__media` handler + shell fallback
 - [x] Retention hook, shutdown handling, `docs` + `CHANGELOG`

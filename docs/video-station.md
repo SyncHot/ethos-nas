@@ -554,3 +554,44 @@ Spec: `docs/videos-pwa.md`. Tests: `tests/test_video_render.py`,
 | 2026-11-22 | Web playback hotfix (2.13.1): production `h264_vaapi` failed on 10-bit HEVC (`No usable encoding profile`). Forced 8-bit `nv12` output in the VA-API decode/scale chain and added a one-shot software HLS retry. Engine 50/50, HLS 13/13, video API 28/28; live isolated `:9019` HLS on the real 10-bit file returned 200/`transcode`/`encoder=vaapi` | core 2.13.1 published + tagged `v2.13.1` |
 | 2026-11-22 | Phase 10 AAC layout fix: reproduced `CHUNK_DEMUXER_ERROR_APPEND_FAILED` in Chromium 157, proved the 5.1(side)/PCE cause with four segment variants, applied `aformat` normalisation | isolated `:9015` + snap Chromium 157: failing title plays (`readyState 4`, 20 s buffered); engine 57/57, HLS 18/18; core 2.13.2 published + tagged `v2.13.2` |
 | 2026-11-22 | Phase 11 audio negotiation: `acodec=aac|opus|none` on `/hls` + `/transcode`, package probes MSE once and prefers hls.js over native HLS | Chromium 157: aac/opus/none all `readyState 4`; Electron without AAC/Opus: video-only plays (14.7 s, `readyState 4`); engine 62/62 |
+
+## Phase 12 — download queue, versions, copy-render (2026-11-22)
+
+The Downloads sheet was a flat list of “rendering …” rows that vanished on reload, and every
+export was a full re-encode. The queue, the versions and the speed are now a shared core feature
+(the package window and `/videos` both read the same API).
+
+### What changed
+- **`original` version** (`video_engine.download_mode()`): H.264 4:2:0 sources are remuxed into
+  MP4 (video `-c:v copy`, audio → AAC only when needed) or served as is when they already are a
+  phone-playable MP4 (`mode=passthrough`, no disk use). HEVC/10-bit sources fall back to a 1080p
+  encode and the job carries a `note` that says so. Downloads offer `original | balanced | fast`;
+  “Source · high” stays playback-only.
+- **Real queue** (`services/video_render.py`): up to 40 queued jobs per account, rendered one at a
+  time with a `queue_position`; a rolling window of 5 prepared files per account (oldest reaped,
+  files being served survive 2 h); `POST /exports/{id}/consumed` frees the NAS copy as soon as a
+  device stored it. A queued job can be cancelled before ffmpeg starts.
+- **Per-user default**: `options.download_quality` in `video_station_config.json`, exposed as
+  `GET/POST /api/videos/download-settings`; `POST /exports` uses it when `q` is omitted.
+- **`GET /api/videos/exports`** returns `{jobs, defaults, limits}`; `public()` now includes the
+  owner's `path` so a client can match a job to a library item after a reload.
+- **PWA** (`frontend/static/videos/offline.js`): `syncDownloads()` reconciles every start with the
+  server queue (a render that continued while the app was closed reappears), `queueDownload()` only
+  submits, `pumpDownloads()` saves ready files one by one, and the transfer streams into Cache
+  Storage through a counting `TransformStream` instead of buffering the whole film in RAM.
+  Downloads sheet groups **Preparing / Ready to save / On this device / Failed**; Settings has the
+  default version.
+- **Package** (ethos-video 2.2.0): a Downloads section that shows the same queue and a “Save to
+  this computer” link, a version picker on the detail page and the default in Settings.
+
+### Measurements (N150, isolated `:9002`)
+- 1080p H.264 + AC3 MKV, `original`: remux in seconds (video copy, audio → AAC).
+- Same file, `balanced`: full libx264 veryfast encode at ~8 fps — tens of minutes.
+- MP4 (H.264 + AAC), `original`: passthrough, zero render time and zero extra disk.
+
+### Tests
+- `tests/test_video_engine.py` — `copy_video_ok`, `download_mode`, remux command.
+- `tests/test_video_render.py` — queue order, one render at a time, rolling window, consume,
+  passthrough source safety.
+- `tests/test_video_api.py` — default version, queued second job, limits payload, `/consumed`.
+- `tests/test_videos_pwa.py` — static PWA guards (sync on reload, streaming transfer).

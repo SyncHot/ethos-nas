@@ -245,8 +245,8 @@ def main() -> int:
             check("export reports size and quality label",
                   finished.get("size", 0) > 0 and finished.get("quality_label") == "720p",
                   str(finished)[:300])
-            check("export response hides server paths",
-                  "path" not in finished and finished.get("name") == "sample.mkv",
+            check("export exposes the owner's path for UI matching",
+                  finished.get("path") == str(sample) and finished.get("name") == "sample.mkv",
                   str(finished)[:300])
 
             code, headers = head(base, f"/api/videos/exports/{job_id}/download", admin)
@@ -274,10 +274,62 @@ def main() -> int:
             code, _ = call(base, "POST", "/api/videos/exports", admin,
                            {"path": str(share / "missing.mkv")})
             check("export of a missing file is 404", code == 404, str(code))
+
+            # ── default version + queueing ────────────────────────────────
+            code, body = call(base, "GET", "/api/videos/download-settings", admin)
+            settings = json.loads(body) if code == 200 else {}
+            check("download settings expose the default",
+                  code == 200 and settings.get("quality") == "balanced",
+                  f"{code} {body[:200]}")
+            check("download settings list the versions",
+                  [q["value"] for q in settings.get("qualities", [])]
+                  == ["original", "balanced", "fast"], str(settings.get("qualities")))
+            code, _ = call(base, "POST", "/api/videos/download-settings", admin,
+                           {"quality": "original"})
+            check("download default is saved", code == 200, str(code))
+            code, _ = call(base, "POST", "/api/videos/download-settings", admin,
+                           {"quality": "bogus"})
+            check("unknown download version is rejected", code == 400, str(code))
+
+            sample2 = share / "sample2.mkv"
+            shutil.copyfile(sample, sample2)
+            code, body = call(base, "POST", "/api/videos/exports", admin,
+                              {"path": str(sample2), "a": 0})
+            queued_default = json.loads(body) if code == 202 else {}
+            check("omitted version uses the account default",
+                  code == 202 and queued_default.get("quality") == "original",
+                  f"{code} {body[:300]}")
+            check("original H.264 MKV is remuxed, not encoded",
+                  queued_default.get("mode") in ("remux", "passthrough"),
+                  str(queued_default.get("mode")))
+            code, body = call(base, "POST", "/api/videos/exports", admin,
+                              {"path": str(sample), "q": "original", "a": 0})
+            second = json.loads(body) if code == 202 else {}
+            check("a second job is queued instead of rejected",
+                  code == 202 and bool(second.get("id")) and second.get("id") != job_id,
+                  f"{code} {body[:300]}")
+
             code, body = call(base, "GET", "/api/videos/exports", admin)
+            listing = json.loads(body) if code == 200 else {}
+            ids = [j["id"] for j in listing.get("jobs", [])]
+            check("export list carries the default",
+                  listing.get("defaults", {}).get("quality") == "original", body[:300])
+            check("export list carries the queue limits",
+                  listing.get("limits", {}).get("queued", 0) > 1, body[:300])
             check("export list is per-user",
-                  code == 200 and [j["id"] for j in json.loads(body).get("jobs", [])] == [job_id],
-                  body[:300])
+                  code == 200 and job_id in ids, str(ids))
+            for extra in (queued_default.get("id"), second.get("id")):
+                if extra:
+                    call(base, "DELETE", f"/api/videos/exports/{extra}", admin)
+
+            code, body = call(base, "POST", f"/api/videos/exports/{job_id}/consumed", admin)
+            consumed = json.loads(body) if code == 200 else {}
+            check("consumed export is marked and its file freed",
+                  code == 200 and consumed.get("status") == "consumed",
+                  f"{code} {body[:200]}")
+            code, _ = head(base, f"/api/videos/exports/{job_id}/download", admin)
+            check("consumed export can no longer be downloaded", code == 404, str(code))
+
             code, _ = call(base, "DELETE", f"/api/videos/exports/{job_id}", admin)
             check("export delete works", code == 200, str(code))
             code, _ = call(base, "GET", f"/api/videos/exports/{job_id}", admin)

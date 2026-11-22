@@ -66,6 +66,7 @@
             </div>
             <div id="vd-menu" class="vd-menu" hidden>
                 <button type="button" id="vd-theme">Toggle theme</button>
+                <button type="button" id="vd-settings-btn">Download settings</button>
                 <button type="button" id="vd-logout">Sign out</button>
             </div>
         </header>
@@ -91,12 +92,25 @@
     <!-- Downloads -->
     <div id="vd-downloads" class="vd-sheet" hidden>
         <div class="vd-sheet-backdrop" data-close="downloads"></div>
-        <article class="vd-sheet-card" role="dialog" aria-modal="true" aria-label="Downloads">
+        <article class="vd-sheet-card vd-sheet-tall" role="dialog" aria-modal="true" aria-label="Downloads">
             <button type="button" class="vd-sheet-close" data-close="downloads" aria-label="Close">✕</button>
             <h2 class="vd-sheet-h2">Downloads</h2>
-            <p class="vd-hint">Movies stored on this device play without the NAS. Space is managed by the browser.</p>
+            <p class="vd-hint">Movies stored on this device play without the NAS. The NAS prepares queued films one by one and frees each file once it is saved here.</p>
+            <p id="vd-downloads-summary" class="vd-dl-summary" role="status">Nothing queued</p>
             <div id="vd-downloads-list" class="vd-downloads-list"></div>
             <p id="vd-storage" class="vd-storage"></p>
+        </article>
+    </div>
+
+    <!-- Download settings -->
+    <div id="vd-settings" class="vd-sheet" hidden>
+        <div class="vd-sheet-backdrop" data-close="settings"></div>
+        <article class="vd-sheet-card" role="dialog" aria-modal="true" aria-labelledby="vd-settings-title">
+            <button type="button" class="vd-sheet-close" data-close="settings" aria-label="Close">✕</button>
+            <h2 class="vd-sheet-h2" id="vd-settings-title">Download settings</h2>
+            <p class="vd-hint">The version used by the one-tap Download button. “Original” copies the video without re-encoding when the file allows it — usually seconds instead of an hour.</p>
+            <div id="vd-quality-options" class="vd-choice-row" role="radiogroup" aria-label="Default download version"></div>
+            <p class="vd-hint">Both this phone and the desktop Video Station use the same default. The NAS keeps a rolling window of prepared files and frees each one as soon as a device stored it.</p>
         </article>
     </div>
 

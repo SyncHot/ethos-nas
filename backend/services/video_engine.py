@@ -39,6 +39,15 @@ _AAC_LAYOUT_BY_CHANNELS = {1: "mono", 2: "stereo", 3: "3.0", 4: "4.0", 5: "5.0",
 # still decode Opus in MP4, and ``none`` keeps video playable without sound.
 AUDIO_CODECS = ("aac", "opus", "none")
 
+# Download ("offline export") presets: the two live-playback encoders plus
+# ``original`` — a stream copy when the source is already H.264 4:2:0 (seconds
+# instead of an hour on a Celeron). "high"/"source" stays playback-only.
+EXPORT_QUALITIES = ("fast", "balanced", "original")
+
+# H.264 bitstreams an MP4 can carry unchanged. 10-bit / 4:2:2 / 4:4:4 would
+# play nowhere on phones, so those always re-encode.
+COPY_SAFE_PIX_FMTS = {"yuv420p", "yuvj420p"}
+
 QUALITY_PRESETS = {
     # Tuned for a 4-core Celeron-class CPU (Intel N150): libx264 veryfast does
     # ~8 fps at 1440p, so downscaling is what keeps live playback watchable.
@@ -55,6 +64,43 @@ DECODE_CACHE_TTL = 600.0
 PROBE_TIMEOUT = 25.0
 DECODE_TIMEOUT = 20.0
 MAX_REASON = 600
+
+
+def copy_video_ok(info: dict) -> bool:
+    """True when the video stream can be remuxed into MP4 without re-encoding.
+
+    Conservative on purpose: only 8-bit H.264 4:2:0. A wrong guess would make
+    the offline file unplayable on the phone, which is worse than an encode.
+    """
+    codec = (info.get("video_codec") or "").lower()
+    pix_fmt = (info.get("pix_fmt") or "").lower()
+    try:
+        height = int(info.get("height") or 0)
+    except (TypeError, ValueError):
+        height = 0
+    return codec == "h264" and pix_fmt in COPY_SAFE_PIX_FMTS and height > 0
+
+
+def download_mode(info: dict, quality: str, ext: str, audio_idx: int = 0) -> tuple[str, str]:
+    """Return ``(mode, note)`` for an offline export.
+
+    passthrough — the source already is a phone-playable MP4: serve it as is
+    remux       — copy the H.264 video, convert only the audio (~seconds)
+    transcode   — full re-encode (HEVC/10-bit sources, or a downscaled preset)
+    """
+    if quality != "original":
+        return "transcode", ""
+    if not copy_video_ok(info):
+        return "transcode", "Original needs a re-encode for this source — saved as 1080p"
+    tracks = info.get("audio_tracks") or []
+    idx = min(max(0, int(audio_idx or 0)), max(0, len(tracks) - 1)) if tracks else 0
+    track = tracks[idx] if idx < len(tracks) else {}
+    audio_codec = (track.get("codec") or info.get("audio_codec") or "").lower()
+    layout = (track.get("channel_layout") or "").strip().lower()
+    audio_copyable = audio_codec == "aac" and (not layout or layout in AAC_STANDARD_LAYOUTS)
+    if ext.lower() in STREAMABLE_EXTS and audio_copyable:
+        return "passthrough", "Original file — no conversion"
+    return "remux", "Original video — audio converted to AAC"
 
 
 def select_playback_mode(info: dict, abs_path: str, *, ffmpeg_available: bool = True) -> str:
@@ -305,17 +351,20 @@ def build_render_cmd(
     acodec: str = "aac",
     loglevel: str = "error",
     progress: bool = True,
+    mode: str = "transcode",
 ) -> list[str]:
     """Finite MP4 render used for offline downloads (seekable, +faststart).
 
     Unlike `/transcode` (a non-seekable pipe) and HLS (a sliding window), this
     writes one complete file: the phone can Range-seek it and the browser cache
-    can store it. Video is always re-encoded so the result plays on any phone.
+    can store it. ``mode="remux"`` copies an already H.264 video stream (the
+    common MKV case) so a two-hour film renders in seconds; ``transcode``
+    re-encodes when the source codec cannot be copied.
     """
     pre, video, filters = build_video_args(
-        info, "transcode", encoder, quality, decode_hw=decode_hw, device=device,
+        info, mode, encoder, quality, decode_hw=decode_hw, device=device,
     )
-    audio = build_audio_args(info, track_idx, "transcode", audio_bitrate, acodec)
+    audio = build_audio_args(info, track_idx, mode, audio_bitrate, acodec)
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", loglevel]
     if progress:
         # Machine-readable progress on stdout (`out_time_us=…`, `progress=end`).
@@ -606,6 +655,8 @@ __all__ = [
     "AUDIO_CODECS",
     "BROWSER_AUDIO_OK",
     "BROWSER_VIDEO_OK",
+    "COPY_SAFE_PIX_FMTS",
+    "EXPORT_QUALITIES",
     "HardwareProbe",
     "LIMITER",
     "QUALITY_PRESETS",
@@ -618,6 +669,8 @@ __all__ = [
     "build_render_cmd",
     "build_transcode_cmd",
     "build_video_args",
+    "copy_video_ok",
+    "download_mode",
     "prune_decode_cache",
     "select_playback_mode",
 ]

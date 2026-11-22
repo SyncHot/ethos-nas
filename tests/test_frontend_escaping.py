@@ -122,9 +122,14 @@ def static_checks() -> None:
 
     dangling = []
     import_re = re.compile(r"import \{([^}]*)\} from '(\.[^']*)';")
+    core_dir = (STATIC / "core").resolve()
     for path in files:
         for names_blob, target in import_re.findall(path.read_text()):
-            base = Path(target).name
+            # Resolve the specifier: `./api.js` in music/ is NOT core/api.js.
+            resolved = (path.parent / target).resolve()
+            if resolved.parent != core_dir:
+                continue
+            base = resolved.name
             if base not in core_exports:
                 continue
             for item in names_blob.split(","):

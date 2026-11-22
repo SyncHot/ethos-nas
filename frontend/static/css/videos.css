@@ -316,6 +316,25 @@ button { cursor: pointer; }
 .vd-quality-row .vd-btn { flex: 1 1 auto; }
 
 .vd-downloads-list { display: flex; flex-direction: column; gap: 10px; }
+.vd-dl-summary {
+    margin: 0 0 12px;
+    padding: 8px 11px;
+    border: 1px solid var(--vd-border);
+    border-radius: 10px;
+    background: var(--vd-soft);
+    color: var(--vd-muted);
+    font-size: 12px;
+    font-weight: 700;
+}
+.vd-dl-group { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.vd-dl-group h3 {
+    margin: 0;
+    font-size: 10.5px;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--vd-faint);
+}
+.vd-dl-hint { margin: 0; color: var(--vd-faint); font-size: 11px; }
 .vd-dl {
     display: flex;
     align-items: center;
@@ -330,10 +349,31 @@ button { cursor: pointer; }
 .vd-dl-copy { flex: 1; min-width: 0; }
 .vd-dl-copy b { display: block; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .vd-dl-copy span { display: block; margin-top: 2px; color: var(--vd-faint); font-size: 11px; }
+.vd-dl-stage { font-weight: 700; }
+.vd-dl-stage[data-tone="ok"] { color: var(--vd-ok); }
+.vd-dl-stage[data-tone="bad"] { color: var(--vd-bad); }
+.vd-dl-stage[data-tone="gold"] { color: var(--vd-gold); }
+.vd-dl-stage[data-tone="busy"] { color: var(--vd-text); }
+.vd-dl-meta { color: var(--vd-faint); font-size: 10.5px; }
 .vd-dl-bar { margin-top: 6px; height: 4px; border-radius: 999px; background: rgba(255, 255, 255, 0.14); overflow: hidden; }
-.vd-dl-bar i { display: block; height: 100%; background: var(--vd-gold); }
+.vd-dl-bar i { display: block; height: 100%; background: var(--vd-gold); transition: width 0.3s ease-out; }
 .vd-dl-actions { display: flex; gap: 4px; }
 .vd-storage { margin: 14px 0 0; color: var(--vd-faint); font-size: 11.5px; text-align: center; }
+
+.vd-choice-row { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 14px; }
+.vd-choice {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 13px;
+    border: 1px solid var(--vd-border);
+    border-radius: 12px;
+    background: var(--vd-soft);
+    font-size: 13px;
+    font-weight: 600;
+}
+.vd-choice input { width: 17px; height: 17px; accent-color: var(--vd-gold); }
+.vd-choice:has(input:checked) { border-color: var(--vd-gold); background: var(--vd-panel); }
 
 /* ── player ────────────────────────────────────────────────────────────── */
 .vd-player { position: fixed; inset: 0; z-index: 60; background: #000; color: #fff; }

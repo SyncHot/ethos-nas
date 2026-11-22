@@ -32,10 +32,15 @@ HEVC = {"width": 3840, "height": 2160, "video_codec": "hevc", "audio_codec": "ea
 HEVC_10BIT = {"width": 1920, "height": 1080, "pix_fmt": "yuv420p10le",
               "video_codec": "hevc", "audio_codec": "eac3",
               "audio_tracks": [{"codec": "eac3", "language": "eng"}]}
-H264 = {"width": 1920, "height": 1080, "video_codec": "h264", "audio_codec": "aac",
+H264 = {"width": 1920, "height": 1080, "video_codec": "h264", "pix_fmt": "yuv420p",
+        "audio_codec": "aac",
         "audio_tracks": [{"codec": "aac", "language": "eng"}]}
-H264_AC3 = {"width": 1920, "height": 1080, "video_codec": "h264", "audio_codec": "ac3",
+H264_AC3 = {"width": 1920, "height": 1080, "video_codec": "h264", "pix_fmt": "yuv420p",
+            "audio_codec": "ac3",
             "audio_tracks": [{"codec": "ac3", "language": "eng"}]}
+H264_10BIT = {"width": 1920, "height": 1080, "video_codec": "h264",
+              "pix_fmt": "yuv420p10le", "audio_codec": "aac",
+              "audio_tracks": [{"codec": "aac", "language": "eng"}]}
 
 
 def test_modes() -> None:
@@ -213,6 +218,38 @@ def test_render_command() -> None:
           opus_joined)
 
 
+def test_download_mode() -> None:
+    check("copy-safe detection needs 8-bit H.264",
+          ve.copy_video_ok(H264) and not ve.copy_video_ok(H264_10BIT)
+          and not ve.copy_video_ok(HEVC), "")
+
+    mode, note = ve.download_mode(H264, "original", ".mp4")
+    check("original MP4 is served as is", mode == "passthrough", mode)
+    check("passthrough explains itself", "no conversion" in note, note)
+
+    mode, _ = ve.download_mode(H264_AC3, "original", ".mkv")
+    check("original MKV remuxes the video", mode == "remux", mode)
+
+    mode, note = ve.download_mode(HEVC, "original", ".mkv")
+    check("original falls back for HEVC", mode == "transcode", mode)
+    check("fallback says it re-encodes", "1080p" in note, note)
+
+    mode, _ = ve.download_mode(H264_10BIT, "original", ".mkv")
+    check("10-bit is never copied", mode == "transcode", mode)
+
+    mode, note = ve.download_mode(H264, "fast", ".mkv")
+    check("a preset always encodes", mode == "transcode" and not note, mode)
+
+    cmd = ve.build_render_cmd(
+        "ffmpeg", "/x/movie.mkv", H264_AC3, None, 0, "original", "192k",
+        "/tmp/o.mp4", mode="remux")
+    joined = " ".join(cmd)
+    check("remux render copies the video", "-c:v copy" in joined, joined)
+    check("remux render still writes a faststart MP4",
+          "+faststart" in joined and "-sn" in joined, joined)
+    check("remux render encodes AC3 to AAC", "aac" in joined, joined)
+
+
 def test_playlist_and_segments() -> None:
     text = ('#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:4.0,\nseg00000.m4s\n')
     rewritten = rewrite_playlist(text, "tok en")
@@ -255,6 +292,7 @@ def main() -> int:
     test_audio_codec_negotiation()
     test_commands()
     test_render_command()
+    test_download_mode()
     test_playlist_and_segments()
     asyncio.run(test_probe_without_ffmpeg())
     asyncio.run(test_limiter())

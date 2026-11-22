@@ -89,8 +89,10 @@ async def main() -> int:
         check("public shape has a download url",
               public["download_url"] == f"/api/videos/exports/{job.id}/download",
               str(public.get("download_url")))
-        check("public shape exposes the file name only",
-              public.get("name") == "Movie.mkv" and "path" not in public, str(public))
+        check("public shape exposes the file name",
+              public.get("name") == "Movie.mkv", str(public))
+        check("public shape lets the UI match library items",
+              public.get("path") == str(tmp / "Movie.mkv"), str(public.get("path")))
 
         # ── dedupe ────────────────────────────────────────────────────────
         again = await mgr.start(owner="alice", abs_path=str(tmp / "Movie.mkv"),
@@ -121,31 +123,76 @@ async def main() -> int:
         except module.RenderDiskError:
             check("free-space preflight rejects", True)
 
-        # ── busy ──────────────────────────────────────────────────────────
-        slow = await mgr.start(owner="carol", abs_path=str(tmp / "Slow.mkv"), info=INFO,
-                               quality="fast", audio_idx=0, source_key="slow|fast|0",
-                               cmd_factory=fake_ffmpeg("slow"))
-        try:
-            await mgr.start(owner="carol", abs_path=str(tmp / "Slow2.mkv"), info=INFO,
-                            quality="fast", audio_idx=0, source_key="slow2|fast|0",
-                            cmd_factory=fake_ffmpeg("slow"))
-            check("one active render per user", False, "no RenderBusy")
-        except module.RenderBusy:
-            check("one active render per user", True)
+        # ── queue: many jobs, rendered one after another ──────────────────
+        first = await mgr.start(owner="carol", abs_path=str(tmp / "Slow.mkv"), info=INFO,
+                                quality="fast", audio_idx=0, source_key="slow|fast|0",
+                                cmd_factory=fake_ffmpeg("slow"))
+        second = await mgr.start(owner="carol", abs_path=str(tmp / "Slow2.mkv"), info=INFO,
+                                 quality="fast", audio_idx=0, source_key="slow2|fast|0",
+                                 cmd_factory=fake_ffmpeg("slow"))
+        check("a second job is queued instead of 429", second.status in ("queued", "rendering"),
+              second.status)
+        check("queue positions are FIFO",
+              (first.queue_position, second.queue_position) == (1, 2),
+              f"{first.queue_position},{second.queue_position}")
+        await asyncio.sleep(0.2)
+        check("one render at a time", second.status == "queued", second.status)
 
         # ── cancel ────────────────────────────────────────────────────────
-        await asyncio.sleep(0.1)
-        cancelled = await mgr.cancel(slow.id, "carol")
+        cancelled = await mgr.cancel(first.id, "carol")
         check("cancel marks the job cancelled", cancelled.status == "cancelled",
               cancelled.status)
         check("cancel removes the partial file",
-              not (mgr.files_dir / f"{slow.id}.mp4.part").exists())
-        mgr.delete(slow.id, "carol")
+              not (mgr.files_dir / f"{first.id}.mp4.part").exists())
+        await asyncio.sleep(0.1)
+        check("the queued render takes over", second.status in ("rendering", "done"), second.status)
+        await mgr.cancel(second.id, "carol")
+        mgr.delete(first.id, "carol")
         try:
-            mgr.get(slow.id, "carol")
+            mgr.get(first.id, "carol")
             check("delete forgets the job", False, "still present")
         except module.RenderNotFound:
             check("delete forgets the job", True)
+
+        # ── rolling window + consume ──────────────────────────────────────
+        _module, windowed = _manager(tmp, prepared_window=1)
+        keeper1 = await windowed.start(owner="frank", abs_path=str(tmp / "W1.mkv"), info=INFO,
+                                       quality="fast", audio_idx=0, source_key="w1|fast|0",
+                                       cmd_factory=fake_ffmpeg())
+        await _wait(keeper1)
+        keeper2 = await windowed.start(owner="frank", abs_path=str(tmp / "W2.mkv"), info=INFO,
+                                       quality="fast", audio_idx=0, source_key="w2|fast|0",
+                                       cmd_factory=fake_ffmpeg())
+        await _wait(keeper2)
+        check("rolling window keeps the newest copy",
+              keeper2.status == "done" and (windowed.files_dir / f"{keeper2.id}.mp4").is_file(),
+              keeper2.status)
+        try:
+            windowed.get(keeper1.id, "frank")
+            check("rolling window reaps the oldest copy", False, "still present")
+        except module.RenderNotFound:
+            check("rolling window reaps the oldest copy", True)
+        consumed = windowed.consume(keeper2.id, "frank")
+        check("consume frees the NAS copy",
+              consumed.status == "consumed"
+              and not (windowed.files_dir / f"{keeper2.id}.mp4").exists(), consumed.status)
+        check("consumed job has no download url", consumed.public()["download_url"] is None,
+              str(consumed.public().get("download_url")))
+
+        # ── passthrough (original MP4) ────────────────────────────────────
+        source = tmp / "Original.mp4"
+        source.write_bytes(b"\0" * 4096)
+        _module, passthrough = _manager(tmp)
+        direct = await passthrough.start(
+            owner="heidi", abs_path=str(source), info=INFO, quality="original",
+            audio_idx=0, source_key="orig|original|0|passthrough",
+            cmd_factory=lambda _p: [], mode="passthrough", note="Original file")
+        await _wait(direct)
+        check("passthrough finishes without ffmpeg", direct.status == "done", direct.status)
+        check("passthrough serves the original file",
+              passthrough.download_path(direct.id, "heidi") == source, str(direct.path))
+        passthrough.consume(direct.id, "heidi")
+        check("consuming a passthrough keeps the source", source.is_file())
 
         # ── failures ──────────────────────────────────────────────────────
         bad = await mgr.start(owner="dave", abs_path=str(tmp / "Broken.mkv"), info=INFO,
