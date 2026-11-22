@@ -140,7 +140,13 @@ Packages: `ethos-photos`, `ethos-video`, `ethos-music`, `ethos-books` (sibling r
 - [x] Video Station package
 - [x] Music shared playlists
 - [x] Books shared roots
-- [ ] Tests, docs, release (package publish pending the 2.14.0 core release)
+- [x] Core tests (`test_sharing_api`, `test_path_scope_sharing`, gallery/video/music,
+      notification targeting) and static guards
+- [x] Browser verification: Sharing app, dialog, Files sidebar, Photos shared albums,
+      Video shared folders, Music shared playlists, Books shared-roots service
+- [ ] Package publish — blocked by the unrelated `ethos-sticky-notes` manifest in the
+      package repo; publish after the 2.14.0 core release
+- [ ] Android parity for shared albums/playlists (Moments/Music follow-up)
 
 ## Verification
 
@@ -160,3 +166,6 @@ Packages: `ethos-photos`, `ethos-video`, `ethos-music`, `ethos-books` (sibling r
 - Shared media outside `/home|/mnt|/media` is impossible by design.
 - Android Moments/Music do not show shared resources until a parity follow-up.
 - Sharing “My List” from Video Station is a follow-up; v1 shares roots and files.
+- The package releases for Photos/Video/Music/Books are prepared (`min_ethos_version`
+  2.14.0) but not published; the sibling repo's signed index cannot be rebuilt until
+  the unrelated `ethos-sticky-notes` package is valid again.
