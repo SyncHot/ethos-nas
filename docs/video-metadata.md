@@ -166,9 +166,9 @@ an external image. `source_id` is the provider id in that source's namespace.
 - [x] `/metadata/*` API + legacy `/tmdb/*` aliases
 - [x] Bounded auto-fetch
 - [x] Package 2.1.0 provider UI / attribution
-- [ ] Package 2.1.0 sandbox/browser E2E
-- [ ] Android 1.5.0 source label + release
-- [ ] Core 2.13.0 + package 2.1.0 signed releases
+- [x] Package 2.1.0 sandbox/browser E2E
+- [x] Android 1.5.0 source label + release
+- [x] Core 2.13.0 + package 2.1.0 signed releases
 
 ## Out of scope
 
