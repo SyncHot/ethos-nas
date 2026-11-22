@@ -9,6 +9,23 @@ EthOS core so recordings keep running headless.
 **This file is the resume point.** Read it first, continue from the first
 unchecked item, and update the boxes + Verification Log as work lands.
 
+## Storage alerts
+
+The retention janitor sweeps every 5 minutes and warns in the Notification
+Center when the recordings are close to their budget (`usage()["quota_bytes"]`,
+which already includes what is on disk).
+
+- The janitor only runs while **at least one camera is configured**; deleting the
+  cameras or uninstalling the app stops it, so a leftover thread can never keep
+  alerting about an empty storage tree.
+- The warning needs at least 256 MiB of recordings and is repeated at most every
+  6 hours while the condition persists, instead of once per sweep. A volume past
+  the quota line reads “X GiB recorded · volume 98% full — no room left for new
+  recordings” rather than the meaningless “0.0 GiB of 0.0 GiB used”.
+- A camera whose ffmpeg exits immediately is charged as a failure and retried
+  with the 5/15/60 s backoff; it no longer spawns a new process (and a new run
+  directory) on every 2 s supervisor tick.
+
 ## Status
 
 - [x] Phase 0 — Authz (admin-only management, per-camera `viewers`), `json_store` v2

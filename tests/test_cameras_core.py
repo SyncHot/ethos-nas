@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -228,6 +229,57 @@ def main() -> int:
               f"{usage['quota_bytes']} != {usage['recordings_bytes']}")
     finally:
         camera_storage.shutil.disk_usage = real_disk_usage
+
+    storage_alert = camera_runner.storage_alert
+    check("no recordings → no 'storage almost full' alert",
+          storage_alert({"recordings_bytes": 0, "quota_bytes": 0}) is None)
+    check("collapsed quota with nothing recorded stays silent",
+          storage_alert({"recordings_bytes": 0, "quota_bytes": 0, "used_pct": 97}) is None)
+    check("headroom left → no alert",
+          storage_alert({"recordings_bytes": 1024 ** 3, "quota_bytes": 10 * 1024 ** 3}) is None)
+    check("tiny leftovers never read as '0.0 GiB of 0.0 GiB'",
+          storage_alert({"recordings_bytes": 10 * 1024 ** 2, "quota_bytes": 10 * 1024 ** 2,
+                         "used_pct": 97}) is None)
+    _msg = storage_alert({"recordings_bytes": 2 * 1024 ** 3, "quota_bytes": 2 * 1024 ** 3,
+                          "used_pct": 91})
+    check("recordings above the floor at the quota → alert",
+          bool(_msg) and "2.0 GiB recorded" in _msg and "91%" in _msg
+          and "no room left" in _msg, str(_msg))
+
+    # A camera that cannot be reached used to spawn ffmpeg every supervisor tick:
+    # the dead process was replaced before _handle_exit() could charge it, so no
+    # backoff applied and every 2 s left a new run directory behind.
+    import types
+
+    class _DeadProc:
+        process = types.SimpleNamespace(poll=lambda: 1, returncode=1)
+        detail: dict = {}
+        last_line = "connection refused"
+        log_path = Path("/nonexistent/ffmpeg.log")
+
+    _cam = {"id": "cam_dead", "name": "Dead", "enabled": True,
+            "streams": {"main": "rtsp://nope/main", "sub": "rtsp://nope/sub"}}
+    pipeline = camera_runner.CameraPipeline(_cam)
+    pipeline._codec = "h264"
+    pipeline._archive = _DeadProc()
+    _real_active = camera_service.recording_active
+    camera_service.recording_active = lambda _cam: True
+    try:
+        pipeline._ensure_archive()
+    finally:
+        camera_service.recording_active = _real_active
+    check("a dead archive process is charged as one failure",
+          pipeline._fails.get("archive") == 1 and pipeline._archive is None,
+          f"fails={pipeline._fails} archive={pipeline._archive}")
+    check("the failure sets a restart backoff instead of an immediate respawn",
+          pipeline._next_try["archive"] > time.time(), str(pipeline._next_try))
+
+    pipeline._live = _DeadProc()
+    pipeline._ensure_live()
+    check("a dead live process is charged and not respawned at once",
+          pipeline._fails.get("live") == 1 and pipeline._live is None
+          and pipeline._next_try["live"] > time.time(),
+          f"fails={pipeline._fails} live={pipeline._live}")
 
     print("\nPart I — per-camera retention override")
     other_id = "cam_bbbbbbbbbbbb"

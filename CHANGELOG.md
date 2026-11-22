@@ -11,6 +11,23 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.28.8] - 2026-11-22
+
+### Fixed
+
+- **"Camera storage almost full — 0.0 GiB of 0.0 GiB used" no longer appears
+  every five minutes.** The retention janitor compared the recordings against a
+  budget that already *includes* them, so on a full volume the check was always
+  true — and it ran even with no cameras left, which is why the warning kept
+  coming after the cameras were removed. The janitor now stops when no camera is
+  configured, needs at least 256 MiB of recordings, re-alerts at most every six
+  hours and says what actually happened (“X GiB recorded · volume 98 % full — no
+  room left for new recordings”).
+- **An unreachable camera no longer spawns ffmpeg every two seconds.** A dead
+  live/archive process was replaced before the failure was charged, so the
+  5/15/60 s backoff never applied and every tick left a new recording directory
+  behind (the real reason that volume filled up).
+
 ## [2.28.7] - 2026-11-22
 
 ### Added

@@ -45,12 +45,19 @@ LIVE_STALE_S = 10
 RESTART_BACKOFF = (5, 15, 60)
 SUPERVISOR_TICK_S = 2
 JANITOR_INTERVAL_S = 300
+#: Re-alert at most this often while the recordings stay over quota (the same
+#: warning every sweep used to fill the Notification Center).
+ALERT_REPEAT_S = 6 * 3600
+#: Below this the numbers read "0.0 GiB" — leftover fragments are not a warning.
+ALERT_MIN_BYTES = 256 * 1024 ** 2
 CODEC_PROBE_TIMEOUT_S = 8
 COPY_CODECS = ("h264", "hevc")
 
 _LOCK = threading.Lock()
 _PIPELINES: dict[str, "CameraPipeline"] = {}
 _JANITOR: Optional["_Janitor"] = None
+#: When the storage warning was last emitted (0.0 = the condition is clear).
+_ALERT_AT: list[float] = [0.0]
 
 
 def status_for(cam_id: str) -> dict:
@@ -376,6 +383,15 @@ class CameraPipeline(threading.Thread):
     def _ensure_live(self) -> None:
         if self._live and self._live.process.poll() is None:
             return
+        if self._live:
+            # The process died on its own. Charge it as a failure *here*: the
+            # supervisor calls _handle_exit() after this method, and by then the
+            # slot would already hold a fresh process, so the failure was never
+            # logged and the backoff never applied — an unreachable camera was
+            # restarted every tick (2 s) and left a new run directory each time.
+            self._handle_exit("live")
+            if self._live:
+                return
         if time.time() < self._next_try["live"]:
             return
         url = _live_source(self.cam)
@@ -422,6 +438,12 @@ class CameraPipeline(threading.Thread):
             self._recording = bool(self._live and self._live.process.poll() is None
                                    and self._live.detail.get("archive"))
             return
+        if self._archive and self._archive.process.poll() is not None:
+            # Same silent-replacement trap as the live process: charge the exit
+            # so retention does not spawn ffmpeg every tick.
+            self._handle_exit("archive")
+            if self._archive:
+                return
         active = camera_service.recording_active(self.cam) if self.cam.get("enabled") else False
         if not active:
             if self._archive and self._archive.process.poll() is None:
@@ -585,6 +607,27 @@ class CameraPipeline(threading.Thread):
 
 # ── Janitor ─────────────────────────────────────────────────────────────────
 
+def storage_alert(usage: dict) -> Optional[str]:
+    """Message for the "almost full" warning, or None when there is nothing to say.
+
+    `camera_storage.usage()["quota_bytes"]` already *includes* the recordings, so
+    on a volume past the quota line the allowed size collapses to what is on disk
+    and a naive `used > allowed * 0.9` test is true forever — with no meaningful
+    recordings that produced "0.0 GiB of 0.0 GiB used" every five minutes, even
+    after the cameras were gone.
+    """
+    recordings = int(usage.get("recordings_bytes") or 0)
+    quota = int(usage.get("quota_bytes") or 0)
+    if recordings < ALERT_MIN_BYTES or quota <= 0 or recordings <= quota * 0.9:
+        return None
+    used_pct = usage.get("used_pct", 0)
+    if quota <= recordings:
+        return (f"{recordings / 1024**3:.1f} GiB recorded · volume {used_pct}% full"
+                f" — no room left for new recordings")
+    return (f"{recordings / 1024**3:.1f} GiB of {quota / 1024**3:.1f} GiB used"
+            f" · volume {used_pct}% full")
+
+
 class _Janitor(threading.Thread):
     def __init__(self) -> None:
         super().__init__(name="camera-janitor", daemon=True)
@@ -598,19 +641,27 @@ class _Janitor(threading.Thread):
             if shutdown_state.is_set():
                 return
             try:
+                if not camera_service.list_cameras():
+                    # A NAS without cameras has nothing to record, retain or warn
+                    # about: the janitor must not outlive the cameras.
+                    logger.info("Camera retention janitor stopping: no cameras configured")
+                    return
                 result = camera_storage.purge()
                 if result.get("removed_dirs"):
                     logger.info("Retention sweep: %s", result)
-                usage = camera_storage.usage()
-                quota = usage.get("quota_bytes") or 0
-                if quota and usage.get("recordings_bytes", 0) > quota * 0.9:
-                    from backend.services.notifications_service import emit_event
+                message = storage_alert(camera_storage.usage())
+                if not message:
+                    _ALERT_AT[0] = 0.0
+                    continue
+                now = time.time()
+                if now - _ALERT_AT[0] < ALERT_REPEAT_S:
+                    continue
+                _ALERT_AT[0] = now
+                from backend.services.notifications_service import emit_event
 
-                    emit_event("warning", "Camera storage almost full",
-                               f"{usage['recordings_bytes'] / 1024**3:.1f} GiB of "
-                               f"{quota / 1024**3:.1f} GiB used",
-                               source="surveillance", dedupe_key="camera:storage",
-                               action={"label": "Open Cameras", "appId": "surveillance"})
+                emit_event("warning", "Camera storage almost full", message,
+                           source="surveillance", dedupe_key="camera:storage",
+                           action={"label": "Open Cameras", "appId": "surveillance"})
             except Exception:  # noqa: BLE001 — janitor must survive a bad disk
                 logger.error("Camera retention sweep failed", exc_info=True)
 
@@ -631,6 +682,17 @@ def start_camera(cam: dict) -> None:
     with _LOCK:
         _PIPELINES[cam["id"]] = pipeline
     pipeline.start()
+    # A camera added after boot still needs the retention janitor; it exits by
+    # itself once no camera is left.
+    _ensure_janitor()
+
+
+def _ensure_janitor() -> None:
+    global _JANITOR
+    with _LOCK:
+        if _JANITOR is None or not _JANITOR.is_alive():
+            _JANITOR = _Janitor()
+            _JANITOR.start()
 
 
 def stop_camera(cam_id: str) -> None:
@@ -641,17 +703,12 @@ def stop_camera(cam_id: str) -> None:
 
 
 def start_all() -> int:
-    """Boot hook: start every enabled camera + the retention janitor."""
-    global _JANITOR
+    """Boot hook: start every enabled camera and, if any, the retention janitor."""
     count = 0
     for cam in camera_service.list_cameras():
         if cam.get("enabled", True):
             start_camera(cam)
             count += 1
-    with _LOCK:
-        if _JANITOR is None or not _JANITOR.is_alive():
-            _JANITOR = _Janitor()
-            _JANITOR.start()
     return count
 
 
