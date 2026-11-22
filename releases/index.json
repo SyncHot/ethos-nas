@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T16:46:53+00:00",
+  "generated_at": "2026-11-22T17:00:44+00:00",
   "latest": {
-    "version": "2.27.0",
-    "git_sha": "6ac6c70",
-    "git_sha_full": "6ac6c708f73c587d3d4a09e45c5745f1430c17ca",
-    "build": 176,
-    "released_at": "2026-11-22T16:46:53+00:00",
-    "notes": "Packages: update notifications, purgable app data, disk-space preflight and PIN-safe catalog; new Syncthing and Forgejo packages."
+    "version": "2.28.0",
+    "git_sha": "b0ea585",
+    "git_sha_full": "b0ea585532be84b87f034e8f6b162e5e0908bae0",
+    "build": 178,
+    "released_at": "2026-11-22T17:00:44+00:00",
+    "notes": "Packages: container health alerts, Docker-root disk preflight, channel filter, UID-aligned share writes; new Uptime Monitor and FreshRSS packages."
   },
   "releases": [
+    {
+      "version": "2.28.0",
+      "git_sha": "b0ea585",
+      "git_sha_full": "b0ea585532be84b87f034e8f6b162e5e0908bae0",
+      "build": 178,
+      "released_at": "2026-11-22T17:00:44+00:00",
+      "notes": "Packages: container health alerts, Docker-root disk preflight, channel filter, UID-aligned share writes; new Uptime Monitor and FreshRSS packages."
+    },
     {
       "version": "2.27.0",
       "git_sha": "6ac6c70",
@@ -201,14 +209,6 @@
       "build": 123,
       "released_at": "2026-11-22T10:30:25+00:00",
       "notes": "Sticky Notes: checklist tasks, a right-edge quick-capture ribbon and an installable /notes app with offline queue and Web Push reminders."
-    },
-    {
-      "version": "2.14.0",
-      "git_sha": "a3c59eb",
-      "git_sha_full": "a3c59eb7b0244ae9d562b37f4d365071df79e435",
-      "build": 120,
-      "released_at": "2026-11-22T10:21:18+00:00",
-      "notes": "Sharing: grant files, Photos albums, Video folders and Music playlists view-only to other accounts; Files drops Favorites that point at deleted folders."
     }
   ]
 }
