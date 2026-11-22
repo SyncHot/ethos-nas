@@ -49,19 +49,22 @@ import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from backend.config import settings
 from backend.models import (
-    FavoriteRequest, FileContentRequest, FilePathRequest, FileRenameRequest, MkdirRequest,
-    TrashRestoreRequest, VideoCoverRequest,
+    FavoriteRequest, FileContentRequest, FileExtractRequest, FilePathRequest, FileRenameRequest,
+    MkdirRequest, TrashRestoreRequest, VideoCoverRequest,
 )
 from backend.services import json_store
 from backend.services import package_client
 from backend.services import path_scope
+from backend.services import system_deps
 from backend.services import task_registry
 from backend.services import trash_service
-from backend.services.files_service import ARCHIVE_EXTS, broadcast_mutation, extract_archive
+from backend.services.files_service import (
+    MissingExtractor, broadcast_mutation, extract_archive, is_extractable_name,
+)
 
 try:
     import grp
@@ -184,7 +187,7 @@ def _format_info(name: str, fpath: str, stat, is_dir: bool) -> dict:
         ftype = "document"
     elif ext in (".txt", ".md", ".log", ".rst"):
         ftype = "text"
-    elif ext in (".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".tgz"):
+    elif is_extractable_name(name):
         ftype = "archive"
     elif ext in (".py", ".js", ".ts", ".html", ".css", ".json", ".yaml",
                  ".yml", ".sh", ".bash", ".xml", ".csv", ".toml"):
@@ -1212,32 +1215,71 @@ def _emit_extract_event(kind: str, title: str, message: str) -> None:
         logger.warning("Failed to emit extract notification: %s", exc)
 
 
-@router.post("/extract")
-async def extract_archive_api(body: FilePathRequest) -> dict:
-    """Extract an archive next to itself.
+def _clean_extract_subfolder(value: str | None) -> str | None:
+    """Validate the optional folder name of an extraction request."""
+    if value is None:
+        return None
+    name = value.strip()
+    if not name:
+        return ""
+    if name in (".", "..") or "/" in name or "\\" in name or "\x00" in name:
+        raise HTTPException(status_code=400,
+                            detail="Folder name must not contain path separators")
+    if len(name) > 200:
+        raise HTTPException(status_code=400,
+                            detail="Folder name is too long (max 200 characters)")
+    return name
 
-    zip/tar* → new subfolder named after the archive (never overwrites);
-    bare .gz/.bz2/.xz → single file beside the archive; 7z/rar/zst/lz4 need
-    bsdtar/7z/unrar installed. Runs in a worker thread.
+
+@router.post("/extract")
+async def extract_archive_api(body: FileExtractRequest) -> dict:
+    """Extract an archive — next to itself, or into a folder the user picks.
+
+    Body: {path, dest_dir?, subfolder?, overwrite?, password?}.
+    ``subfolder`` None → a folder named after the archive (collision-suffixed,
+    never overwrites); "" → straight into ``dest_dir``; any other value → that
+    folder. Split volumes (.part1.rar/.7z.001/.r00) resolve to their first
+    volume. Runs in a worker thread; every path goes through the scope check.
     """
     abs_path = _sanitize(body.path)
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
-    ext = Path(abs_path).suffix.lower()
-    # Multi-suffix archives (.tar.gz) need the full tail for the check.
-    lower_name = abs_path.lower()
-    if ext not in ARCHIVE_EXTS and not any(lower_name.endswith(sfx) for sfx in (".tar.gz", ".tar.bz2", ".tar.xz")):
-        raise HTTPException(status_code=400, detail=f"Not a supported archive type ({ext or 'no extension'})")
+    if not is_extractable_name(abs_path):
+        ext = Path(abs_path).suffix.lower()
+        raise HTTPException(status_code=400,
+                            detail=f"Not a supported archive type ({ext or 'no extension'})")
+
+    dest = _sanitize(body.dest_dir) if body.dest_dir else os.path.dirname(abs_path)
+    if not os.path.isdir(dest):
+        raise HTTPException(status_code=400, detail=f"Destination is not a directory: {dest}")
+    subfolder = _clean_extract_subfolder(body.subfolder)
 
     try:
-        result = await asyncio.to_thread(extract_archive, abs_path)
+        result = await asyncio.to_thread(
+            extract_archive,
+            abs_path,
+            dest_dir=dest,
+            subfolder=subfolder,
+            overwrite=bool(body.overwrite),
+            password=body.password or None,
+        )
+    except MissingExtractor as exc:
+        # Needs a host extractor that is not installed. The UI offers a one-click
+        # admin install for `missing_requirement` instead of a dead end.
+        logger.warning("Extraction needs host tools for %s: %s", abs_path, exc)
+        _emit_extract_event("error", "Extraction failed", str(exc))
+        return JSONResponse(status_code=409, content={
+            "detail": str(exc),
+            "missing_requirement": exc.requirement,
+            "hint": system_deps.install_hint(exc.requirement),
+        })
     except ValueError as exc:  # unsupported/corrupt/unsafe archive — client error
         logger.error("Extract failed for %s: %s", abs_path, exc)
         _emit_extract_event("error", "Extraction failed", str(exc))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PermissionError as exc:
-        _emit_extract_event("error", "Extraction failed", f"Permission denied: {abs_path}")
-        raise _permission_denied(exc, abs_path) from exc
+        _emit_extract_event("error", "Extraction failed", f"Permission denied: {dest}")
+        raise _permission_denied(exc, dest) from exc
     except Exception as exc:
         logger.error("Extract error for %s: %s", abs_path, exc, exc_info=True)
         _emit_extract_event("error", "Extraction failed", f"{abs_path}: {exc}")
@@ -1246,13 +1288,20 @@ async def extract_archive_api(body: FilePathRequest) -> dict:
     dest_dir = result["dest_dir"]
     count = result["extracted_count"]
     skipped = result.get("skipped") or []
-    skip_note = f", {len(skipped)} special file(s) skipped" if skipped else ""
-    logger.info("Extracted %s → %s (%d files%s)", abs_path, dest_dir, count, skip_note)
+    skipped_existing = int(result.get("skipped_existing") or 0)
+    notes = []
+    if skipped:
+        notes.append(f"{len(skipped)} special file(s) skipped")
+    if skipped_existing:
+        notes.append(f"{skipped_existing} existing file(s) kept")
+    skip_note = (" (" + ", ".join(notes) + ")") if notes else ""
+    logger.info("Extracted %s → %s (%d files%s, tool=%s)",
+                abs_path, dest_dir, count, skip_note, result.get("tool") or "stdlib")
     if skipped:
         logger.warning("Skipped special files in %s: %s", abs_path, ", ".join(skipped[:20]))
     broadcast_mutation(
         "extract", dest_dir,
-        [{"name": os.path.basename(dest_dir), "status": "ok"}],
+        [{"name": os.path.basename(dest_dir) or dest_dir, "status": "ok"}],
     )
     _emit_extract_event("success", "Archive extracted",
                         f'"{os.path.basename(abs_path)}" → {dest_dir} ({count} files{skip_note})')
@@ -1262,6 +1311,9 @@ async def extract_archive_api(body: FilePathRequest) -> dict:
         "extracted_count": count,
         "skipped_count": len(skipped),
         "skipped": skipped[:20],  # cap the payload; full list is in the server log
+        "skipped_existing": skipped_existing,
+        "tool": result.get("tool") or "stdlib",
+        "archive": result.get("archive") or abs_path,
     }
 
 

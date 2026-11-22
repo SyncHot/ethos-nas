@@ -1,12 +1,13 @@
 // EthOS NAS — File Manager App (multi-window Nautilus-style with unified components)
 import { escapeAttr, escapeHtml, formatBytes, getFileIcon, hexToRgb, jsAttr, safeJsStr } from '../core/utils.js';
 import { onAppClose, openWindows } from '../core/window-manager.js';
-import { apiFetch, apiJsonFetch, readErrorDetail } from '../core/api.js';
+import { apiFetch, apiJsonFetch, isAdmin, readErrorDetail } from '../core/api.js';
 import { connectWs } from '../core/ws.js';
 import { getUploadStatus, showUploadPanel, startUpload } from '../core/upload-engine.js';
 import { startTask } from '../core/progress.js';
 import { addNotification, toggleNotificationDrawer } from '../core/notification-center.js';
-import { showAlert, showConfirm as showModalConfirm, showPrompt } from '../core/modal.js';
+import { pickFolder } from '../core/file-picker.js';
+import { showAlert, showConfirm as showModalConfirm, showFormModal, showPrompt } from '../core/modal.js';
 
 export const fmWindowStates = new Map();
 
@@ -1648,11 +1649,50 @@ function _getCurrentFileList() {
 const _IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg']);
 const _AUDIO_EXTS = new Set(['.mp3', '.ogg', '.oga', '.wav', '.flac', '.aac', '.m4a', '.opus', '.wma']);
 const _VIDEO_EXTS = new Set(['.mp4', '.mkv', '.mov', '.avi', '.webm', '.flv', '.m4v', '.wmv', '.ts', '.mts']);
-const _ARCHIVE_EXTS = new Set(['.zip', '.tar', '.tgz', '.tbz', '.txz', '.gz', '.bz2', '.xz', '.7z', '.rar', '.zst', '.lz4']);
+// Mirrors ARCHIVE_EXTS in backend/services/files_service.py — tests/test_archive_extract.py
+// fails when the two lists drift apart.
+const _ARCHIVE_EXTS = new Set([
+    // ZIP and ZIP-based containers
+    '.zip', '.zipx', '.jar', '.war', '.ear', '.whl', '.pyz', '.cbz', '.xpi', '.crx', '.vsix',
+    '.nupkg', '.apk',
+    // tar, any compression
+    '.tar', '.tgz', '.tbz', '.txz', '.tzst', '.tlz', '.tlz4', '.tlzma', '.taz',
+    // bare single-stream compressors
+    '.gz', '.bz2', '.xz', '.lzma', '.lz', '.z', '.zst', '.lz4',
+    // external-extractor formats
+    '.7z', '.rar', '.cab', '.iso', '.ar', '.deb', '.cpio', '.rpm',
+]);
+const _TAR_MULTI_SUFFIXES = [
+    '.tar.gz', '.tar.bz2', '.tar.xz', '.tar.zst', '.tar.lz4', '.tar.lz', '.tar.lzma', '.tar.z',
+];
+// Multi-volume sets: archive.part01.rar, archive.r00, archive.7z.001, …
+const _SPLIT_PATTERNS = [
+    /^(.+?)\.part0*\d{1,4}\.(?:rar|zip|7z)$/i,
+    /^(.+?)\.r\d{2}$/i,
+    /^(.+?)\.z\d{2}$/i,
+    /^(.+?)\.\d{3}$/i,
+];
+function _archiveBaseName(path) {
+    const name = String(path || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || '';
+    const lower = name.toLowerCase();
+    for (const suffix of _TAR_MULTI_SUFFIXES) {
+        if (lower.endsWith(suffix)) return name.slice(0, -suffix.length) || name;
+    }
+    for (const pattern of _SPLIT_PATTERNS) {
+        const match = name.match(pattern);
+        if (match) return match[1].replace(/\.+$/, '') || name;
+    }
+    return name.replace(/\.[^.]+$/, '') || name;
+}
+function _isSplitVolumePath(path) {
+    const name = String(path || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() || '';
+    return _SPLIT_PATTERNS.some((pattern) => pattern.test(name));
+}
 function _isArchivePath(p) {
     const lower = (p || '').toLowerCase();
+    if (_TAR_MULTI_SUFFIXES.some(sfx => lower.endsWith(sfx))) return true;
     if (_ARCHIVE_EXTS.has('.' + (lower.split('.').pop() || ''))) return true;
-    return ['.tar.gz', '.tar.bz2', '.tar.xz'].some(sfx => lower.endsWith(sfx));
+    return _isSplitVolumePath(p);
 }
 
 // Extended plain-text/code list — languages, markup and config formats.
@@ -2286,7 +2326,11 @@ export function fmShowItemContextMenu(e, path, name, isDir) {
             items.push({ testid: 'fm-ctx-play-video', label: 'Play Video', icon: '<polygon points="5,3 19,12 5,21 5,3"/>', action: () => fmOpenVideoPlayer(path) });
         }
         if (_isArchivePath(path)) {
-            items.push({ testid: 'fm-ctx-extract', label: 'Extract…', icon: '<path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/>', action: () => _extractArchive(path) });
+            const archives = _selectedArchivePaths(path);
+            const suffix = archives.length > 1 ? ` ${archives.length} Archives` : '';
+            const extractIcon = '<path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/>';
+            items.push({ testid: 'fm-ctx-extract', label: `Extract${suffix} Here`, icon: extractIcon, action: () => _extractArchives(archives, {}) });
+            items.push({ testid: 'fm-ctx-extract-to', label: `Extract${suffix} to…`, icon: '<path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M12 11v6"/><polyline points="9,14 12,17 15,14"/>', action: () => _extractToDialog(archives) });
         }
         sep();
         const _token = localStorage.getItem('token') || '';
@@ -2351,32 +2395,204 @@ async function _downloadFile(path, token) {
     }
 }
 
-// Extract an archive in place — POST /api/files/extract. The backend creates a
-// subfolder named after the archive (or a single file for bare .gz/.bz2/.xz).
-async function _extractArchive(path) {
-    if (!path || !_isArchivePath(path)) { addNotification('Not an extractable archive', 'warning'); return; }
-    const root = _getActiveFmRoot();   // remember the originating window (async op)
-    const name = path.split('/').filter(Boolean).pop() || path;
-    addNotification(`Extracting ${name}…`, 'info');
-    try {
-        const resp = await apiFetch('/api/files/extract', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path })
-        });
-        if (resp.ok) {
-            const d = await resp.json();
-            const skipNote = d.skipped_count ? ` (${d.skipped_count} special file(s) skipped)` : '';
-            addNotification(`Extracted to ${d.dest_dir}${skipNote}`, 'success');
-            fmLoad(undefined, root);
-        } else {
-            let detail = `HTTP ${resp.status}`;
-            try { detail = (await resp.json()).detail || detail; } catch {}
-            addNotification(detail, 'error');
-        }
-    } catch (e) {
-        addNotification(`Extract failed: ${e.message}`, 'error');
+// ── Archive extraction ──────────────────────────────────────────────────────
+// One POST per archive (POST /api/files/extract). The quick path ("Extract
+// here", double-click) keeps creating a folder next to the archive; the dialog
+// path ("Extract to…") chooses destination/folder/password. All archives of one
+// action share a single progress row, and other windows refresh through the
+// file-events WebSocket.
+
+function _extractArchive(path) {
+    return _extractArchives([path], {});
+}
+
+/** Archive paths in the current selection (falls back to the right-clicked file). */
+function _selectedArchivePaths(clickedPath) {
+    const root = _getActiveFmRoot();
+    const state = root ? _getFmStateForRoot(root) : null;
+    let paths = [];
+    if (state && root) {
+        try { paths = _fmResolveSelectedPaths(state, root) || []; } catch { paths = []; }
     }
+    const archives = paths.filter((p) => _isArchivePath(p));
+    if (clickedPath && !archives.includes(clickedPath)) archives.unshift(clickedPath);
+    return [...new Set(archives)];
+}
+
+async function _extractArchives(paths, { destDir = '', subfolder = null, overwrite = false, password = '' } = {}) {
+    const list = [...new Set((paths || []).filter((p) => p && _isArchivePath(p)))];
+    if (!list.length) { addNotification('Not an extractable archive', 'warning'); return; }
+    const root = _getActiveFmRoot();
+    const multi = list.length > 1;
+    const singleName = list[0].split('/').filter(Boolean).pop() || list[0];
+    const task = startTask({
+        appId: 'files',
+        title: multi ? `Extracting ${list.length} archives…` : `Extracting ${singleName}…`,
+        testIdPrefix: 'fm-op',
+    });
+    let ok = 0;
+    let failed = 0;
+    let files = 0;
+    let kept = 0;
+    let lastDest = '';
+    let lastError = '';
+    const errors = [];
+
+    for (const archive of list) {
+        const name = archive.split('/').filter(Boolean).pop() || archive;
+        task.update({ detail: multi ? name : '' });
+        const body = { path: archive, overwrite: !!overwrite };
+        if (destDir) body.dest_dir = destDir;
+        if (subfolder !== null && subfolder !== undefined) body.subfolder = subfolder;
+        if (password) body.password = password;
+        try {
+            const resp = await apiFetch('/api/files/extract', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (resp.ok) {
+                ok += 1;
+                files += Number(data.extracted_count || 0);
+                kept += Number(data.skipped_existing || 0);
+                lastDest = data.dest_dir || lastDest;
+                continue;
+            }
+            if (resp.status === 409 && data.missing_requirement) {
+                task.finish('failed', { detail: data.detail || 'Missing extractor' });
+                if (await _offerArchiveToolsInstall(data)) {
+                    await _extractArchives(list, { destDir, subfolder, overwrite, password });
+                }
+                return;
+            }
+            failed += 1;
+            lastError = String(data.detail || `HTTP ${resp.status}`);
+            errors.push(lastError);
+        } catch (e) {
+            failed += 1;
+            lastError = e?.message || String(e);
+            errors.push(lastError);
+        }
+    }
+
+    const notes = [];
+    if (files) notes.push(`${files} file${files === 1 ? '' : 's'}`);
+    if (kept) notes.push(`${kept} existing kept`);
+    if (failed) notes.push(`${failed} failed`);
+    if (errors.length) {
+        addNotification(`Extract failed: ${errors[0]}`, 'error');
+    } else {
+        addNotification(
+            multi
+                ? `Extracted ${ok} archives${lastDest ? ` to ${lastDest}` : ''}${notes.length ? ` (${notes.join(', ')})` : ''}`
+                : `Extracted to ${lastDest}${notes.length ? ` (${notes.join(', ')})` : ''}`,
+            'success',
+        );
+    }
+    task.finish(failed ? 'failed' : 'done', {
+        percent: 100,
+        detail: lastError || (notes.join(', ') || 'Done'),
+    });
+    if (root) _silentRefetch(root);
+}
+
+/** 409 from the API → offer a one-click admin install of the missing extractor. */
+async function _offerArchiveToolsInstall(data) {
+    const requirement = data?.missing_requirement;
+    if (!requirement) return false;
+    if (!isAdmin()) {
+        addNotification(`${data.detail || 'Archive tools are not installed'} ${data.hint || ''}`.trim(), 'error');
+        return false;
+    }
+    const confirmed = await showModalConfirm(
+        'Archive tools required',
+        `${data.detail || 'This archive needs an extractor that is not installed.'}\n\nInstall the archive tools now? (${data.hint || requirement})`,
+    );
+    if (!confirmed) return false;
+    addNotification('Installing archive tools…', 'info');
+    try {
+        const resp = await apiFetch(`/api/system/deps/${encodeURIComponent(requirement)}/install`, { method: 'POST' });
+        const out = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+            addNotification('Archive tools installed', 'success');
+            return true;
+        }
+        addNotification(out.detail || `HTTP ${resp.status}`, 'error');
+    } catch (e) {
+        addNotification(e?.message || String(e), 'error');
+    }
+    return false;
+}
+
+/** "Extract to…" dialog: destination picker, folder name, password, overwrite. */
+async function _extractToDialog(paths) {
+    const list = [...new Set((paths || []).filter(Boolean))];
+    if (!list.length) return;
+    const single = list.length === 1;
+    const first = list[0];
+    const parent = first.slice(0, first.lastIndexOf('/')) || '/';
+    const stem = _archiveBaseName(first);
+    let remembered = '';
+    try { remembered = localStorage.getItem('ethos-fm-extract-dest') || ''; } catch { /* storage disabled */ }
+
+    const values = await showFormModal({
+        title: single ? `Extract ${stem}` : `Extract ${list.length} archives`,
+        confirmLabel: 'Extract',
+        width: '520px',
+        bodyHtml: `
+            <div class="ui-fields">
+                <div class="ui-field full"><label for="fmExtractDest">Destination folder</label>
+                    <div class="ui-row">
+                        <input id="fmExtractDest" name="dest" class="ui-input" data-testid="fm-extract-dest"
+                               value="${escapeAttr(remembered || parent)}" autocomplete="off" spellcheck="false">
+                        <button type="button" class="ui-btn" data-testid="fm-extract-browse">Browse…</button>
+                    </div>
+                </div>
+                <div class="ui-field full"><label for="fmExtractSubfolder">Folder name</label>
+                    <input id="fmExtractSubfolder" name="subfolder" class="ui-input" data-testid="fm-extract-subfolder"
+                           value="${escapeAttr(single ? stem : '')}" autocomplete="off" spellcheck="false"${single ? '' : ' disabled'}>
+                    <p class="ui-muted">${single
+                        ? 'Leave empty to extract straight into the destination folder.'
+                        : 'Each archive gets its own folder in the destination.'}</p>
+                </div>
+                <div class="ui-field"><label for="fmExtractPassword">Password (optional)</label>
+                    <input id="fmExtractPassword" name="password" type="password" class="ui-input"
+                           data-testid="fm-extract-password" autocomplete="new-password">
+                </div>
+                <div class="ui-field"><label class="ui-check">
+                    <input type="checkbox" name="overwrite" data-testid="fm-extract-overwrite"> Overwrite existing files
+                </label></div>
+            </div>`,
+        validate: (v) => {
+            const dest = String(v.dest || '').trim();
+            if (!dest.startsWith('/')) return 'Destination must be an absolute path';
+            if (single && /[\\/]/.test(String(v.subfolder || ''))) return 'Folder name must not contain slashes';
+            return null;
+        },
+        onReady: (body) => {
+            const browse = body.querySelector('[data-testid="fm-extract-browse"]');
+            const destInput = body.querySelector('[data-testid="fm-extract-dest"]');
+            if (browse && destInput) {
+                browse.onclick = async () => {
+                    const picked = await pickFolder({
+                        title: 'Extract to folder',
+                        startPath: destInput.value.trim() || parent,
+                    });
+                    if (picked) destInput.value = picked;
+                };
+            }
+        },
+    });
+    if (!values) return;
+    const dest = String(values.dest || '').trim();
+    try { localStorage.setItem('ethos-fm-extract-dest', dest); } catch { /* storage disabled */ }
+    await _extractArchives(list, {
+        destDir: dest,
+        subfolder: single ? String(values.subfolder ?? '').trim() : null,
+        overwrite: values.overwrite === true,
+        password: values.password || '',
+    });
 }
 
 async function _copyPathToClipboard(path) {
@@ -3433,9 +3649,9 @@ function handleFileEvent(ev) {
 
         // ── Silent cache invalidation (no spinner, no layout flicker) ────────
         _silentRefetch(root);
-        // Delete/restore are reported by the action that started the op (one
-        // summary toast with the failure reasons) — do not toast them again here.
-        if (!notified && !['delete_soft', 'delete_hard', 'restore'].includes(ev.action)) {
+        // Actions that report their own summary (delete/restore/extract) must
+        // not toast twice — the operation that started them already did.
+        if (!notified && !['delete_soft', 'delete_hard', 'restore', 'extract'].includes(ev.action)) {
             // Single-item actions read better without a count ("Created folder in /x").
             const msg = ['mkdir', 'touch', 'rename'].includes(ev.action)
                 ? `${actionLabel} in ${currentPath}`

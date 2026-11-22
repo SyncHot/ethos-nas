@@ -62,10 +62,14 @@ Scope: `frontend/static/apps/files.js`, `frontend/static/apps/fm-controls.js`,
 - [ ] ZIP downloads build the complete archive in `DATA_DIR/temp` before sending a byte, so a
       large folder needs free space equal to its size and shows no progress (empty directories
       are not added). Stream the archive or expose an op with progress.
-- `.7z`/`.rar`/`.zst`/`.lz4` extraction shells out to `bsdtar` (`libarchive-tools`), then `7z`/`p7zip`
-  or `unrar`. The Download Manager package declares the `archive-tools` host requirement, so EthOS
-  installs `bsdtar` on package install/update when the root helper and its sudoers rule are present;
-  otherwise File Manager keeps showing the "install libarchive-tools or p7zip-full" error.
+- Extraction is complete (spec: `docs/archive-extract.md`): right-click **Extract Here** /
+  **Extract to…** (destination picker, folder name, password, overwrite), double-click quick path,
+  batch for multi-selection, split volumes. Formats the stdlib cannot open shell out to `bsdtar`
+  (`libarchive-tools`), 7-Zip, `unar` or `unrar`; the `archive-tools` host requirement installs
+  `libarchive-tools p7zip-full` on package install/update or through the 409 prompt's admin button,
+  otherwise the UI shows the apt hint.
+- [ ] Extraction shows an indeterminate progress row — byte-level progress would need the
+      `/api/files/ops/{id}` polling pattern (same as trash).
 - [x] Bulk trash via one background op instead of N requests (U14).
 - [x] Folder download from the context menu + "Preparing ZIP" notice (U15).
 

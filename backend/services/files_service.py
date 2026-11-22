@@ -9,7 +9,9 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
+import subprocess
 import time
 import uuid
 from collections.abc import Callable
@@ -793,21 +795,133 @@ async def create_zip_archive(sources: list[str], output_path: str | None = None)
 
 # ── Archive Extraction ───────────────────────────────────────────────────────
 
-# Extensions we know how to extract. tar-like formats are handled by the stdlib;
-# 7z/rar/zst/lz4 need an external tool (bsdtar / 7z / unrar) if installed.
-ARCHIVE_EXTS = {
-    ".zip", ".tar", ".tgz", ".tbz", ".txz",
-    ".gz", ".bz2", ".xz",
-    ".7z", ".rar", ".zst", ".lz4",
+# Every format the File Manager can unpack. The stdlib covers ZIP, tar
+# (gz/bz2/xz/zst) and the classic single-stream compressors; everything else
+# shells out to an installed extractor — bsdtar (libarchive-tools) first, then
+# 7-Zip, unar and unrar. `frontend/static/apps/files.js` mirrors these names;
+# tests/test_archive_extract.py fails when the two lists drift apart.
+_ZIP_FAMILY_EXTS = {
+    ".zip", ".zipx", ".jar", ".war", ".ear", ".whl", ".pyz", ".cbz",
+    ".xpi", ".crx", ".vsix", ".nupkg", ".apk",
 }
+_TAR_EXTS = {
+    ".tar", ".tgz", ".tbz", ".txz", ".tzst", ".tlz", ".tlz4", ".tlzma", ".taz",
+}
+# Multi-suffix archives; the stdlib opens all but the lz4/lzip/lzma/.Z tars.
+_TAR_MULTI_SUFFIXES = (
+    ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tar.lz4", ".tar.lz",
+    ".tar.lzma", ".tar.z",
+)
+_CLI_TAR_SUFFIXES = (
+    ".tar.lz4", ".tar.lz", ".tar.lzma", ".tar.z", ".tlz4", ".tlz", ".tlzma", ".taz",
+)
+# Bare single-stream files (decompressed next to the archive, not into a folder).
+_STREAM_EXTS = {".gz", ".bz2", ".xz", ".lzma", ".lz", ".z", ".zst", ".lz4"}
+_STDLIB_STREAM_EXTS = {".gz", ".bz2", ".xz", ".lzma"}
+# Formats that always need an external tool.
+_CLI_EXTS = {".7z", ".rar", ".cab", ".iso", ".ar", ".deb", ".cpio", ".rpm"}
+
+ARCHIVE_EXTS = _ZIP_FAMILY_EXTS | _TAR_EXTS | _STREAM_EXTS | _CLI_EXTS
+
+# Multi-volume sets: archive.part01.rar, archive.r00, archive.7z.001, …
+# Kept in sync with the Download Manager grouping patterns (routers/downloads.py)
+# so a package extracted there and a file right-clicked here agree on volumes.
+SPLIT_PATTERNS = (
+    re.compile(r"(?i)^(?P<base>.+?)\.part0*(?P<part>\d{1,4})\.(?:rar|zip|7z)$"),
+    re.compile(r"(?i)^(?P<base>.+?)\.r(?P<part>\d{2})$"),
+    re.compile(r"(?i)^(?P<base>.+?)\.z(?P<part>\d{2})$"),
+    re.compile(r"(?i)^(?P<base>.+?)\.(?P<part>\d{3})$"),
+)
+
+# Generous ceiling: only there to stop a prompt-hung tool from leaking a worker.
+_CLI_TIMEOUT = 6 * 60 * 60
+
+
+class MissingExtractor(RuntimeError):
+    """No installed tool can open this format (the router maps it to 409)."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.requirement = "archive-tools"
+
+
+def split_volume_info(name: str) -> dict | None:
+    """Volume membership for a multi-part archive name, or None.
+
+    Returns ``{"base": "foo", "part": 3}``; ``part`` is only an ordering key.
+    """
+    base_name = os.path.basename(str(name or "").replace("\\", "/")).strip()
+    if not base_name:
+        return None
+    for pattern in SPLIT_PATTERNS:
+        match = pattern.match(base_name)
+        if not match:
+            continue
+        base = match.group("base").strip().rstrip(".")
+        if not base:
+            return None
+        return {"base": base, "part": int(match.group("part") or 0)}
+    return None
+
+
+def _split_members(directory: str, base: str) -> list[tuple[int, str]]:
+    """(order, filename) for every present volume of ``base``, lowest first."""
+    found: dict[str, int] = {}
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        logger.warning("Cannot list %s while resolving archive volumes", directory)
+        entries = []
+    low_base = base.lower()
+    for entry in entries:
+        info = split_volume_info(entry)
+        if info and info["base"].lower() == low_base:
+            found[entry] = info["part"]
+    # `foo.rar` is volume 1 of a `.r00`/`.z00` set, so it must sort first.
+    for ext in (".rar", ".zip", ".7z"):
+        if os.path.isfile(os.path.join(directory, base + ext)):
+            found[base + ext] = -1
+    return sorted((part, name) for name, part in found.items())
+
+
+def find_first_volume(archive_path: str) -> str:
+    """First volume of a split archive (unchanged for ordinary archives)."""
+    info = split_volume_info(os.path.basename(archive_path))
+    if not info:
+        return archive_path
+    directory = os.path.dirname(archive_path) or "/"
+    members = _split_members(directory, info["base"])
+    if len(members) <= 1:
+        return archive_path
+    return os.path.join(directory, members[0][1])
+
+
+def is_extractable_name(name: str) -> bool:
+    """True when the File Manager should offer Extract for this file name."""
+    lower = str(name or "").lower()
+    if not lower:
+        return False
+    if lower.endswith(_TAR_MULTI_SUFFIXES):
+        return True
+    if os.path.splitext(lower)[1] in ARCHIVE_EXTS:
+        return True
+    return split_volume_info(lower) is not None
 
 
 def _archive_stem(name: str) -> str:
-    """Strip archive suffixes: 'foo.tar.gz' → 'foo', 'bar.zip' → 'bar'."""
+    """Strip archive/volume suffixes: 'foo.tar.gz' → 'foo', 'bar.part1.rar' → 'bar'."""
     lower = name.lower()
-    for multi in (".tar.gz", ".tar.bz2", ".tar.xz"):
+    for multi in _TAR_MULTI_SUFFIXES:
         if lower.endswith(multi):
-            return name[: -len(multi)]
+            return name[: -len(multi)] or name
+    info = split_volume_info(name)
+    if info:
+        base = info["base"]
+        for multi in _TAR_MULTI_SUFFIXES:
+            if base.lower().endswith(multi):
+                return base[: -len(multi)] or base
+        stem, ext = os.path.splitext(base)
+        return stem if ext.lower() in ARCHIVE_EXTS else base
     stem, _ext = os.path.splitext(name)
     return stem or name
 
@@ -833,12 +947,19 @@ def _unique_file(parent: str, filename: str) -> str:
     return candidate
 
 
-def _extract_zip(archive_path: str, dest_dir: str) -> int:
-    """Extract a ZIP into dest_dir with zip-slip protection. Returns file count."""
+def _extract_zip(archive_path: str, dest_dir: str, *, overwrite: bool = False,
+                 password: str | None = None) -> tuple[int, int]:
+    """Extract a ZIP into dest_dir with zip-slip protection.
+
+    Returns (extracted_count, skipped_existing). Existing files are skipped
+    unless ``overwrite`` — an "extract here" must never clobber silently.
+    """
     import zipfile
 
     real_dest = os.path.realpath(dest_dir)
+    pwd = password.encode("utf-8") if password else None
     count = 0
+    skipped_existing = 0
     with zipfile.ZipFile(archive_path) as zf:
         for info in zf.infolist():
             name = info.filename.replace("\\", "/")
@@ -854,31 +975,44 @@ def _extract_zip(archive_path: str, dest_dir: str) -> int:
             if info.is_dir():
                 os.makedirs(target, exist_ok=True)
                 continue
+            if os.path.lexists(target) and not overwrite:
+                skipped_existing += 1
+                continue
             os.makedirs(os.path.dirname(target), exist_ok=True)
             # Write content directly (never follows symlinks stored in the zip).
             try:
-                with zf.open(info) as src, open(target, "wb") as dst:
+                with zf.open(info, pwd=pwd) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
+            except NotImplementedError:
+                # ZIPX / WinZip AES — the stdlib cannot decode it; let the caller
+                # retry with 7-Zip (NotImplementedError subclasses RuntimeError).
+                raise
+            except RuntimeError as exc:  # encrypted entry, missing/wrong password
+                logger.error("Cannot decrypt %s in %s: %s", name, archive_path, exc)
+                raise ValueError(f"Cannot decrypt {name}: set the archive password") from exc
             except OSError as exc:
                 logger.error("Extraction failed for entry %s in %s: %s", name, archive_path, exc)
                 raise ValueError(f"Corrupt or unreadable archive entry: {name}") from exc
             count += 1
-    return count
+    return count, skipped_existing
 
 
-def _extract_tar(archive_path: str, dest_dir: str) -> tuple[int, list[str]]:
+def _extract_tar(archive_path: str, dest_dir: str, *,
+                 overwrite: bool = False) -> tuple[int, list[str], int]:
     """Extract a (possibly compressed) tar into dest_dir.
 
-    Returns (file_count, skipped_names). Uses the stdlib 'data' filter which
-    rejects absolute paths and '..' traversal and confines links to dest_dir;
-    special files (FIFOs, devices — e.g. mail spool pipes) are *skipped* rather
-    than aborting the whole extraction, since they are useless outside a live service.
+    Returns (file_count, skipped_special, skipped_existing). Uses the stdlib
+    'data' filter which rejects absolute paths and '..' traversal and confines
+    links to dest_dir; special files (FIFOs, devices — e.g. mail spool pipes) are
+    *skipped* rather than aborting the whole extraction, since they are useless
+    outside a live service. Existing files are skipped unless ``overwrite``.
     """
     import tarfile
 
     with tarfile.open(archive_path) as tf:
         safe: list = []
         skipped: list[str] = []
+        skipped_existing = 0
         for m in tf.getmembers():
             try:
                 # Pre-scan with the same filter extractall will apply, so we can
@@ -889,112 +1023,254 @@ def _extract_tar(archive_path: str, dest_dir: str) -> tuple[int, list[str]]:
                 continue
             except tarfile.TarError as exc:
                 raise ValueError(f"Refusing to extract unsafe archive entry: {exc}") from exc
+            if m.isfile() and not overwrite:
+                target = os.path.join(dest_dir, *[p for p in m.name.split("/") if p not in ("", ".")])
+                if os.path.lexists(target):
+                    skipped_existing += 1
+                    continue
             safe.append(m)
         tf.extractall(path=dest_dir, members=safe, filter="data")
-    return len([m for m in safe if m.isfile()]), skipped
+    return len([m for m in safe if m.isfile()]), skipped, skipped_existing
 
 
 def _extract_single_file(archive_path: str, parent_dir: str) -> tuple[str, int]:
-    """Decompress a bare .gz/.bz2/.xz (not a tar) to a single file next to the archive."""
+    """Decompress a bare gz/bz2/xz/lzma stream next to the archive."""
     import bz2
     import gzip
     import lzma
 
     ext = os.path.splitext(archive_path)[1].lower()
-    opener = {".gz": gzip.open, ".bz2": bz2.open, ".xz": lzma.open}[ext]
+    opener = {".gz": gzip.open, ".bz2": bz2.open, ".xz": lzma.open, ".lzma": lzma.open}[ext]
     out_name = _unique_file(parent_dir, os.path.basename(archive_path)[: -len(ext)])
     try:
         with opener(archive_path, "rb") as src, open(out_name, "wb") as dst:
             shutil.copyfileobj(src, dst)
-    except OSError as exc:
+    except (OSError, EOFError, lzma.LZMAError) as exc:
         logger.error("Decompress failed %s → %s: %s", archive_path, out_name, exc)
         raise ValueError(f"Corrupt or unreadable archive: {exc}") from exc
     return out_name, 1
 
 
-def _extract_with_cli(archive_path: str, dest_dir: str) -> int:
-    """Extract via an external tool (bsdtar / 7z / unrar). Raises RuntimeError if none is installed."""
-    import shutil as _shutil
-    import subprocess
-
-    bsdtar = _shutil.which("bsdtar")
-    sevenz = _shutil.which("7z") or _shutil.which("7za")
-    unrar = _shutil.which("unrar")
-
+def _stream_tool_command(archive_path: str) -> tuple[list[str] | None, str]:
+    """Command that writes a single decompressed stream to stdout."""
+    bsdtar = shutil.which("bsdtar")
     if bsdtar:
-        cmd = [bsdtar, "-xf", archive_path, "-C", dest_dir]
-    elif sevenz:
-        cmd = [sevenz, "x", "-y", f"-o{dest_dir}", archive_path]
-    elif unrar and archive_path.lower().endswith(".rar"):
-        cmd = [unrar, "x", "-y", archive_path, dest_dir + os.sep]
-    else:
-        raise RuntimeError(
-            "No extractor installed for this format (install libarchive-tools or p7zip-full)"
+        return [bsdtar, "-xOf", archive_path], "bsdtar"
+    for name in ("7zz", "7z", "7za"):
+        binary = shutil.which(name)
+        if binary:
+            return [binary, "e", "-so", archive_path], name
+    return None, ""
+
+
+def _decompress_stream_cli(archive_path: str, parent_dir: str) -> tuple[str, int, str]:
+    """Bare lz/Z/zst/lz4 → one file beside the archive, via an external tool."""
+    ext = os.path.splitext(archive_path)[1].lower()
+    cmd, tool = _stream_tool_command(archive_path)
+    if not cmd:
+        raise MissingExtractor(
+            f"No extractor installed for {os.path.basename(archive_path)}"
+            " (install libarchive-tools or p7zip-full)"
         )
-
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip()[:300]
-        raise RuntimeError(f"Extraction failed: {detail}")
-    # Count extracted files for the event payload.
-    count = sum(len(files) for _root, _dirs, files in os.walk(dest_dir))
-    return count
-
-
-def extract_archive(archive_path: str) -> dict:
-    """Extract an archive next to itself (synchronous — run in a worker thread).
-
-    - zip / tar* → new subfolder named after the archive ('foo.zip' → 'foo/'),
-      with a numeric suffix if it already exists. Never overwrites existing files.
-    - bare .gz/.bz2/.xz that are not tars → single file next to the archive,
-      auto-renamed on collision.
-    - .7z/.rar/.zst/.lz4 → external tool (bsdtar/7z/unrar) if installed.
-
-    Returns {dest_dir, extracted_count}. Raises ValueError for bad input or unsafe archives.
-    """
-    name = os.path.basename(archive_path)
-    parent = os.path.dirname(archive_path) or "/"
-    lower = name.lower()
-
-    # 1) ZIP
-    if lower.endswith(".zip"):
-        import zipfile
-        if not zipfile.is_zipfile(archive_path):
-            raise ValueError("Not a valid ZIP archive")
-        dest_dir = _unique_dir(parent, _archive_stem(name))
-        try:
-            os.makedirs(dest_dir, exist_ok=True)
-            count = _extract_zip(archive_path, dest_dir)
-        except (OSError, zipfile.BadZipFile) as exc:
-            raise ValueError(f"Corrupt or unreadable archive: {exc}") from exc
-        return {"dest_dir": dest_dir, "extracted_count": count, "skipped": []}
-
-    # 2) tar / compressed tar (also covers bare .gz/.bz2/.xz that are tars)
-    import tarfile
-    if lower.endswith((".tar", ".tgz", ".tbz", ".txz")) or (
-        lower.endswith((".gz", ".bz2", ".xz")) and tarfile.is_tarfile(archive_path)
-    ):
-        dest_dir = _unique_dir(parent, _archive_stem(name))
-        try:
-            os.makedirs(dest_dir, exist_ok=True)
-            count, skipped = _extract_tar(archive_path, dest_dir)
-        except (tarfile.TarError, OSError) as exc:
-            raise ValueError(f"Corrupt or unreadable archive: {exc}") from exc
-        return {"dest_dir": dest_dir, "extracted_count": count, "skipped": skipped}
-
-    # 3) Bare single-file compression (.gz/.bz2/.xz that are not tars)
-    if lower.endswith((".gz", ".bz2", ".xz")):
-        out_path, count = _extract_single_file(archive_path, parent)
-        return {"dest_dir": os.path.dirname(out_path), "extracted_count": count, "skipped": []}
-
-    # 4) Formats needing an external tool (.7z/.rar/.zst/.lz4)
-    dest_dir = _unique_dir(parent, _archive_stem(name))
+    out_name = _unique_file(parent_dir, os.path.basename(archive_path)[: -len(ext)])
     try:
-        os.makedirs(dest_dir, exist_ok=True)
-        count = _extract_with_cli(archive_path, dest_dir)
-    except (OSError, RuntimeError) as exc:
-        raise ValueError(f"Extraction failed: {exc}") from exc
-    return {"dest_dir": dest_dir, "extracted_count": count, "skipped": []}
+        with open(out_name, "wb") as dst:
+            proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=dst,
+                                  stderr=subprocess.PIPE, timeout=_CLI_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        with contextlib.suppress(OSError):
+            os.unlink(out_name)
+        raise ValueError(f"Decompress failed: {exc}") from exc
+    if proc.returncode != 0:
+        with contextlib.suppress(OSError):
+            os.unlink(out_name)
+        detail = proc.stderr.decode("utf-8", "replace").strip()[:300]
+        raise ValueError(f"Decompress failed: {detail or f'exit {proc.returncode}'}")
+    logger.info("Decompressed %s with %s", archive_path, tool)
+    return out_name, 1, tool
+
+
+_CLI_CANDIDATES = ("bsdtar", "7zz", "7z", "7za", "unar", "unrar")
+# Split volumes: libarchive cannot follow .partN/.001 chains reliably.
+_CLI_SPLIT_CANDIDATES = ("7zz", "7z", "7za", "unar", "unrar")
+
+
+def _cli_command(tool: str, binary: str, archive_path: str, dest_dir: str,
+                 overwrite: bool) -> list[str]:
+    """Argument list for one extractor — never a shell string."""
+    if tool == "bsdtar":
+        cmd = [binary, "-xf", archive_path, "-C", dest_dir]
+        if not overwrite:
+            cmd.insert(1, "-k")  # keep (skip) existing files
+        return cmd
+    if tool in ("7zz", "7z", "7za"):
+        # -aos skips existing files; -y would silently overwrite them.
+        return [binary, "x", f"-o{dest_dir}", "-y" if overwrite else "-aos", archive_path]
+    if tool == "unar":
+        return [binary, "-o", dest_dir, "-f" if overwrite else "-s", archive_path]
+    # unrar: -o- never overwrite, -o+ always overwrite
+    return [binary, "x", "-o+" if overwrite else "-o-", archive_path, dest_dir + os.sep]
+
+
+def _tree_files(root: str) -> set[str]:
+    out: set[str] = set()
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            out.add(os.path.join(dirpath, name))
+    return out
+
+
+def _extract_with_cli(archive_path: str, dest_dir: str, *, overwrite: bool = False,
+                      password: str | None = None,
+                      split: bool = False) -> tuple[int, str]:
+    """Extract via an external tool. Returns (new_file_count, tool)."""
+    candidates = _CLI_SPLIT_CANDIDATES if split else _CLI_CANDIDATES
+    if password:
+        # Only tools that read the password from stdin can be used: a value in
+        # argv would leak into `ps`. bsdtar/unar only accept it on the command
+        # line, so encrypted archives go through 7-Zip or unrar.
+        candidates = ("7zz", "7z", "7za", "unrar")
+
+    before = _tree_files(dest_dir)
+    errors: list[str] = []
+    for tool in candidates:
+        binary = shutil.which(tool)
+        if not binary:
+            continue
+        if tool == "unrar" and not archive_path.lower().endswith(".rar"):
+            continue
+        cmd = _cli_command(tool, binary, archive_path, dest_dir, overwrite)
+        kwargs: dict = {"capture_output": True, "text": True, "timeout": _CLI_TIMEOUT}
+        if password:
+            cmd.insert(2, "-p")  # prompt mode: 7-Zip/unrar then read stdin
+            kwargs["input"] = password + "\n"
+        else:
+            kwargs["stdin"] = subprocess.DEVNULL
+        logger.info("Extracting %s with %s", archive_path, tool)
+        try:
+            proc = subprocess.run(cmd, **kwargs)
+        except subprocess.TimeoutExpired:
+            logger.error("Extractor %s timed out on %s", tool, archive_path)
+            errors.append(f"{tool}: timed out")
+            continue
+        if proc.returncode == 0:
+            return len(_tree_files(dest_dir) - before), tool
+        detail = (proc.stderr or proc.stdout or "").strip()[:300] or f"exit {proc.returncode}"
+        logger.warning("Extractor %s failed on %s: %s", tool, archive_path, detail)
+        errors.append(f"{tool}: {detail}")
+
+    if not errors:
+        raise MissingExtractor(
+            f"No extractor installed for {os.path.basename(archive_path)}"
+            " (install libarchive-tools or p7zip-full)"
+        )
+    raise ValueError("Extraction failed: " + "; ".join(errors)[:400])
+
+
+def extract_archive(archive_path: str, dest_dir: str | None = None,
+                    subfolder: str | None = None, overwrite: bool = False,
+                    password: str | None = None) -> dict:
+    """Extract an archive (synchronous — run in a worker thread).
+
+    - ``dest_dir``   where the result lands; default: next to the archive.
+    - ``subfolder``  None → folder named after the archive ('foo.zip' → 'foo/',
+      numeric suffix on collision); "" → straight into ``dest_dir`` (existing
+      files are skipped unless ``overwrite``); any other value → that folder.
+    - ``password``   only ever passed through stdin / zipfile, never argv.
+
+    Split volumes (.partN/.001/.rNN) are resolved to their first volume.
+    Returns {dest_dir, archive, extracted_count, skipped, skipped_existing, tool}.
+    Raises ValueError for bad input/unsafe archives, PermissionError for a
+    non-writable destination, MissingExtractor when no tool can open the format.
+    """
+    import tarfile
+    import zipfile
+
+    archive_path = os.path.abspath(archive_path)
+    if not os.path.isfile(archive_path):
+        raise ValueError(f"Archive not found: {archive_path}")
+    source = find_first_volume(archive_path)
+    name = os.path.basename(source)
+    lower = name.lower()
+    ext = os.path.splitext(lower)[1]
+    parent = os.path.dirname(archive_path) or "/"
+    base_dir = os.path.abspath(dest_dir) if dest_dir else parent
+    if not os.path.isdir(base_dir):
+        raise ValueError(f"Destination is not a directory: {base_dir}")
+    if not os.access(base_dir, os.W_OK | os.X_OK):
+        raise PermissionError(f"Destination is not writable: {base_dir}")
+
+    stem = _archive_stem(os.path.basename(archive_path)) or _archive_stem(name) or "archive"
+    if subfolder is None:
+        target = _unique_dir(base_dir, stem)
+    elif subfolder == "":
+        target = base_dir
+    else:
+        target = os.path.join(base_dir, subfolder)
+
+    def _ensure_target() -> None:
+        """Create the folder-mode destination (bare streams write beside it)."""
+        try:
+            os.makedirs(target, exist_ok=True)
+        except OSError as exc:
+            raise ValueError(f"Cannot create destination {target}: {exc}") from exc
+
+    split_info = split_volume_info(name)
+    split = bool(split_info) and len(
+        _split_members(os.path.dirname(source) or "/", split_info["base"])
+    ) > 1
+    tool = ""
+    skipped: list[str] = []
+    skipped_existing = 0
+
+    try:
+        # 1) tar family (the stdlib opens all but lz4/lzip/lzma/.Z tars)
+        if lower.endswith(_TAR_MULTI_SUFFIXES) or ext in _TAR_EXTS:
+            _ensure_target()
+            if lower.endswith(_CLI_TAR_SUFFIXES):
+                count, tool = _extract_with_cli(source, target, overwrite=overwrite,
+                                                split=split)
+            else:
+                count, skipped, skipped_existing = _extract_tar(source, target, overwrite=overwrite)
+        # 2) ZIP family
+        elif ext in _ZIP_FAMILY_EXTS:
+            if not zipfile.is_zipfile(source):
+                raise ValueError("Not a valid ZIP archive")
+            _ensure_target()
+            try:
+                count, skipped_existing = _extract_zip(source, target, overwrite=overwrite,
+                                                       password=password)
+            except NotImplementedError:
+                # ZIPX / AES entries need 7-Zip.
+                count, tool = _extract_with_cli(source, target, overwrite=overwrite,
+                                                password=password)
+        # 3) bare single-stream files
+        elif ext in _STREAM_EXTS:
+            if tarfile.is_tarfile(source):
+                _ensure_target()
+                count, skipped, skipped_existing = _extract_tar(source, target, overwrite=overwrite)
+            elif ext in _STDLIB_STREAM_EXTS:
+                out_path, count = _extract_single_file(source, base_dir)
+                return {"dest_dir": os.path.dirname(out_path), "archive": source,
+                        "extracted_count": count, "skipped": [], "skipped_existing": 0,
+                        "tool": ""}
+            else:
+                out_path, count, tool = _decompress_stream_cli(source, base_dir)
+                return {"dest_dir": os.path.dirname(out_path), "archive": source,
+                        "extracted_count": count, "skipped": [], "skipped_existing": 0,
+                        "tool": tool}
+        # 4) everything else needs an external extractor
+        else:
+            _ensure_target()
+            count, tool = _extract_with_cli(source, target, overwrite=overwrite,
+                                            password=password, split=split)
+    except (zipfile.BadZipFile, tarfile.TarError) as exc:
+        raise ValueError(f"Corrupt or unreadable archive: {exc}") from exc
+
+    logger.info("Extracted %s → %s (%d files, %d skipped, tool=%s)",
+                source, target, count, skipped_existing, tool or "stdlib")
+    return {"dest_dir": target, "archive": source, "extracted_count": count,
+            "skipped": skipped, "skipped_existing": skipped_existing, "tool": tool}
 
 
 # ── Chunked Upload ───────────────────────────────────────────────────────────

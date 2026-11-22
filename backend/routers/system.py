@@ -457,6 +457,40 @@ async def retention_sweep() -> dict:
     return {"ok": True, **summary}
 
 
+@router.post("/deps/{requirement}/install", dependencies=[Depends(require_admin)])
+async def install_host_dependency(requirement: str) -> dict:
+    """Install one allowlisted host requirement (e.g. archive-tools).
+
+    The File Manager offers this when an archive needs an extractor that is not
+    installed yet. Only ids from services/system_deps.py qualify, and only
+    through the root-owned `ethos-system-deps` helper — never apt directly.
+    """
+    from backend.services import system_deps
+    from backend.services.package_schema import PackageError
+
+    meta = system_deps.SYSTEM_REQUIREMENTS.get(requirement)
+    if not meta or not meta.get("serviceable"):
+        raise HTTPException(status_code=400,
+                            detail=f"{requirement} cannot be installed by EthOS")
+    if requirement == "docker":
+        # Docker has its own fingerprinted helper and daemon checks.
+        raise HTTPException(status_code=400,
+                            detail="Install Docker from the Docker Manager")
+
+    try:
+        await asyncio.to_thread(system_deps.install, requirement, None)
+    except PackageError as exc:
+        logger.error("Host dependency install failed (%s): %s", requirement, exc)
+        raise HTTPException(status_code=exc.status or 500, detail=exc.detail) from exc
+    except Exception as exc:
+        logger.error("Host dependency install failed (%s)", requirement, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Install failed: {exc}") from exc
+
+    probe = await asyncio.to_thread(system_deps.probe_one, requirement)
+    logger.info("Host dependency %s installed through the API", requirement)
+    return {"ok": True, **probe}
+
+
 @router.post("/restart", dependencies=[Depends(require_admin)])
 async def system_restart(background_tasks: BackgroundTasks) -> dict:
     """Gracefully restart the uvicorn process.

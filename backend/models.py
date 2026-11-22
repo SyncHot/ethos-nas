@@ -19,6 +19,21 @@ class FilePathRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class FileExtractRequest(FilePathRequest):
+    """Body for POST /api/files/extract (archive extraction).
+
+    ``dest_dir``  destination folder; defaults to the archive's folder.
+    ``subfolder`` None → folder named after the archive (collision-suffixed);
+                  "" → straight into ``dest_dir``; any other value → that folder.
+    ``password``  encrypted archives only — read from stdin, never logged.
+    """
+
+    dest_dir: str | None = None
+    subfolder: str | None = None
+    overwrite: bool = False
+    password: str | None = None
+
+
 class FileRenameRequest(BaseModel):
     """Body for PUT /api/files/rename."""
 

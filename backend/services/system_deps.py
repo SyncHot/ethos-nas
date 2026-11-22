@@ -71,11 +71,12 @@ SYSTEM_REQUIREMENTS: dict[str, dict] = {
         "provisionable": False,
     },
     "archive-tools": {
-        # bsdtar reads .7z/.rar/.zst/.lz4 — the formats the stdlib cannot open.
-        # Declared by download-manager; File Manager extraction uses the binary.
-        "label": "Archive tools (bsdtar)",
+        # bsdtar opens .7z/.rar/.zst/.lz4; 7-Zip adds ZIPX, split volumes
+        # (.001/.partN.rar) and a stdin-only password prompt. Declared by
+        # download-manager; File Manager extraction uses the same binaries.
+        "label": "Archive tools (bsdtar, 7-Zip)",
         "bins": ("bsdtar",),
-        "apt": "libarchive-tools",
+        "apt": "libarchive-tools p7zip-full",
         "serviceable": True,
         "autoremove": True,
         "provisionable": False,
