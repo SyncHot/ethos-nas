@@ -182,6 +182,19 @@ def main() -> int:
                 "storage": cell_for(page, "storage"),
             }
             check("positions persist after reload", after_reload == before_reload, str(after_reload))
+
+            # The Trash shortcut sits in the bottom-right corner; its context
+            # menu must flip/clamp instead of running off the viewport.
+            page.set_viewport_size({"width": 760, "height": 600})
+            page.wait_for_timeout(300)
+            page.locator('[data-testid="desktop-icon-trash"]').click(button="right")
+            menu = page.locator('[data-testid="icon-ctx-trash"]')
+            menu.wait_for(timeout=5000)
+            box = menu.bounding_box()
+            inside = bool(box) and box["x"] >= 7.5 and box["y"] >= 7.5 \
+                and box["x"] + box["width"] <= 760.5 and box["y"] + box["height"] <= 600.5
+            check("desktop context menu stays inside the viewport", inside, str(box))
+
             check("no page errors", not errors, "; ".join(errors[:3]))
             browser.close()
 

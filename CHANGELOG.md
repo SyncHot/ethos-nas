@@ -11,6 +11,16 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.12.5] - 2026-11-22
+
+### Fixed
+
+- **Desktop context menus stay on screen.** Right-clicking the Trash shortcut in
+  the bottom-right corner opened its menu past the window edge, cutting off
+  “Refresh count” and “Remove from Desktop”. Menus now flip above/left of the
+  pointer and clamp inside the viewport; on narrow screens they cap their size
+  and wrap long labels.
+
 ## [2.12.4] - 2026-11-22
 
 ### Fixed

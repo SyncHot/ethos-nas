@@ -63,6 +63,22 @@ function _buildIconHtml(app) {
 
 let _desktopCtxMenu = null;
 
+// Desktop menus open at the pointer, but the Trash shortcut sits in the
+// bottom-right corner by default — unclamped it ran off the screen. Measure the
+// finished menu, flip it to the other side of the pointer when needed, then
+// clamp it into the viewport with a small margin.
+function _placeDesktopCtx(ctx, x, y) {
+    const margin = 8;
+    const width = ctx.offsetWidth;
+    const height = ctx.offsetHeight;
+    let left = x;
+    let top = y;
+    if (left + width > window.innerWidth - margin) left = x - width;
+    if (top + height > window.innerHeight - margin) top = y - height;
+    ctx.style.left = `${Math.max(margin, Math.min(left, window.innerWidth - width - margin))}px`;
+    ctx.style.top = `${Math.max(margin, Math.min(top, window.innerHeight - height - margin))}px`;
+}
+
 export function _showDesktopCtx(e, appId) {
     if (!e || !(e instanceof Event)) return;
     e.preventDefault(); e.stopPropagation();
@@ -70,7 +86,15 @@ export function _showDesktopCtx(e, appId) {
 
     const cx = e.clientX ?? 50, cy = e.clientY ?? 50;
     const ctx = document.createElement('div');
-    Object.assign(ctx.style, { position: 'fixed', left: cx + 'px', top: cy + 'px', zIndex: 9001, background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: '10px', padding: '4px 0', minWidth: '180px', boxShadow: '0 16px 48px rgba(0,0,0,0.5)', fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif" });
+    Object.assign(ctx.style, {
+        position: 'fixed', left: cx + 'px', top: cy + 'px', zIndex: 9001,
+        background: 'var(--surface-1)', border: '1px solid var(--border)',
+        borderRadius: '10px', padding: '4px 0',
+        minWidth: 'min(180px, calc(100vw - 16px))',
+        maxWidth: 'calc(100vw - 16px)', maxHeight: 'calc(100vh - 16px)', overflowY: 'auto',
+        boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+        fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
+    });
     ctx.setAttribute('data-testid', 'icon-ctx-' + appId);
 
     const existingCount = _countWindowsByApp(appId);
@@ -121,6 +145,7 @@ export function _showDesktopCtx(e, appId) {
     });
 
     document.body.appendChild(ctx);
+    _placeDesktopCtx(ctx, cx, cy);
     _desktopCtxMenu = ctx;
 
     const closeCtx = (ev3) => { if (_desktopCtxMenu && !_desktopCtxMenu.contains(ev3.target)) { _closeDesktopCtx(); } };
@@ -174,7 +199,9 @@ function _showDesktopBackgroundCtx(e) {
     Object.assign(ctx.style, {
         position: 'fixed', left: (e.clientX ?? 50) + 'px', top: (e.clientY ?? 50) + 'px',
         zIndex: 9001, background: 'var(--surface-1)', border: '1px solid var(--border)',
-        borderRadius: '10px', padding: '4px 0', minWidth: '200px',
+        borderRadius: '10px', padding: '4px 0',
+        minWidth: 'min(200px, calc(100vw - 16px))',
+        maxWidth: 'calc(100vw - 16px)', maxHeight: 'calc(100vh - 16px)', overflowY: 'auto',
         boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
         fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
     });
@@ -195,6 +222,7 @@ function _showDesktopBackgroundCtx(e) {
     }
 
     document.body.appendChild(ctx);
+    _placeDesktopCtx(ctx, e.clientX ?? 50, e.clientY ?? 50);
     _desktopCtxMenu = ctx;
     const closeCtx = (ev3) => { if (_desktopCtxMenu && !_desktopCtxMenu.contains(ev3.target)) _closeDesktopCtx(); };
     setTimeout(() => { document.addEventListener('mousedown', closeCtx, true); document.addEventListener('contextmenu', () => { _closeDesktopCtx(); }); }, 10);
