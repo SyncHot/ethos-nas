@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T13:07:38+00:00",
+  "generated_at": "2026-11-22T13:13:00+00:00",
   "latest": {
-    "version": "2.18.1",
-    "git_sha": "29c2490",
-    "git_sha_full": "29c2490541a4d1e0d84d65540f79b4652559f0a3",
-    "build": 138,
-    "released_at": "2026-11-22T13:07:38+00:00",
-    "notes": "Music: Polubione is a normal playlist (liked tracks download to the phone) and downloads resync when the app returns to the foreground"
+    "version": "2.19.0",
+    "git_sha": "dbe6e90",
+    "git_sha_full": "dbe6e900533d647947755e4e899fb014c1d02af6",
+    "build": 140,
+    "released_at": "2026-11-22T13:13:00+00:00",
+    "notes": "Videos: new 480p · tiny download version, now the default — plus working delete for active downloads, no poster flicker and no lingering Tasks row."
   },
   "releases": [
+    {
+      "version": "2.19.0",
+      "git_sha": "dbe6e90",
+      "git_sha_full": "dbe6e900533d647947755e4e899fb014c1d02af6",
+      "build": 140,
+      "released_at": "2026-11-22T13:13:00+00:00",
+      "notes": "Videos: new 480p · tiny download version, now the default — plus working delete for active downloads, no poster flicker and no lingering Tasks row."
+    },
     {
       "version": "2.18.1",
       "git_sha": "29c2490",
@@ -201,14 +209,6 @@
       "build": 79,
       "released_at": "2026-11-21T12:37:06+00:00",
       "notes": "First-run setup asks for a username and password only — the setup code is gone from the wizard by default"
-    },
-    {
-      "version": "2.6.7",
-      "git_sha": "60d175f",
-      "git_sha_full": "60d175fff7bda413192bb96181adf0839989d84d",
-      "build": 77,
-      "released_at": "2026-11-20T16:09:26+00:00",
-      "notes": "Packages: compose binds limited to the package's own files"
     }
   ]
 }
