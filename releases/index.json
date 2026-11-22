@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T21:54:14+00:00",
+  "generated_at": "2026-11-22T22:04:08+00:00",
   "latest": {
-    "version": "2.29.4",
-    "git_sha": "04a8e28",
-    "git_sha_full": "04a8e28575f02f14f3f4e3be88d3b316e4261e7e",
-    "build": 222,
-    "released_at": "2026-11-22T21:54:14+00:00",
-    "notes": "Downloads: transfer window and retry policy extracted into services (no behaviour change)"
+    "version": "2.29.5",
+    "git_sha": "f8c88da",
+    "git_sha_full": "f8c88da595255ac642fdcd29c562313d3946ac72",
+    "build": 224,
+    "released_at": "2026-11-22T22:04:08+00:00",
+    "notes": "Downloads: watch-folder scan pass extracted into a service (no behaviour change)"
   },
   "releases": [
+    {
+      "version": "2.29.5",
+      "git_sha": "f8c88da",
+      "git_sha_full": "f8c88da595255ac642fdcd29c562313d3946ac72",
+      "build": 224,
+      "released_at": "2026-11-22T22:04:08+00:00",
+      "notes": "Downloads: watch-folder scan pass extracted into a service (no behaviour change)"
+    },
     {
       "version": "2.29.4",
       "git_sha": "04a8e28",
@@ -201,14 +209,6 @@
       "build": 158,
       "released_at": "2026-11-22T14:12:32+00:00",
       "notes": "Books: offline retry/cancel, locked-phone progress, offline reading without a session, faster large libraries, EPUB swipe and PDF pinch"
-    },
-    {
-      "version": "2.21.1",
-      "git_sha": "faf3194",
-      "git_sha_full": "faf3194e6bfaf6e881f329f1acc3769f24a6b595",
-      "build": 156,
-      "released_at": "2026-11-22T14:11:13+00:00",
-      "notes": ""
     }
   ]
 }
