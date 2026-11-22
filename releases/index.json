@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T08:15:52+00:00",
+  "generated_at": "2026-11-22T08:30:15+00:00",
   "latest": {
-    "version": "2.12.0",
-    "git_sha": "6d0e8eb",
-    "git_sha_full": "6d0e8eb443031108d61adbc33461a2c6fc4b686c",
-    "build": 92,
-    "released_at": "2026-11-22T08:15:52+00:00",
-    "notes": "Video Station: HLS playback with VA-API hardware decode/encode, cinema UI 2.0 and mobile parity."
+    "version": "2.12.1",
+    "git_sha": "3ff0647",
+    "git_sha_full": "3ff0647ff14dddd71de25fde7c01858c1e43b31d",
+    "build": 95,
+    "released_at": "2026-11-22T08:30:15+00:00",
+    "notes": "Download Manager: Resume repairs tasks queued under an old, unwritable download folder"
   },
   "releases": [
+    {
+      "version": "2.12.1",
+      "git_sha": "3ff0647",
+      "git_sha_full": "3ff0647ff14dddd71de25fde7c01858c1e43b31d",
+      "build": 95,
+      "released_at": "2026-11-22T08:30:15+00:00",
+      "notes": "Download Manager: Resume repairs tasks queued under an old, unwritable download folder"
+    },
     {
       "version": "2.12.0",
       "git_sha": "6d0e8eb",
@@ -201,14 +209,6 @@
       "build": 38,
       "released_at": "2026-11-17T20:16:26+00:00",
       "notes": "Downloads: mirror/hoster failover — extra source URLs, per-source retry budget, cross-host resume reset, mirror indicator in the row"
-    },
-    {
-      "version": "2.3.9",
-      "git_sha": "7a1ac58",
-      "git_sha_full": "7a1ac58f32266a19981733226723e0378f4f9853",
-      "build": 36,
-      "released_at": "2026-11-17T18:48:44+00:00",
-      "notes": "Downloads: auto-extract finished archives, manual Extract for a task or package, delete-after-extract setting; updater survives its own restart"
     }
   ]
 }
