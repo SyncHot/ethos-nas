@@ -3,7 +3,7 @@
 A NAS-style add-on system: signed static repositories, compose-only packages, job-based
 install/update/uninstall, and a catalog UI with trust indicators.
 
-Verified against the code on 2026-11-12.
+Verified against the code on 2026-11-22.
 
 ## File map
 
@@ -119,7 +119,17 @@ repo/
 - `ui` enables the “Open UI” action; `healthcheck` is reserved for a later probe.
 - Two UI modes:
   - `{"mode": "window", "scheme": "http", "port": 3001, "path": "/"}` — the
-    standalone service is embedded in an EthOS window (iframe). The port must be reachable.
+    standalone service is embedded in an EthOS window (iframe). The port must be reachable
+    **from the browser**: the frame loads `http://<nas>:<port>` directly, so EthOS cannot
+    authenticate it. Two extra keys make that explicit:
+    - `ui.expose` — `"loopback"` (default) or `"lan"`. Only `"lan"` is embedded; a loopback
+      UI gets an “Open in a new tab” card instead of a dead frame, and Package Center says so
+      in the detail dialog.
+    - `ui.auth` — `"package"` (the app has its own login) or `"none"` (it does not). Required
+      whenever `expose` is `"lan"`, so shipping an unauthenticated panel on the LAN is a
+      deliberate, visible decision.
+    When EthOS itself is served over HTTPS, the browser blocks an `http` frame (mixed content);
+    the window then offers the tab-only card instead of a blank pane.
   - `{"mode": "native", "entry": "frontend/app.js"}` — the entry module is loaded
     directly into the EthOS window (no iframe, no required port). `entry` must be listed in
     `files[]` and export `render(container, ctx)`. The module must be self-contained (the loader
@@ -282,6 +292,11 @@ registry ids in `backend/services/system_deps.py`; anything else is rejected at 
 { "system_requires": ["samba"] }
 ```
 
+A manifest that ships a compose file **automatically declares `"docker"`** — `validate_manifest`
+and `ethos-pack build` both normalize it into `system_requires`, so Package Center can offer the
+engine install (or show the missing binary) before the first `compose up` instead of failing inside
+the `start` step.
+
 **Host software follows the package.** Two root-owned helpers do the privileged work; neither takes
 an arbitrary package name:
 
@@ -381,6 +396,13 @@ package's state (scan logs, certificates, settings):
 |---|---|
 | `remove_volumes=1` | `docker compose down --volumes` — deletes the named volumes declared by *this* package's compose file |
 | `remove_images=1` | `docker rmi` for the images the compose file references, but only while no container uses them |
+| `remove_data=1` | deletes `<DATA_DIR>/packages/data/<id>` — the state every runtime keeps across a reinstall (job step `data`) |
+
+`GET /api/packages/{id}/uninstall-preview` includes `data: {path, exists, size_bytes}`, and the
+uninstall dialog offers a third checkbox with that size. A package that was already removed leaves
+its data directory behind by design; `GET /api/packages/orphans` lists those directories (with
+total size) and `DELETE /api/packages/orphans/{id}` purges one — Packages shows them under
+**Installed → Unused package data**.
 
 Removal is deliberately scoped: there is no `docker image prune` / `docker volume prune` anywhere in
 the flow, because those act on the whole host and would delete unrelated stacks. Images still used by
@@ -418,7 +440,8 @@ package, `installed.json`, `sources.json`) is rejected even when `DATA_DIR` itse
 | POST | `/api/packages/install` | `{package_id, source?}` → `{job_id}` |
 | GET | `/api/packages/jobs[/{id}]` | job status, steps and log |
 | POST | `/api/packages/{id}/update` | `{job_id}` |
-| DELETE | `/api/packages/{id}` | `{job_id}`; `?remove_volumes=1&remove_images=1` |
+| DELETE | `/api/packages/{id}` | `{job_id}`; `?remove_volumes=1&remove_images=1&remove_data=1` |
+| GET/DELETE | `/api/packages/orphans[/{id}]` | admin: data directories left behind by uninstalled packages |
 | POST | `/api/packages/{id}/action` | start/stop/restart |
 | GET | `/api/packages/{id}/status` | compose status |
 | GET | `/api/packages/{id}/uninstall-preview` | admin: volumes, images and containers an uninstall can remove |
@@ -444,7 +467,29 @@ each package keeps its own rollback and the button reports `n/m` progress.
 ## Limits
 
 `ETHOS_PACKAGES_MAX_INDEX_BYTES` (5 MB), `ETHOS_PACKAGES_MAX_MANIFEST_BYTES` (2 MB),
-`ETHOS_PACKAGES_MAX_ARTIFACT_BYTES` (256 MB), `ETHOS_PACKAGES_TTL_SECONDS` (900).
+`ETHOS_PACKAGES_MAX_ARTIFACT_BYTES` (256 MB), `ETHOS_PACKAGES_TTL_SECONDS` (900),
+`ETHOS_PACKAGES_MIN_FREE_MB` (2048 — install/update answer 507 below it),
+`ETHOS_PACKAGES_UPDATE_CHECK` (true) and `ETHOS_PACKAGES_UPDATE_CHECK_HOURS` (6).
+
+## Automatic update check
+
+`GET /api/packages/updates` is passive. `services/package_update_service.py` runs in the lifespan
+and refreshes the (cached) catalog every `ETHOS_PACKAGES_UPDATE_CHECK_HOURS`, sleeping first so a
+short-lived dev instance never reaches the network. Each installed package with a newer version
+produces one Notification Center event (`dedupe_key=pkg-update:<id>:<version>`, action opens
+Packages); a package that is updated or uninstalled simply stops being reported. Repository
+failures are logged and never break startup or shutdown.
+
+## Repository hygiene (`ethos-pack`)
+
+`ethos-pack lint --repo DIR` fails on a name that equals the id, a missing `min_ethos_version`, an
+unpinned image (`:latest`, `:stable`, a tag without a version), a compose service without a
+`restart:` policy, an invalid `ui.expose`/`ui.auth` pair, a non-HTTPS screenshot, an index that
+lags its manifest, and a README catalog table that is missing or on an older version.
+`ethos-pack readme --repo DIR` regenerates that table between `<!-- catalog:start -->` and
+`<!-- catalog:end -->` from `index.json`, and `build` recomputes the compose hash from the local
+file so editing compose cannot leave a stale hash in the signed index. The packages repository's
+CI runs the same checks in `.github/scripts/validate_repo.py`.
 `ETHOS_PACKAGES_ALLOW_PRIVATE` enables LAN repos; `ETHOS_PACKAGES_ALLOW_INSECURE` is test-only.
 
 ## Status
@@ -467,6 +512,11 @@ each package keeps its own rollback and the button reports `n/m` progress.
       the operator installed by hand)
 - [x] `runtime: "venv"` — offline wheelhouse, private per-package venv, supervised loopback process
 - [x] `min_ethos_version` enforced for new installs
+- [x] Compose packages declare Docker implicitly; install/update preflight free disk space (507)
+- [x] Background update check publishes one Notification Center event per package version
+- [x] App-data preview, opt-in purge (`remove_data=1`) and orphan-data cleanup
+- [x] Window UIs declare `ui.expose`/`ui.auth`; loopback and mixed-content frames fall back to a tab
+- [x] `ethos-pack lint` / `readme` + CI drift guards (pins, restart policies, README table)
 - [x] Dependency resolver: `requires` installed first, `conflicts` and dependent-uninstall blocked
 - [x] Core extraction: `ethos-music-engine` (yt-dlp) and `ethos-media-enhance` (OpenCV) published
 - [ ] Sign and publish `ethos-nas-packages` (needs the private key)

@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -24,6 +25,7 @@ PACKAGES_ROOT: Path = settings.DATA_DIR / "packages"
 APPS_DIR: Path = PACKAGES_ROOT / "apps"
 STAGING_DIR: Path = PACKAGES_ROOT / ".staging"
 BACKUP_DIR: Path = PACKAGES_ROOT / ".backup"
+DATA_DIR: Path = PACKAGES_ROOT / "data"
 
 INSTALLED_FILE = PACKAGES_ROOT / "installed.json"
 SOURCES_FILE = PACKAGES_ROOT / "sources.json"
@@ -108,6 +110,31 @@ def remove_package(pkg_id: str) -> bool:
 def package_dir(pkg_id: str) -> Path:
     check_pkg_id(pkg_id)
     return APPS_DIR / pkg_id
+
+
+def data_dir(pkg_id: str) -> Path:
+    """Per-package service state (`ETHOS_PACKAGE_DATA_DIR`); survives an uninstall."""
+    check_pkg_id(pkg_id)
+    return DATA_DIR / pkg_id
+
+
+def dir_size(path: Path) -> int:
+    """Total bytes under `path`; 0 when it does not exist. Best effort.
+
+    Used by the uninstall preview and the orphan-data list, so an unreadable
+    entry must never fail the request — the size is informational only.
+    """
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    continue  # a file vanished mid-walk; keep the partial total
+    except OSError:
+        logger.warning("Could not measure the size of %s", path, exc_info=True)
+    return total
 
 
 # ── Sources ─────────────────────────────────────────────────────────────────

@@ -60,6 +60,30 @@ def _discard_dir(path: Path, reason: str) -> bool:
     return True
 
 
+def _preflight_disk(pkg_id: str) -> None:
+    """Refuse an install/update that cannot fit the configured free-space reserve.
+
+    Pulling images and writing a wheelhouse is the heaviest write the core does;
+    a package that dies at 90 % leaves containers and partial state behind, so
+    the reserve is checked before anything is downloaded.
+    """
+    required_mb = max(0, int(settings.PACKAGES_MIN_FREE_MB))
+    if required_mb <= 0:
+        return
+    try:
+        free = shutil.disk_usage(str(settings.DATA_DIR)).free
+    except OSError:
+        logger.warning("Cannot read free space for the package store", exc_info=True)
+        return
+    if free < required_mb * 1024 * 1024:
+        raise PackageError(
+            f"Not enough free disk space for {pkg_id}: "
+            f"{free // (1024 * 1024)} MB available, {required_mb} MB required. "
+            f"Free some space and retry",
+            507,
+        )
+
+
 def _runtime(record: dict) -> str:
     return str(record.get("runtime") or "compose")
 
@@ -296,6 +320,7 @@ async def install(entry: dict, job_id: str) -> None:
     manifest = await package_repo.fetch_manifest(entry)
     check_min_ethos_version(manifest, APP_VERSION)
     _installable(manifest)
+    _preflight_disk(pkg_id)
     package_jobs.set_step(job_id, "requires")
     await _ensure_requires(manifest, job_id)
     manifest, staging = await _stage_package(entry, job_id, manifest)
@@ -369,6 +394,7 @@ async def update(pkg_id: str, job_id: str) -> None:
     manifest = await package_repo.fetch_manifest(entry)
     check_min_ethos_version(manifest, APP_VERSION)
     _installable(manifest)
+    _preflight_disk(pkg_id)
     package_jobs.set_step(job_id, "requires")
     await _ensure_requires(manifest, job_id)
     manifest, staging = await _stage_package(entry, job_id, manifest)
@@ -429,13 +455,15 @@ async def update(pkg_id: str, job_id: str) -> None:
 
 
 async def uninstall(pkg_id: str, job_id: str, remove_volumes: bool = False,
-                    remove_images: bool = False) -> None:
+                    remove_images: bool = False, remove_data: bool = False) -> None:
     """Tear the package down.
 
     ``remove_volumes`` deletes the named volumes declared by the package's
     compose file; ``remove_images`` deletes the images it referenced, but only
-    those no container uses any more. Both default to off: package state (scan
-    logs, certificates, settings) is normally worth keeping across a reinstall.
+    those no container uses any more; ``remove_data`` deletes
+    ``<DATA_DIR>/packages/data/<id>``, the state every runtime keeps across a
+    reinstall. All three default to off: package state (scan logs, certificates,
+    settings) is normally worth keeping.
     """
     check_pkg_id(pkg_id)
     record = packages_store.get_package(pkg_id)
@@ -474,7 +502,20 @@ async def uninstall(pkg_id: str, job_id: str, remove_volumes: bool = False,
     target = packages_store.package_dir(pkg_id)
     if target.exists():
         _discard_dir(target, "uninstall")
+    if remove_data:
+        package_jobs.set_step(job_id, "data")
+        state_dir = packages_store.data_dir(pkg_id)
+        freed = packages_store.dir_size(state_dir)
+        shutil.rmtree(state_dir, ignore_errors=True)
+        if state_dir.exists():
+            package_jobs.log(job_id, f"warning: could not delete every file in {state_dir}")
+            logger.warning("Package data for %s was only partly deleted: %s", pkg_id, state_dir)
+        else:
+            package_jobs.log(job_id, f"deleted {freed} bytes of package data")
     package_jobs.set_step(job_id, "done", "done")
-    summary = "volume data deleted" if remove_volumes else "volumes kept"
+    kept = [] if remove_data else ["app data"]
+    if not remove_volumes:
+        kept.append("volume data")
+    summary = "all package data deleted" if not kept else f"kept {' and '.join(kept)}"
     emit_event("info", f"Package {record.get('name', pkg_id)} uninstalled",
                f"v{record.get('version', '')} · {summary}", source="packages")

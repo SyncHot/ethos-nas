@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.26.1"
+APP_VERSION = "2.27.0"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -146,6 +146,11 @@ class Settings:
     PACKAGES_MAX_MANIFEST_BYTES: int = int(os.getenv("ETHOS_PACKAGES_MAX_MANIFEST_BYTES", str(2 * 1024 * 1024)))
     PACKAGES_MAX_ARTIFACT_BYTES: int = int(os.getenv("ETHOS_PACKAGES_MAX_ARTIFACT_BYTES", str(256 * 1024 * 1024)))
     PACKAGES_TTL_SECONDS: int = int(os.getenv("ETHOS_PACKAGES_TTL_SECONDS", "900"))
+    # Refuse install/update when the data filesystem has less than this reserve.
+    PACKAGES_MIN_FREE_MB: int = int(os.getenv("ETHOS_PACKAGES_MIN_FREE_MB", "2048"))
+    # Background check for package updates (services/package_update_service.py).
+    PACKAGES_UPDATE_CHECK: bool = os.getenv("ETHOS_PACKAGES_UPDATE_CHECK", "true").lower() in ("1", "true", "yes", "on")
+    PACKAGES_UPDATE_CHECK_HOURS: float = float(os.getenv("ETHOS_PACKAGES_UPDATE_CHECK_HOURS", "6"))
     # Seed the official signed source on a fresh install. Tests set this to 0
     # so they never depend on GitHub availability.
     PACKAGES_DEFAULT_SOURCE: bool = os.getenv("ETHOS_PACKAGES_DEFAULT_SOURCE", "true").lower() in ("1", "true", "yes", "on")

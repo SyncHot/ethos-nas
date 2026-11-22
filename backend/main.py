@@ -277,6 +277,14 @@ async def lifespan(app: FastAPI):
     from backend.services.task_registry import spawn as _spawn_task
     _spawn_task(_package_runtime.autostart_all(), name="package-autostart")
 
+    # Tell the operator when an installed package has an update without making
+    # them open Package Center first (services/package_update_service.py).
+    from backend.services.package_update_service import (
+        start_update_checker as _start_package_updates,
+        stop_update_checker as _stop_package_updates,
+    )
+    _start_package_updates()
+
     # Memory-pressure guard (services/pressure_guard.py): turns "the box is
     # nearly out of memory" into a pause of heavy work before systemd-oomd or
     # the kernel picks a victim.
@@ -324,6 +332,7 @@ async def lifespan(app: FastAPI):
     await stop_update_checker()
     await stop_os_update_checker()
     await stop_os_image_checker()
+    await _stop_package_updates()
     from backend.services.camera_service import stop_all_recordings
     from backend.services.task_registry import shutdown as shutdown_tasks
     await shutdown_tasks()

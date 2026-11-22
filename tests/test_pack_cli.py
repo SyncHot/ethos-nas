@@ -52,6 +52,45 @@ def main() -> int:
         verify = run("verify", "--repo", str(repo), "--pub", str(TMP / "keys/repo.pub"))
         check("verify", verify.returncode == 0, verify.stderr)
 
+        # ── lint / readme ───────────────────────────────────────────────────
+        (repo / "README.md").write_text(
+            "# Demo\n\n<!-- catalog:start -->\n<!-- catalog:end -->\n", encoding="utf-8")
+        readme = run("readme", "--repo", str(repo))
+        table = (repo / "README.md").read_text(encoding="utf-8")
+        check("readme writes the catalog table",
+              readme.returncode == 0 and "`demo-pkg`" in table and "1.0.0" in table, readme.stderr)
+
+        dirty = run("lint", "--repo", str(repo))
+        check("lint rejects a missing min_ethos_version and restart policy",
+              dirty.returncode != 0 and "min_ethos_version" in dirty.stderr, dirty.stderr)
+
+        (pkg / "manifest.json").write_text(json.dumps({
+            "id": "demo-pkg", "name": "Demo", "version": "1.0.0",
+            "description": "Demo package", "icon": "📦", "category": "tools",
+            "author": "Test", "min_ethos_version": "2.0.0",
+            "compose": "docker-compose.yml",
+        }), encoding="utf-8")
+        (pkg / "docker-compose.yml").write_text(
+            "services:\n  app:\n    image: nginx:1.27\n    restart: unless-stopped\n"
+            "    healthcheck:\n      test: [\"CMD\", \"true\"]\n", encoding="utf-8")
+        run("build", "--repo", str(repo), "--base-url", "https://example.test/repo")
+        clean = run("lint", "--repo", str(repo))
+        check("lint passes a pinned, restarted service", clean.returncode == 0, clean.stderr)
+
+        (pkg / "docker-compose.yml").write_text(
+            "services:\n  app:\n    image: nginx:latest\n    restart: unless-stopped\n", encoding="utf-8")
+        run("build", "--repo", str(repo), "--base-url", "https://example.test/repo")
+        floating = run("lint", "--repo", str(repo))
+        check("lint rejects a floating image tag",
+              floating.returncode != 0 and "not pinned" in floating.stderr, floating.stderr)
+
+        # Restore the tamper fixture: build recomputes compose hashes, so write
+        # an untouched compose file and re-sign before the tamper check below.
+        (pkg / "docker-compose.yml").write_text(
+            "services:\n  app:\n    image: nginx:1.27\n    restart: unless-stopped\n", encoding="utf-8")
+        run("build", "--repo", str(repo), "--base-url", "https://example.test/repo")
+        run("sign", "--repo", str(repo), "--key", str(TMP / "keys/repo.key"))
+
         (repo / "demo-pkg/docker-compose.yml").write_text("services:\n  app:\n    image: evil:1\n", encoding="utf-8")
         tampered = run("verify", "--repo", str(repo), "--pub", str(TMP / "keys/repo.pub"))
         check("tampered compose rejected", tampered.returncode != 0)

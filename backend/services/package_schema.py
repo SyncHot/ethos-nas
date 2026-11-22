@@ -203,6 +203,26 @@ def _validate_ui(value: Any) -> Optional[dict]:
     scheme = str(value.get("scheme") or "http")
     if scheme not in ("http", "https"):
         raise PackageError("ui.scheme must be http or https", 400)
+    # Where the port can be reached from. `loopback` (default) is only reachable
+    # on the NAS itself; `lan` means the browser connects straight to the port,
+    # so EthOS cannot authenticate it — the window is only trusted when the app
+    # brings its own login (`auth: "package"`).
+    expose = str(value.get("expose") or "loopback").lower()
+    if expose not in ("loopback", "lan"):
+        raise PackageError("ui.expose must be 'loopback' or 'lan'", 400)
+    auth = str(value.get("auth") or "").strip().lower()
+    if auth and auth not in ("package", "none"):
+        raise PackageError("ui.auth must be 'package' (own login) or 'none'", 400)
+    if expose == "lan" and mode == "native":
+        raise PackageError("ui.expose 'lan' requires ui.mode 'window'", 400)
+    if expose == "lan" and not auth:
+        raise PackageError(
+            "ui.expose 'lan' requires ui.auth: 'package' (own login) or 'none' — "
+            "EthOS cannot authenticate a page served from the package port",
+            400,
+        )
+    if expose == "loopback" and auth:
+        raise PackageError("ui.auth is only valid with ui.expose: 'lan'", 400)
     entry = None
     ribbon = None
     if mode == "native":
@@ -222,7 +242,7 @@ def _validate_ui(value: Any) -> Optional[dict]:
     elif value.get("ribbon") is not None:
         raise PackageError("ui.ribbon requires ui.mode 'native'", 400)
     return {"mode": mode, "entry": entry, "port": port or None, "path": path, "scheme": scheme,
-            "ribbon": ribbon}
+            "expose": expose, "auth": auth or None, "ribbon": ribbon}
 
 
 def _validate_requirement(value: Any, field: str) -> str:
@@ -380,6 +400,11 @@ def validate_manifest(manifest: Any, *, allow_legacy: bool = False) -> dict:
             f"(known: {', '.join(sorted(PACKAGE_SYSTEM_REQUIRES))})", 400,
         )
     system_requires = list(dict.fromkeys(system_requires))
+    if (compose or legacy_compose) and "docker" not in system_requires:
+        # A compose package cannot deploy without the engine. Declaring it here
+        # makes the catalog preflight (`system_status`) and the provisioning path
+        # universal instead of failing late in the `start` step.
+        system_requires.insert(0, "docker")
 
     files = _validate_files(manifest.get("files"))
     python = _validate_python(manifest, runtime, files)

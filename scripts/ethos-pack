@@ -6,6 +6,8 @@ Commands:
   build   --repo DIR --base-url URL     hash local files, write manifests + index.json
   sign    --repo DIR --key repo.key     write index.json.sig
   verify  --repo DIR [--pub repo.pub]   verify signature + manifest/file hashes
+  lint    --repo DIR                    catalog hygiene: pins, restart policies, README drift
+  readme  --repo DIR                    regenerate the README catalog table from index.json
 
 The signed payload is the raw bytes of index.json. Hashes cover every manifest,
 compose file and declared file, so a repository cannot be changed after signing
@@ -22,6 +24,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
@@ -31,6 +34,9 @@ RESERVED = {"packages", "trash", "snapshots", "thumbnails", "temp_chunks", "wall
             "agent-cache", "backup", "shares", "share_links"}
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 WHEEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,200}\.whl$")
+# Tags that move under the signed compose file: a rebuild would not be a rebuild.
+FLOATING_TAGS = {"latest", "stable", "edge", "main", "master", "nightly", "beta",
+                 "alpha", "dev", "unstable", "release", "rolling"}
 
 
 def _wheel_arch(filename: str) -> str:
@@ -100,9 +106,19 @@ def _normalize_manifest(pkg_dir: Path, manifest: dict, base_url: str) -> tuple[d
         compose = {"url": f"{base_url}/{pkg_id}/{compose_path.name}", "sha256": _sha(compose_path)}
         size += compose_path.stat().st_size
     elif isinstance(compose, dict) and compose.get("url"):
-        compose = {"url": compose["url"], "sha256": str(compose.get("sha256") or "").lower()}
-        if not SHA_RE.fullmatch(compose["sha256"]):
-            raise ValueError(f"{pkg_id}: compose.sha256 is missing")
+        # A built manifest normally carries {url, sha256}. When the compose file
+        # is committed next to it, that file is the source of truth: recompute so
+        # editing the compose file cannot leave a stale hash behind (the index
+        # would still verify, and the NAS would run the old file's contract).
+        compose_name = str(compose["url"]).rstrip("/").rsplit("/", 1)[-1]
+        local_path = pkg_dir / compose_name
+        if compose_name and local_path.is_file():
+            compose = {"url": f"{base_url}/{pkg_id}/{compose_name}", "sha256": _sha(local_path)}
+            size += local_path.stat().st_size
+        else:
+            compose = {"url": compose["url"], "sha256": str(compose.get("sha256") or "").lower()}
+            if not SHA_RE.fullmatch(compose["sha256"]):
+                raise ValueError(f"{pkg_id}: compose.sha256 is missing")
     elif compose is not None:
         raise ValueError(f"{pkg_id}: compose must be a local path or {{url, sha256}}")
     if not compose and not manifest.get("files"):
@@ -139,6 +155,13 @@ def _normalize_manifest(pkg_dir: Path, manifest: dict, base_url: str) -> tuple[d
         "files": files,
     }
     normalized.pop("scripts", None)
+    # Every compose package needs the engine. Keep the index honest so cards can
+    # badge it and the core preflight has an id to probe.
+    if compose:
+        requires = normalized.get("system_requires")
+        requires = [str(item) for item in requires] if isinstance(requires, list) else []
+        if "docker" not in requires:
+            normalized["system_requires"] = ["docker", *requires]
 
     python = manifest.get("python")
     if python is not None:
@@ -270,6 +293,152 @@ def cmd_sign(args) -> int:
     return 0
 
 
+CATALOG_START = "<!-- catalog:start -->"
+CATALOG_END = "<!-- catalog:end -->"
+
+
+def _lint_manifest(pkg_dir: Path, manifest: dict) -> tuple[list[str], list[str]]:
+    """Manifest/compose hygiene that the signature chain cannot express."""
+    pkg_id = str(manifest.get("id") or pkg_dir.name)
+    errors: list[str] = []
+    warnings: list[str] = []
+    if str(manifest.get("name") or "").strip() == pkg_id:
+        errors.append(f"{pkg_id}: name must be the product name, not the package id")
+    if not str(manifest.get("min_ethos_version") or "").strip():
+        errors.append(f"{pkg_id}: min_ethos_version is required")
+    ui = manifest.get("ui") or {}
+    if ui:
+        if (ui.get("mode") or "window") == "window" and not ui.get("port"):
+            errors.append(f"{pkg_id}: a window ui needs a port")
+        if ui.get("expose") == "lan" and ui.get("auth") not in ("package", "none"):
+            errors.append(f"{pkg_id}: ui.expose 'lan' requires ui.auth 'package' or 'none'")
+        if ui.get("expose", "loopback") == "loopback" and ui.get("auth"):
+            errors.append(f"{pkg_id}: ui.auth requires ui.expose 'lan'")
+    for url in manifest.get("screenshots") or []:
+        if not str(url).startswith("https://"):
+            errors.append(f"{pkg_id}: screenshot is not https: {url}")
+
+    compose = manifest.get("compose")
+    if compose:
+        name = str((compose or {}).get("url") or "docker-compose.yml").rstrip("/").rsplit("/", 1)[-1]
+        path = pkg_dir / name
+        if not path.is_file():
+            path = pkg_dir / "docker-compose.yml"
+        if not path.is_file():
+            errors.append(f"{pkg_id}: compose file is missing")
+        else:
+            try:
+                doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except (yaml.YAMLError, OSError) as exc:
+                errors.append(f"{pkg_id}: compose is unreadable: {exc}")
+                doc = {}
+            for service, spec in (doc.get("services") or {}).items():
+                if not isinstance(spec, dict):
+                    continue
+                image = str(spec.get("image") or "")
+                if not image:
+                    errors.append(f"{pkg_id}: {service}: image is required")
+                elif "@sha256:" not in image:
+                    short = image.rsplit("/", 1)[-1]
+                    tag = short.split(":", 1)[1] if ":" in short else ""
+                    if (not tag or tag.lower() in FLOATING_TAGS
+                            or not re.search(r"\d", tag.split("-", 1)[0])):
+                        errors.append(
+                            f"{pkg_id}: {service}: image is not pinned to a version or digest: {image}")
+                if not spec.get("restart"):
+                    errors.append(f"{pkg_id}: {service}: restart policy is required (survives a reboot)")
+                if not spec.get("healthcheck"):
+                    warnings.append(f"{pkg_id}: {service}: no healthcheck")
+    return errors, warnings
+
+
+def _readme_row_matches(readme: str, pkg_id: str, version: str) -> bool:
+    """True when a README line mentions `pkg_id` together with its current version."""
+    mention = re.compile(rf"(?<![a-z0-9-]){re.escape(pkg_id)}(?![a-z0-9-])")
+    return any(mention.search(line) and bool(version) and version in line
+               for line in readme.splitlines())
+
+
+def cmd_lint(args) -> int:
+    repo = Path(args.repo).resolve()
+    index = _read_json(repo / "index.json") if (repo / "index.json").is_file() else {"packages": []}
+    versions = {str(e.get("id")): str(e.get("version") or "") for e in index.get("packages") or []}
+    readme_path = repo / "README.md"
+    readme = readme_path.read_text(encoding="utf-8") if readme_path.is_file() else ""
+    errors: list[str] = []
+    warnings: list[str] = []
+    package_dirs = sorted(p for p in repo.iterdir()
+                          if p.is_dir() and not p.name.startswith(".") and (p / "manifest.json").is_file())
+    for pkg_dir in package_dirs:
+        manifest = _read_json(pkg_dir / "manifest.json")
+        errs, warns = _lint_manifest(pkg_dir, manifest)
+        errors += errs
+        warnings += warns
+        pkg_id = str(manifest.get("id") or pkg_dir.name)
+        version = str(manifest.get("version") or "")
+        if readme and not _readme_row_matches(readme, pkg_id, version):
+            errors.append(f"{pkg_id}: README catalog row is missing or shows an older version (v{version})")
+        indexed = versions.get(pkg_id)
+        if indexed is not None and indexed != version:
+            errors.append(f"{pkg_id}: index has v{indexed} but the manifest has v{version}; run build")
+    for line in warnings:
+        print(f"warning: {line}")
+    if errors:
+        for line in errors:
+            print(f"error: {line}", file=sys.stderr)
+        return 1
+    print(f"OK: {len(package_dirs)} package(s) linted")
+    return 0
+
+
+def _ui_label(manifest: dict) -> str:
+    ui = manifest.get("ui") or {}
+    if not ui:
+        return "engine"
+    if ui.get("mode") == "native":
+        return "native"
+    return f"window {ui.get('port')}"
+
+
+def _one_line(text: str, limit: int = 150) -> str:
+    value = " ".join(str(text or "").replace("|", "\\|").split())
+    if len(value) > limit:
+        value = value[: limit - 1].rstrip() + "…"
+    return value
+
+
+def cmd_readme(args) -> int:
+    """Regenerate the catalog table between the README markers from index.json."""
+    repo = Path(args.repo).resolve()
+    index_path = repo / "index.json"
+    readme_path = repo / "README.md"
+    if not index_path.is_file():
+        print("error: index.json is missing; run build first", file=sys.stderr)
+        return 1
+    if not readme_path.is_file():
+        print("error: README.md is missing", file=sys.stderr)
+        return 1
+    readme = readme_path.read_text(encoding="utf-8")
+    if CATALOG_START not in readme or CATALOG_END not in readme:
+        print(f"error: README.md needs {CATALOG_START} … {CATALOG_END} around the table",
+              file=sys.stderr)
+        return 1
+    index = _read_json(index_path)
+    rows = ["| Package | Version | UI | What it is |", "|---|---|---|---|"]
+    for entry in sorted(index.get("packages") or [], key=lambda e: str(e.get("id"))):
+        pkg_id = str(entry.get("id"))
+        manifest_path = repo / pkg_id / "manifest.json"
+        manifest = _read_json(manifest_path) if manifest_path.is_file() else {}
+        rows.append(f"| `{pkg_id}` {entry.get('icon') or ''} | {entry.get('version')} | "
+                    f"{_ui_label(manifest)} | {_one_line(entry.get('description'))} |")
+    head, _, rest = readme.partition(CATALOG_START)
+    _, _, tail = rest.partition(CATALOG_END)
+    readme_path.write_text(f"{head}{CATALOG_START}\n{chr(10).join(rows)}\n{CATALOG_END}{tail}",
+                           encoding="utf-8")
+    print(f"wrote the catalog table ({len(rows) - 2} packages) into {readme_path}")
+    return 0
+
+
 def cmd_verify(args) -> int:
     repo = Path(args.repo)
     payload = (repo / "index.json").read_bytes()
@@ -342,6 +511,14 @@ def main() -> int:
     verify.add_argument("--repo", required=True)
     verify.add_argument("--pub", default="")
     verify.set_defaults(func=cmd_verify)
+
+    lint = sub.add_parser("lint")
+    lint.add_argument("--repo", required=True)
+    lint.set_defaults(func=cmd_lint)
+
+    readme = sub.add_parser("readme")
+    readme.add_argument("--repo", required=True)
+    readme.set_defaults(func=cmd_readme)
 
     args = parser.parse_args()
     return args.func(args)

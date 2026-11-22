@@ -8,6 +8,7 @@ import asyncio
 import logging
 import mimetypes
 import re
+import shutil
 import threading
 import urllib.error
 import urllib.request
@@ -22,6 +23,7 @@ from backend.services import (
     json_store, package_cleanup, package_installer, package_jobs, package_repo, packages_store,
     system_deps,
 )
+from backend.services.notifications_service import emit_event
 from backend.services.package_schema import PackageError, check_pkg_id, safe_relative_path
 
 logger = logging.getLogger("ethos-nas.routers.packages")
@@ -103,6 +105,7 @@ class BulkDeleteRequest(BaseModel):
     ids: list[str]
     remove_volumes: bool = False
     remove_images: bool = False
+    remove_data: bool = False
 
 
 class ActionRequest(BaseModel):
@@ -229,6 +232,64 @@ async def list_updates() -> dict:
     return {"updates": updates, "total": len(updates)}
 
 
+def _data_inventory(pkg_id: str) -> dict:
+    """Size of the state a package keeps in `<DATA_DIR>/packages/data/<id>`."""
+    path = packages_store.data_dir(pkg_id)
+    return {"path": str(path), "exists": path.exists(),
+            "size_bytes": packages_store.dir_size(path)}
+
+
+@router.get("/orphans", dependencies=[Depends(require_admin)])
+async def list_orphan_data() -> dict:
+    """Package state left behind by uninstalled packages.
+
+    Uninstall keeps `packages/data/<id>` on purpose (a reinstall resumes with its
+    scan logs, certificates and settings), but a removed package has no UI to
+    reclaim it. This lists those directories so the operator can purge them.
+    """
+    installed = {str(p.get("id")) for p in packages_store.load_installed()}
+    root = packages_store.DATA_DIR
+    try:
+        entries = sorted(root.iterdir()) if root.is_dir() else []
+    except OSError:
+        logger.warning("Cannot list the package data directory %s", root, exc_info=True)
+        entries = []
+    orphans = []
+    for entry in entries:
+        if entry.name in installed or not entry.is_dir():
+            continue
+        if not re.fullmatch(_PKG_ID_CORE, entry.name):
+            continue
+        try:
+            modified = int(entry.stat().st_mtime)
+        except OSError:
+            modified = 0
+        orphans.append({"id": entry.name, "path": str(entry),
+                        "size_bytes": packages_store.dir_size(entry), "modified": modified})
+    return {"orphans": orphans, "total_bytes": sum(item["size_bytes"] for item in orphans)}
+
+
+@router.delete("/orphans/{pkg_id}", dependencies=[Depends(require_admin)])
+async def delete_orphan_data(pkg_id: str) -> dict:
+    try:
+        check_pkg_id(pkg_id)
+        if packages_store.get_package(pkg_id):
+            raise PackageError(
+                f"Package {pkg_id!r} is installed; uninstall it with remove_data=1 instead", 409)
+    except PackageError as exc:
+        raise _http_error(exc) from None
+    path = packages_store.data_dir(pkg_id)
+    freed = packages_store.dir_size(path)
+    shutil.rmtree(path, ignore_errors=True)
+    if path.exists():
+        raise HTTPException(500, "Could not delete every file in the package data directory")
+    logger.info("Deleted orphan package data for %s (%d bytes)", pkg_id, freed)
+    emit_event("info", "Package data deleted",
+               f"{pkg_id}: removed {freed // 1024} KiB left behind by an uninstalled package",
+               source="packages", dedupe_key=f"pkg-orphan-purge:{pkg_id}:{freed}")
+    return {"deleted": pkg_id, "size_bytes": freed}
+
+
 # ── Jobs ────────────────────────────────────────────────────────────────────
 
 def _start_job(kind: str, pkg_id: str, work) -> dict:
@@ -275,7 +336,7 @@ async def bulk_uninstall_packages(req: BulkDeleteRequest) -> dict:
             jobs.append(_start_job(
                 "uninstall", pkg_id,
                 lambda job_id, pid=pkg_id: package_installer.uninstall(
-                    pid, job_id, req.remove_volumes, req.remove_images,
+                    pid, job_id, req.remove_volumes, req.remove_images, req.remove_data,
                 ),
             ))
         except (PackageError, HTTPException) as exc:
@@ -522,11 +583,12 @@ async def uninstall_preview(pkg_id: str) -> dict:
                 "id": pkg_id, "name": record.get("name") or pkg_id,
                 "containers": [], "volumes": [], "images": [], "shared_images": [],
                 "has_compose": False, "docker": True, "runtime": "venv",
+                "data": _data_inventory(pkg_id),
             }
         inventory = await package_cleanup.preview(pkg_id, package_installer.compose_file(pkg_id))
     except PackageError as exc:
         raise _http_error(exc) from None
-    return {"id": pkg_id, "name": record.get("name") or pkg_id, **inventory}
+    return {"id": pkg_id, "name": record.get("name") or pkg_id, "data": _data_inventory(pkg_id), **inventory}
 
 
 @router.post("/{pkg_id}/action", dependencies=[Depends(require_admin)])
@@ -551,11 +613,13 @@ async def update_package_endpoint(pkg_id: str) -> dict:
 
 @router.delete("/{pkg_id}", dependencies=[Depends(require_admin)])
 async def uninstall_package(pkg_id: str, remove_volumes: bool = False,
-                            remove_images: bool = False) -> dict:
+                            remove_images: bool = False,
+                            remove_data: bool = False) -> dict:
     """Uninstall a package.
 
-    ``remove_volumes`` also deletes the package's named volumes and
-    ``remove_images`` deletes its images once no container uses them. Both are
+    ``remove_volumes`` also deletes the package's named volumes,
+    ``remove_images`` deletes its images once no container uses them, and
+    ``remove_data`` deletes its app state (`packages/data/<id>`). All three are
     off by default because package state usually survives a reinstall.
     """
     try:
@@ -566,4 +630,4 @@ async def uninstall_package(pkg_id: str, remove_volumes: bool = False,
         raise _http_error(exc) from None
     return _start_job("uninstall", pkg_id,
                       lambda job_id: package_installer.uninstall(
-                          pkg_id, job_id, remove_volumes, remove_images))
+                          pkg_id, job_id, remove_volumes, remove_images, remove_data))

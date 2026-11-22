@@ -59,6 +59,9 @@ def make_repo(port: int) -> Path:
         "schema": 2, "id": "demo-pkg", "name": "Demo Package", "version": "1.0.0",
         "description": "Files-only test package", "icon": "📦", "category": "tools",
         "author": "Test", "icon_url": "https://example.com/demo.svg",
+        # A window UI needs no native module and no signed source; it is enough
+        # to give the package a desktop icon contract to test.
+        "ui": {"mode": "window", "port": 18099, "path": "/"},
         "files": [{
             "url": f"http://127.0.0.1:{port}/demo-pkg/hello.txt",
             "sha256": sha(pkg / "hello.txt"), "path": "hello.txt", "mode": 420,
@@ -176,21 +179,37 @@ def main() -> int:
         check("package recorded", "demo-pkg" in installed)
         check("declared file deployed", (TMP / "data/packages/apps/demo-pkg/hello.txt").is_file())
 
+        # Package state kept across a reinstall (what a service writes to
+        # ETHOS_PACKAGE_DATA_DIR). The preview must report it, uninstall must only
+        # delete it on request, and a leftover directory must be purgeable.
+        state_dir = TMP / "data/packages/data/demo-pkg"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "state.json").write_text('{"kept": true}', encoding="utf-8")
+
         status, body = request("GET", "/api/packages/desktop-icons")
         icon_entry = next((p for p in body if p.get("id") == "demo-pkg"), {})
         check("desktop icons expose icon_url",
               icon_entry.get("icon_url") == "https://example.com/demo.svg", str(body))
 
         status, body = request("GET", "/api/packages/demo-pkg/status")
-        check("files-only status", status == 200 and body.get("status") == "not_configured", f"{status} {body}")
+        check("files-only status is ready",
+              status == 200 and body.get("status") == "ready" and body.get("runtime") == "files",
+              f"{status} {body}")
 
         status, body = request("GET", "/api/packages/demo-pkg/uninstall-preview")
         check("uninstall preview answers", status == 200 and body.get("id") == "demo-pkg", f"{status} {body}")
         check("files-only preview has no compose artefacts",
               body.get("has_compose") is False and body.get("volumes") == [] and body.get("images") == [],
               str(body))
+        app_data = body.get("data") or {}
+        check("preview reports app data size",
+              app_data.get("size_bytes", 0) > 0 and str(app_data.get("path", "")).endswith("demo-pkg"),
+              str(app_data))
 
-        status, body = request("DELETE", "/api/packages/demo-pkg?remove_volumes=1&remove_images=1")
+        status, body = request("DELETE", "/api/packages/orphans/demo-pkg")
+        check("installed package data is not an orphan", status == 409, f"{status} {body}")
+
+        status, body = request("DELETE", "/api/packages/demo-pkg?remove_volumes=1&remove_images=1&remove_data=1")
         check("uninstall job created", status == 200 and body.get("job_id"), f"{status} {body}")
         uninstall_id = body.get("job_id")
         for _ in range(80):
@@ -201,8 +220,20 @@ def main() -> int:
         check("uninstall succeeded", job.get("status") == "success", str(job.get("error") or job))
         check("uninstall job reports progress", job.get("progress") == 100,
               str(job))
+        check("app data purged on request", not state_dir.exists())
         status, body = request("GET", "/api/packages")
         check("package removed", body.get("items") == [], str(body))
+
+        orphan = TMP / "data/packages/data/gone-pkg"
+        orphan.mkdir(parents=True, exist_ok=True)
+        (orphan / "old.log").write_text("x" * 64, encoding="utf-8")
+        status, body = request("GET", "/api/packages/orphans")
+        orphan_ids = [item.get("id") for item in body.get("orphans", [])]
+        check("orphan data listed", status == 200 and "gone-pkg" in orphan_ids, f"{status} {body}")
+        status, body = request("DELETE", "/api/packages/orphans/gone-pkg")
+        check("orphan data deleted", status == 200 and not orphan.exists(), f"{status} {body}")
+        status, body = request("GET", "/api/packages/orphans")
+        check("orphan list is empty afterwards", body.get("orphans") == [], str(body))
     finally:
         proc.terminate()
         try:

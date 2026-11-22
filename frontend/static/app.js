@@ -310,11 +310,12 @@ async function _renderGenericPackage(winId, container = null) {
             headerTitle,
             el('span', { class: badgeClass, testid: `pkg-status-${pkg.id}`, style: 'padding:4px 12px;border-radius:6px;font-size:11px;font-weight:700;text-transform:uppercase;' }, txt(badgeText))));
 
-        // Packages that expose a web UI open it inside the EthOS window.
+        // Packages that serve a web UI from their own port.
         const uiPort = Number(pkg.ui && pkg.ui.port) || 0;
         if (uiPort > 0 && dockerStatus !== 'stopped') {
             const scheme = pkg.ui.scheme || 'http';
             const uiPath = pkg.ui.path || '/';
+            const uiExpose = (pkg.ui && pkg.ui.expose) || 'loopback';
             const loopback = ['127.0.0.1', '::1', '[::1]', '0.0.0.0'];
             const uiHost = loopback.includes(location.hostname) ? 'localhost' : location.hostname;
             const uiUrl = `${scheme}://${uiHost}:${uiPort}${uiPath}`;
@@ -326,6 +327,24 @@ async function _renderGenericPackage(winId, container = null) {
             const openTab = el('button', { class: 'btn-ghost', testid: `pkg-open-tab-${pkg.id}`, style: 'padding:5px 10px;font-size:11px;border-radius:7px;' }, txt('Open in new tab'));
             openTab.addEventListener('click', () => window.open(themedUiUrl(currentTheme()), '_blank', 'noopener'));
             const reload = el('button', { class: 'btn-ghost', testid: `pkg-reload-ui-${pkg.id}`, style: 'padding:5px 10px;font-size:11px;border-radius:7px;' }, txt('Reload UI'));
+            // EthOS cannot authenticate a page served from the package's own port,
+            // and a browser refuses an http frame inside an https page. Embed only
+            // when the manifest declares LAN exposure and the desktop is plain http.
+            const mixedContent = scheme === 'http' && location.protocol === 'https:';
+            const canEmbed = uiExpose === 'lan' && !mixedContent;
+            if (!canEmbed) {
+                const reason = mixedContent
+                    ? 'Your EthOS session runs over HTTPS, so the browser blocks this package\u2019s http page inside the window.'
+                    : 'This package serves its UI on the NAS loopback only.';
+                const card = el('div', { style: 'flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:32px;text-align:center;' },
+                    el('div', { style: 'font-size:44px;line-height:1;' }, txt('🔗')),
+                    el('div', { style: 'font-size:15px;font-weight:700;color:#f8fafc;' }, txt('Open this UI in a browser tab')),
+                    el('p', { style: 'max-width:380px;font-size:13px;line-height:1.5;color:#94a3b8;margin:0;' }, txt(`${reason} The page opens at ${uiUrl}.`)),
+                    el('div', { style: 'display:flex;gap:8px;' }, openTab));
+                root.append(card);
+                winEl.replaceChildren(root);
+                return;
+            }
             reload.addEventListener('click', () => {
                 frame.src = 'about:blank';
                 setTimeout(() => { frame.src = themedUiUrl(currentTheme()); }, 60);

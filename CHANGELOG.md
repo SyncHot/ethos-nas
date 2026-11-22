@@ -11,6 +11,48 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.27.0] - 2026-11-22
+
+### Added
+
+- **Package Center: update notifications.** A background checker refreshes the signed catalog every
+  six hours (`ETHOS_PACKAGES_UPDATE_CHECK`, `ETHOS_PACKAGES_UPDATE_CHECK_HOURS`) and publishes one
+  Notification Center event per installed package with a newer version; its action opens Package
+  Center. Repository failures stay in the log and never affect startup or shutdown.
+- **Package Center: app-data lifecycle.** The uninstall dialog has a third, off-by-default checkbox
+  that deletes `<DATA_DIR>/packages/data/<id>` (job step `data`) and shows its size in the preview.
+  `GET /api/packages/orphans` lists data left behind by packages that are already uninstalled and
+  `DELETE /api/packages/orphans/{id}` purges one; the Installed tab shows them under “Unused package
+  data”.
+- **Package Center: `ui.expose` / `ui.auth`.** A window UI served from the package's own port must
+  state whether the LAN can reach it and whether the app brings a login. The detail dialog shows
+  it, a loopback-only UI gets an “Open in a new tab” card instead of a dead frame, and an HTTPS
+  desktop no longer renders a blank mixed-content iframe.
+- **`ethos-pack lint` / `ethos-pack readme`.** Lint fails on unpinned images (`:latest`, `:stable`,
+  version-less tags), a compose service without a `restart:` policy, a missing
+  `min_ethos_version`, an invalid `ui.expose`/`ui.auth` pair, an index that lags its manifest and a
+  stale README catalog table; `readme` regenerates that table from `index.json`.
+- **Catalog: two new packages.** Syncthing (`ethos-sync`) for device and cloud-style folder sync,
+  and Forgejo (`ethos-git`) for self-hosted Git (web on 3000, SSH on 2222).
+
+### Changed
+
+- **Compose packages declare Docker automatically.** `validate_manifest` (and `ethos-pack build`)
+  add `"docker"` to `system_requires`, so Package Center preflights — and can provision — the
+  engine before the first `compose up` instead of failing inside the start step.
+- **Install and update preflight free disk space** (`ETHOS_PACKAGES_MIN_FREE_MB`, default 2048 MB)
+  and answer 507 with the available and required size instead of failing mid-download.
+- `ethos-pack build` recomputes the compose hash from the committed file, so editing a compose file
+  can no longer leave a stale hash in a signed index.
+- Job steps show their real labels (`requires`, `wheels`, `venv`, `sysdeps`, `data`).
+- Catalog images are pinned: ClamAV 1.5.5 and nginx 1.27 instead of `:stable` / `:alpine`, and the
+  antivirus, welcome and Forgejo/Syncthing containers ship healthchecks.
+
+### Fixed
+
+- Package Center could not reclaim the state every package keeps across reinstalls; it is now
+  visible, sized and removable, and a package removed earlier can have its leftovers purged.
+
 ## [2.26.1] - 2026-11-22
 
 ### Fixed

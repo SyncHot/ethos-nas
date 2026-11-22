@@ -60,6 +60,24 @@ check("window ui still needs a port", not _ok(lambda: validate_manifest({
     **native, "ui": {"mode": "window", "path": "/"}})))
 check("native entry must be js", not _ok(lambda: validate_manifest({
     **native, "ui": {"mode": "native", "entry": "frontend/app.html"}})))
+window_ui = {"mode": "window", "port": 8090, "path": "/"}
+check("window ui defaults to loopback exposure",
+      validate_manifest({**native, "ui": dict(window_ui)})["ui"]["expose"] == "loopback")
+check("lan exposure needs an auth declaration",
+      not _ok(lambda: validate_manifest({**native, "ui": {**window_ui, "expose": "lan"}})))
+check("lan exposure with its own login accepted",
+      validate_manifest({**native, "ui": {**window_ui, "expose": "lan", "auth": "package"}})["ui"]["auth"]
+      == "package")
+check("lan exposure may declare no login",
+      validate_manifest({**native, "ui": {**window_ui, "expose": "lan", "auth": "none"}})["ui"]["expose"]
+      == "lan")
+check("auth without lan exposure rejected",
+      not _ok(lambda: validate_manifest({**native, "ui": {**window_ui, "auth": "package"}})))
+check("unknown exposure rejected",
+      not _ok(lambda: validate_manifest({**native, "ui": {**window_ui, "expose": "wan"}})))
+check("native ui cannot be exposed on the lan",
+      not _ok(lambda: validate_manifest({**native, "ui": {"mode": "native", "entry": "frontend/app.js",
+                                                       "expose": "lan", "auth": "package"}})))
 check("capabilities default to compose",
       validate_manifest(dict(BASE))["capabilities"] == ["compose"])
 check("kvm capability accepted",
@@ -69,21 +87,24 @@ check("unknown capability rejected",
       not _ok(lambda: validate_manifest({**BASE, "capabilities": ["gpu"]})))
 check("capabilities must be a list",
       not _ok(lambda: validate_manifest({**BASE, "capabilities": "kvm"})))
-check("system_requires defaults to empty",
-      validate_manifest(dict(BASE))["system_requires"] == [])
-check("docker system requirement accepted",
+check("compose packages require docker",
+      validate_manifest(dict(BASE))["system_requires"] == ["docker"])
+check("declared docker is not duplicated",
       validate_manifest({**BASE, "system_requires": ["docker"]})["system_requires"] == ["docker"])
-check("samba system requirement accepted",
-      validate_manifest({**BASE, "system_requires": ["samba"]})["system_requires"] == ["samba"])
+check("samba stays after the implicit docker",
+      validate_manifest({**BASE, "system_requires": ["samba"]})["system_requires"]
+      == ["docker", "samba"])
+check("files-only packages need no docker",
+      validate_manifest(dict(native))["system_requires"] == [])
 check("duplicate system requirements collapsed",
-      validate_manifest({**BASE, "system_requires": ["docker", "docker"]})["system_requires"] == ["docker"])
+      validate_manifest({**BASE, "system_requires": ["samba", "samba"]})["system_requires"]
+      == ["docker", "samba"])
 check("unknown system requirement rejected",
       not _ok(lambda: validate_manifest({**BASE, "system_requires": ["nvidia"]})))
 check("arbitrary apt name rejected",
       not _ok(lambda: validate_manifest({**BASE, "system_requires": ["nginx"]})))
 check("system_requires must be a list",
       not _ok(lambda: validate_manifest({**BASE, "system_requires": "docker"})))
-
 print("Index")
 index = {"schema": 2, "name": "Test", "packages": [{
     "id": "demo-pkg", "name": "Demo", "version": "1.0.0", "description": "d", "icon": "📦",

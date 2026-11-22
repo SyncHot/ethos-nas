@@ -48,16 +48,21 @@ const JOB_TITLES = { install: 'Installing', update: 'Updating', uninstall: 'Unin
 
 const STEP_LABELS = {
     queued: 'Queued',
+    requires: 'Installing required packages',
     verify: 'Verifying manifest',
     download: 'Downloading files',
     policy: 'Checking compose policy',
+    wheels: 'Downloading bundled wheels',
     deps: 'Preparing system dependencies',
     deploy: 'Deploying files',
+    venv: 'Building the package environment',
     backup: 'Backing up current version',
     start: 'Starting service',
     stop: 'Stopping service',
     images: 'Removing unused images',
+    sysdeps: 'Releasing host software',
     cleanup: 'Removing package files',
+    data: 'Deleting package data',
     done: 'Complete',
 };
 
@@ -127,6 +132,20 @@ function _systemWarning(pkg) {
         <ul>${rows}</ul>
         EthOS never installs OS packages on its own. Run the command above on the NAS, then reopen this dialog.
     </div>`;
+}
+
+// A window UI served from the package's own port is not behind the EthOS
+// session, so the operator must know whether the LAN can reach it.
+function _uiExposure(pkg) {
+    const ui = pkg.ui || (pkg.manifest && pkg.manifest.ui) || null;
+    if (!ui || ui.mode !== 'window' || !ui.port) return '';
+    if (ui.expose === 'lan') {
+        const auth = ui.auth === 'package'
+            ? 'the app brings its own login'
+            : 'no login — anyone who can reach this NAS can open it';
+        return `<div data-testid="pkg-ui-exposure" class="ui-callout"><strong>Port ${escapeHtml(String(ui.port))} is reachable on your network</strong> · ${escapeHtml(auth)}.</div>`;
+    }
+    return `<div data-testid="pkg-ui-exposure" class="ui-callout">Port ${escapeHtml(String(ui.port))} listens on the NAS loopback only.</div>`;
 }
 
 // Dependencies a `runtime: venv` package installs into its own virtualenv
@@ -480,6 +499,66 @@ function _renderInstalled(content) {
     content.querySelectorAll('[data-update]').forEach((btn) => btn.addEventListener('click', () => _update(btn.dataset.update)));
     content.querySelectorAll('[data-open-ui]').forEach((btn) => btn.addEventListener('click', () => _openUi(btn.dataset.openUi)));
     content.querySelectorAll('[data-open-logs]').forEach((btn) => btn.addEventListener('click', () => openLogs({ app: `pkg:${btn.dataset.openLogs}` })));
+    void _renderOrphanData(content);
+}
+
+function _formatBytes(value) {
+    const bytes = Math.max(0, Number(value) || 0);
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+    let size = bytes / 1024;
+    let unit = 0;
+    while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+    return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unit]}`;
+}
+
+// State left behind by uninstalled packages. Uninstall keeps
+// <DATA_DIR>/packages/data/<id> on purpose, but a removed package has no window
+// left to reclaim it — this is the only place that can offer the purge.
+async function _renderOrphanData(content) {
+    if (!_pkg.isAdmin) return;
+    let data;
+    try {
+        data = await apiJsonFetch('/api/packages/orphans');
+    } catch (_) {
+        return;  // the list is an extra; the Installed table already rendered
+    }
+    if (!shell || !content.isConnected || _pkg.tab !== 'installed') return;
+    const orphans = data.orphans || [];
+    if (!orphans.length) return;
+    const host = document.createElement('div');
+    host.dataset.testid = 'pkg-orphan-data';
+    host.innerHTML = `<div class="ui-panel ui-panel-body" style="margin-top:16px;">
+        <h3 style="margin:0 0 6px;font-size:14px;">Unused package data</h3>
+        <p class="ui-muted" style="font-size:12px;margin:0 0 10px;">
+            Left behind by uninstalled packages (${escapeHtml(_formatBytes(data.total_bytes))}). Kept so a reinstall resumes with its settings.
+        </p>
+        <div class="ui-list">${orphans.map((item) => `
+            <div class="ui-row" style="justify-content:space-between;gap:10px;">
+                <div style="min-width:0;">
+                    <strong>${escapeHtml(item.id)}</strong> <span class="ui-muted">· ${escapeHtml(_formatBytes(item.size_bytes))}</span>
+                    <div class="path" style="font-size:11px;word-break:break-all;">${escapeHtml(item.path)}</div>
+                </div>
+                <button class="ui-btn small danger" data-purge-orphan="${escapeAttr(item.id)}" data-testid="pkg-purge-orphan-${escapeAttr(item.id)}">Delete</button>
+            </div>`).join('')}</div></div>`;
+    host.querySelectorAll('[data-purge-orphan]').forEach((btn) => {
+        btn.addEventListener('click', () => _purgeOrphan(btn.dataset.purgeOrphan));
+    });
+    content.appendChild(host);
+}
+
+async function _purgeOrphan(pkgId) {
+    const ok = await showConfirm(`Delete unused data for ${pkgId}`,
+        'The package is not installed. Its remaining state will be deleted permanently.',
+        { danger: true, confirmLabel: 'Delete' });
+    if (!ok) return;
+    try {
+        await apiJsonFetch(`/api/packages/orphans/${encodeURIComponent(pkgId)}`, { method: 'DELETE' });
+        addNotification(`Deleted leftover data for ${pkgId}`, 'success');
+        _renderContent();
+    } catch (err) {
+        addNotification(err.detail || err.message, 'error');
+    }
 }
 
 function _installedRow(pkg) {
@@ -539,6 +618,7 @@ async function _openDetail(pkgId) {
         ${(detail.requires || []).length ? `<div style="font-size:12px;margin-top:6px;">Requires: ${detail.requires.map(escapeHtml).join(', ')}</div>` : ''}
         ${_systemRequires(detail).length ? `<div style="font-size:12px;margin-top:6px;">System requirements: ${_systemRequires(detail).map((item) => escapeHtml(_systemLabel(item))).join(', ')}${_systemRequires(detail).includes('docker') ? ' — Docker is installed automatically when missing.' : ''}</div>` : ''}
         ${_systemWarning(detail)}
+        ${_uiExposure(detail)}
         ${_pythonRequires(detail).length ? `<div style="font-size:12px;margin-top:6px;">Package environment: ${_pythonRequires(detail).map(escapeHtml).join(', ')} — installed into a private virtualenv from bundled wheels, offline.</div>` : ''}
         ${(detail.screenshots || []).length ? `<div style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;">${detail.screenshots.map((url) => `<a href="${escapeAttr(url)}" target="_blank" rel="noopener"><img src="${escapeAttr(url)}" alt="" style="height:90px;border-radius:8px;"></a>`).join('')}</div>` : ''}
         ${detail.installed && _pkg.isAdmin ? `<div style="margin-top:12px;"><button class="btn-ghost" data-testid="pkg-detail-logs" style="font-size:12px;padding:4px 10px;">📋 Open logs for ${escapeHtml(detail.name)}</button></div>` : ''}`;
@@ -820,6 +900,9 @@ async function _uninstall(pkgId) {
     const volumes = inventory.volumes || [];
     const images = inventory.images || [];
     const shared = inventory.shared_images || [];
+    const appData = inventory.data || {};
+    const appDataSize = _formatBytes(appData.size_bytes || 0);
+    const appDataExists = appData.exists !== false && (appData.size_bytes || !appData.path);
     const sharedOwners = [...new Set(shared.flatMap((img) => (img.in_use_by || [])
         .map((owner) => owner.project || owner.container || '')))].filter(Boolean);
     const bodyHtml = `
@@ -842,6 +925,14 @@ async function _uninstall(pkgId) {
                 <div style="font-size:11px;color:var(--text-3);font-family:monospace;margin-top:3px;word-break:break-all;">${images.length ? images.map((img) => escapeHtml(img.ref)).join(', ') : 'no images'}</div>
                 ${shared.length ? `<div style="font-size:11px;color:var(--text-3);margin-top:2px;">Kept — still used by ${escapeHtml(sharedOwners.join(', ') || 'another container')}: ${shared.map((img) => escapeHtml(img.ref)).join(', ')}</div>` : ''}
             </div>
+        </label>
+        <label style="display:flex;gap:9px;align-items:flex-start;font-size:13px;line-height:1.45;margin-top:12px;cursor:${appDataExists ? 'pointer' : 'not-allowed'};">
+            <input type="checkbox" name="remove_data" data-testid="pkg-uninstall-remove-data"
+                   style="margin-top:2px;"${appDataExists ? '' : ' disabled'}>
+            <div>Delete package app data${appDataExists ? ` — ${appDataSize}` : ''}
+                <div style="font-size:11px;color:var(--text-3);font-family:monospace;margin-top:3px;word-break:break-all;">${escapeHtml(appData.path || 'no app data')}</div>
+                <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Keep this to resume where you stopped if you ever reinstall. Cannot be recovered once deleted.</div>
+            </div>
         </label>`;
     const values = await showFormModal({
         title: `Uninstall ${name}`,
@@ -853,7 +944,8 @@ async function _uninstall(pkgId) {
             const okBtn = overlay.querySelector('[data-testid="modal-form-ok"]');
             const sync = () => {
                 const deleting = body.querySelector('[name="remove_volumes"]')?.checked
-                    || body.querySelector('[name="remove_images"]')?.checked;
+                    || body.querySelector('[name="remove_images"]')?.checked
+                    || body.querySelector('[name="remove_data"]')?.checked;
                 if (okBtn) {
                     okBtn.textContent = deleting ? 'Delete everything' : 'Uninstall';
                     okBtn.classList.toggle('ethos-modal-btn-danger', deleting);
@@ -867,14 +959,16 @@ async function _uninstall(pkgId) {
     await _uninstallDirect(pkgId, name, {
         removeVolumes: values.remove_volumes === true,
         removeImages: values.remove_images === true,
+        removeData: values.remove_data === true,
     });
 }
 
-async function _uninstallDirect(pkgId, name, { removeVolumes = false, removeImages = false } = {}) {
+async function _uninstallDirect(pkgId, name, { removeVolumes = false, removeImages = false, removeData = false } = {}) {
     try {
         const params = new URLSearchParams();
         if (removeVolumes) params.set('remove_volumes', '1');
         if (removeImages) params.set('remove_images', '1');
+        if (removeData) params.set('remove_data', '1');
         const query = params.toString() ? `?${params.toString()}` : '';
         const response = await apiJsonFetch(`/api/packages/${encodeURIComponent(pkgId)}${query}`, { method: 'DELETE' });
         if (response.job_id) {
@@ -895,6 +989,10 @@ function _openUi(pkgId) {
         return;
     }
     if (!pkg.ui.port) return;
+    if (pkg.ui.expose !== 'lan') {
+        addNotification(`${pkg.name} serves its UI on the NAS loopback only — open it from the NAS itself.`, 'info');
+        return;
+    }
     const scheme = pkg.ui.scheme || 'http';
     const path = pkg.ui.path || '/';
     const loopback = ['127.0.0.1', '::1', '[::1]', '0.0.0.0'];

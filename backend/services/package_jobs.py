@@ -34,7 +34,7 @@ STEP_PLANS: dict[str, tuple[str, ...]] = {
                 "start", "done"),
     "update": ("requires", "verify", "download", "policy", "wheels", "deps", "backup", "venv",
                "start", "done"),
-    "uninstall": ("stop", "images", "sysdeps", "cleanup", "done"),
+    "uninstall": ("stop", "images", "sysdeps", "cleanup", "data", "done"),
     # Host provisioning (Docker Engine). Not tied to a package id: the owner id
     # is `system:docker`, which cannot collide with a package id.
     "docker-install": ("check", "install", "verify", "done"),
