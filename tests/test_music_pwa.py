@@ -234,6 +234,20 @@ def main() -> int:
                       row["title"] for row in rows if row["status"] == "done"},
                   str(rows))
 
+            # 4c. playlist cards + header report what is already on the device
+            page.click('[data-testid="music-nav-library"]')
+            page.wait_for_timeout(500)
+            badges = page.locator(".mu-card-badge").all_inner_texts()
+            check("playlist cards show a downloaded/total badge",
+                  any("/" in text for text in badges), str(badges))
+            check("a fully downloaded playlist is marked as such",
+                  any("1/1" in text for text in badges), str(badges))
+            page.click('[data-act="open-playlist"][data-id="pl1"]')
+            page.wait_for_selector("[data-playlist-download]", timeout=8000)
+            check("the playlist header shows the offline count",
+                  "1 z 1" in page.inner_text("[data-playlist-download]"),
+                  page.inner_text("[data-playlist-download]"))
+
             # 5. offline reload: shell from the SW, library from the IDB snapshot
             mode["offline"] = True
             context.set_offline(True)

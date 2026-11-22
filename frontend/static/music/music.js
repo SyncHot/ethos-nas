@@ -263,6 +263,56 @@ function updateDownloadsMenu() {
     button.textContent = pending ? `Pobrane · ${pending} w toku` : 'Pobrane';
 }
 
+/** How much of a playlist already lives on this device. */
+function playlistOfflineStats(playlist) {
+    const tracks = (playlist?.tracks || []).filter((track) => track && (track.id || track.file_url));
+    const total = tracks.length;
+    if (!total) return { total: 0, done: 0, pending: 0, percent: 0, state: 'empty' };
+    const statuses = new Map(offline.downloadsSnapshot().map((row) => [row.key, row.status]));
+    let done = 0;
+    let pending = 0;
+    tracks.forEach((track) => {
+        const status = statuses.get(tkey(track));
+        if (status === 'done') done += 1;
+        else if (status === 'queued' || status === 'downloading' || status === 'waiting') pending += 1;
+    });
+    const state = done === total ? 'full' : (done > 0 || pending > 0) ? 'partial' : 'none';
+    return { total, done, pending, percent: Math.round((done / total) * 100), state };
+}
+
+function playlistBadgeHtml(stats) {
+    if (!stats.total) return '';
+    const icon = stats.state === 'full' ? '✓' : '↓';
+    return `<span class="mu-card-badge ${stats.state}">${icon} ${stats.done}/${stats.total}</span>`;
+}
+
+function playlistBadgeTitle(stats) {
+    if (stats.state === 'full') return `Cała playlista (${stats.total}) jest na tym urządzeniu`;
+    if (stats.state === 'partial') return `${stats.done} z ${stats.total} na urządzeniu`
+        + (stats.pending ? `, ${stats.pending} w kolejce` : '');
+    return `Nic z ${stats.total} utworów nie jest jeszcze pobrane`;
+}
+
+/** Refresh the badges in place so a running download does not re-render the view. */
+function updatePlaylistBadges() {
+    document.querySelectorAll('[data-playlist-badge]').forEach((el) => {
+        const playlist = store.playlists.find((item) => item.id === el.dataset.playlistBadge);
+        const stats = playlistOfflineStats(playlist);
+        el.innerHTML = playlistBadgeHtml(stats);
+        el.title = playlistBadgeTitle(stats);
+        el.hidden = !stats.total;
+    });
+    const detail = document.querySelector('[data-playlist-download]');
+    if (detail && ui.activePlaylist) {
+        const stats = playlistOfflineStats(ui.activePlaylist);
+        detail.textContent = stats.total
+            ? `${stats.done} z ${stats.total} na urządzeniu${stats.pending ? ` · ${stats.pending} w kolejce` : ''}`
+            : '';
+        const meter = document.querySelector('[data-playlist-meter] i');
+        if (meter) meter.style.width = `${stats.percent}%`;
+    }
+}
+
 function setNet(offlineMode) {
     if (!els.net) return;
     els.net.hidden = !offlineMode;
@@ -330,6 +380,7 @@ async function startApp() {
     showApp();
     await offline.initOffline(() => {
         updateDownloadsMenu();
+        updatePlaylistBadges();
         if (ui.view === 'downloads' || ui.view === 'settings') renderView();
     });
     await loadState();
@@ -380,6 +431,8 @@ function renderView() {
         case 'podcast': renderPodcastDetail(); break;
         default: renderHome();
     }
+    updatePlaylistBadges();
+    updateDownloadsMenu();
 }
 
 function loadingHtml(text = 'Ładowanie…') {
@@ -413,13 +466,14 @@ function rowHtml(track, { sub = '', badge = '', ctx = 'search', duration = true 
     </div>`;
 }
 
-function cardHtml({ image, label, sub, act, id }) {
+function cardHtml({ image, label, sub, act, id, playlistId = '' }) {
     return `
     <div class="mu-card" data-act="${esc(act)}" data-id="${esc(id || '')}" role="button" tabindex="0">
         ${image ? `<img class="mu-card-cover" src="${esc(image)}" alt="" loading="lazy" decoding="async">`
         : '<span class="mu-card-cover" aria-hidden="true"></span>'}
         <div class="mu-card-label">${esc(label || '')}</div>
         <div class="mu-card-sub">${esc(sub || '')}</div>
+        ${playlistId ? `<span class="mu-card-status" data-playlist-badge="${esc(playlistId)}" hidden></span>` : ''}
     </div>`;
 }
 
@@ -434,6 +488,7 @@ function renderHome() {
         sub: `${playlist.tracks?.length || 0} utworów`,
         act: 'open-playlist',
         id: playlist.id,
+        playlistId: playlist.id,
     })).join('');
 
     els.content.innerHTML = `
@@ -878,6 +933,7 @@ function renderLibrary() {
         sub: `${playlist.tracks?.length || 0} utworów`,
         act: 'open-playlist',
         id: playlist.id,
+        playlistId: playlist.id,
     })).join('')}</div>` : emptyHtml('Nie masz jeszcze playlist.')}
         ${store.sharedPlaylists.length ? `<h2 class="mu-section-title">Udostępnione Tobie</h2>${store.sharedPlaylists.map((grant) => `
             <div class="mu-row" data-act="open-shared" data-id="${esc(grant.id || '')}" role="button" tabindex="0">
@@ -903,7 +959,8 @@ async function renderPlaylistDetail() {
             <div>
                 <div class="mu-detail-label">${readOnly ? 'Udostępniona playlista' : 'Playlista'}</div>
                 <div class="mu-detail-title">${esc(playlist.name || 'Playlista')}</div>
-                <div class="mu-detail-meta">${tracks.length} utworów · ${downloaded} na urządzeniu</div>
+                <div class="mu-detail-meta">${tracks.length} utworów · <span data-playlist-download>${downloaded} z ${tracks.length} na urządzeniu</span></div>
+                ${tracks.length ? `<div class="mu-meter mu-detail-meter" data-playlist-meter><i style="width:${Math.round((downloaded / tracks.length) * 100)}%"></i></div>` : ''}
             </div>
         </div>
         <div class="mu-detail-actions">

@@ -10,6 +10,16 @@ All notable, user-visible changes to EthOS NAS are documented here.
   of runtime changes: skill `release-tag-changelog`.
 
 ## [Unreleased]
+
+## [2.19.1] - 2026-11-22
+
+### Added
+
+- **Music: an offline badge on every playlist.** Playlist cards (Home and Library)
+  and the playlist header show how many tracks are already on the phone
+  (`✓ 12/12`, `↓ 4/12`) and how many are still queued. It updates while downloads
+  run, so you can tell at a glance what will play without the NAS.
+
 ## [2.19.0] - 2026-11-22
 
 ### Added
@@ -30,6 +40,7 @@ All notable, user-visible changes to EthOS NAS are documented here.
 - **No more lingering “Tasks 1”** on the Videos home page: the finished global
   progress row is dismissed after a few seconds (the Downloads sheet keeps the
   record).
+
 ## [2.18.1] - 2026-11-22
 
 ### Changed

@@ -44,6 +44,11 @@ The list is refreshed whenever the app comes back to the foreground (throttled
 to once per 15 s) and when the connection returns, so a playlist edited on the
 desktop starts downloading on the phone without reopening the app.
 
+Every playlist shows how much of it is already on the device: a badge on the
+card (Home and Library) and a counter + meter in the playlist header —
+`✓ 12/12` when complete, `↓ 4/12` while some tracks are missing or queued. It
+updates in place while downloads run, and each row keeps its own `offline` tag.
+
 ### Liked is the playlist „Polubione”
 
 There is no separate liked list any more: the heart adds the track to a real
