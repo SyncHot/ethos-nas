@@ -11,6 +11,8 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.14.0] - 2026-11-22
+
 ### Added
 
 - **Share with other users (view-only).** A new **Sharing** app, a Settings →
@@ -21,6 +23,13 @@ All notable, user-visible changes to EthOS NAS are documented here.
   be shared. Recipients are notified with a targeted “Shared with you” event.
   Photos/Video/Music/Books show a “Shared with me” section. Spec
   `docs/sharing.md`; API `/api/sharing`.
+
+### Fixed
+
+- **Dead Favorites disappear.** Files drops starred folders that no longer exist
+  from the sidebar instead of keeping phantom links forever; a favorite on an
+  unplugged USB/network volume is kept (dimmed, “not mounted”) and returns when
+  the volume comes back. Deleting a folder in Files refreshes the list at once.
 
 ## [2.13.3] - 2026-11-22
 
