@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T09:58:19+00:00",
+  "generated_at": "2026-11-22T10:12:20+00:00",
   "latest": {
-    "version": "2.13.2",
-    "git_sha": "cf4ff5c",
-    "git_sha_full": "cf4ff5c12e55eabd3796b3f8775458d76da4dc03",
-    "build": 112,
-    "released_at": "2026-11-22T09:58:19+00:00",
-    "notes": "Movies with Dolby Digital Plus 5.1(side) audio (WEB-DL rips) play again: AAC is normalised to a standard 5.1/7.1 layout so Chrome accepts the stream. The player logs the real error, retries once and shows the reason; a crashed encoder is logged with its ffmpeg stderr."
+    "version": "2.13.3",
+    "git_sha": "b6f4019",
+    "git_sha_full": "b6f401957c4e9fb40a46863fa39fcf48c505707a",
+    "build": 115,
+    "released_at": "2026-11-22T10:12:20+00:00",
+    "notes": "Playback in every browser: the player negotiates the audio codec with the server (AAC, Opus, or video-only with a notice) and always uses hls.js when Media Source is available, so Safari/Android Chrome stop failing on the bounded live window."
   },
   "releases": [
+    {
+      "version": "2.13.3",
+      "git_sha": "b6f4019",
+      "git_sha_full": "b6f401957c4e9fb40a46863fa39fcf48c505707a",
+      "build": 115,
+      "released_at": "2026-11-22T10:12:20+00:00",
+      "notes": "Playback in every browser: the player negotiates the audio codec with the server (AAC, Opus, or video-only with a notice) and always uses hls.js when Media Source is available, so Safari/Android Chrome stop failing on the bounded live window."
+    },
     {
       "version": "2.13.2",
       "git_sha": "cf4ff5c",
@@ -201,14 +209,6 @@
       "build": 61,
       "released_at": "2026-11-20T14:06:07+00:00",
       "notes": "Setup: a freshly flashed appliance no longer asks for a code on its own network — just pick the admin password"
-    },
-    {
-      "version": "2.4.1",
-      "git_sha": "8484f2c",
-      "git_sha_full": "8484f2cc40821cc0aae83666b865c95f94889f23",
-      "build": 58,
-      "released_at": "2026-11-20T13:01:19+00:00",
-      "notes": "Setup: the 'EthOS is set up' notification now appears after claiming the appliance"
     }
   ]
 }
