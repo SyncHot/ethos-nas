@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-21T12:37:06+00:00",
+  "generated_at": "2026-11-22T06:31:40+00:00",
   "latest": {
-    "version": "2.6.8",
-    "git_sha": "276db5a",
-    "git_sha_full": "276db5a018d6c2a41c9dc6f0fdcd59411fe2e6e2",
-    "build": 79,
-    "released_at": "2026-11-21T12:37:06+00:00",
-    "notes": "First-run setup asks for a username and password only — the setup code is gone from the wizard by default"
+    "version": "2.7.0",
+    "git_sha": "a19bf6b",
+    "git_sha_full": "a19bf6bdb8c7adb3bfbcc68a0c4f421c1e346a76",
+    "build": 81,
+    "released_at": "2026-11-22T06:31:40+00:00",
+    "notes": "Users: create, edit, disable and delete accounts from Settings, with immediate session revocation"
   },
   "releases": [
+    {
+      "version": "2.7.0",
+      "git_sha": "a19bf6b",
+      "git_sha_full": "a19bf6bdb8c7adb3bfbcc68a0c4f421c1e346a76",
+      "build": 81,
+      "released_at": "2026-11-22T06:31:40+00:00",
+      "notes": "Users: create, edit, disable and delete accounts from Settings, with immediate session revocation"
+    },
     {
       "version": "2.6.8",
       "git_sha": "276db5a",
@@ -201,14 +209,6 @@
       "build": 25,
       "released_at": "2026-11-17T18:02:51+00:00",
       "notes": "Download Manager: Clear failed removes errored records and their leftover .part data without touching finished files."
-    },
-    {
-      "version": "2.3.3",
-      "git_sha": "9795c3c",
-      "git_sha_full": "9795c3c10210200d4e16f51a704db4b21cb6ed38",
-      "build": 23,
-      "released_at": "2026-11-17T17:47:10+00:00",
-      "notes": "Files: download a folder as a ZIP archive from the folder context menu; the UI now says when the archive is being prepared."
     }
   ]
 }
