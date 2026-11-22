@@ -70,6 +70,10 @@ SETTINGS_TESTIDS = (
     "apk-link-moments",
     "apk-link-music",
     "apk-link-video",
+    "settings-users-add",
+    "settings-users-refresh",
+    "settings-users-table",
+    "settings-users-helper-note",
 )
 
 HEX_COLOUR = re.compile(r"#[0-9a-fA-F]{3,8}\b")

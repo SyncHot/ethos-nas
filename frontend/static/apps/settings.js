@@ -7,7 +7,7 @@ import { escapeAttr, escapeHtml, formatBytes } from '../core/utils.js';
 import { uiIcon } from '../core/icons.js';
 import { apiRequest } from '../core/api.js';
 import { notify } from '../core/notification-center.js';
-import { showAlert, showConfirm } from '../core/modal.js';
+import { showAlert, showConfirm, showFormModal } from '../core/modal.js';
 import { showRestartOverlay } from '../core/window-manager.js';
 import { startTask } from '../core/progress.js';
 import { skeletonRows, emptyState, errorState } from '../core/states.js';
@@ -25,7 +25,7 @@ const SECTIONS = [
     { id: 'overview', label: 'Health', title: 'System Health', subtitle: 'Health checks and system alerts at a glance.' },
     { id: 'updates', label: 'Updates', title: 'Updates', subtitle: 'Core releases and the Android apps.' },
     { id: 'maintenance', label: 'Maintenance', title: 'Maintenance', subtitle: 'Caches, health thresholds and the danger zone.' },
-    { id: 'users', label: 'Users', title: 'User Accounts', subtitle: 'Accounts imported from Linux through PAM.' },
+    { id: 'users', label: 'Users', title: 'User Accounts', subtitle: 'Create accounts, roles and passwords. Each account is a Linux user.' },
     { id: 'security', label: 'Security', title: 'Security', subtitle: 'Your session, API key and hardening notes.' },
     { id: 'appearance', label: 'Appearance', title: 'Appearance', subtitle: 'Desktop wallpaper for this account.' },
     { id: 'about', label: 'About', title: 'About', subtitle: 'Build identity and environment self-check.' },
@@ -628,33 +628,45 @@ function _healthConfigBody() {
 // ════════════════════════════════════════════════════════════════════════════
 
 async function renderUsers(isCurrent) {
-    const data = await apiRequest('/api/users');
+    let data;
+    try {
+        data = await apiRequest('/api/users');
+    } catch (err) {
+        logError('Settings: user accounts unavailable', err?.detail || err?.message);
+        if (!isCurrent()) return;
+        shell.view.innerHTML = `
+            <section class="ui-panel">
+                <h2>${uiIcon('users', 13)} Accounts</h2>
+                <div class="ui-panel-body">
+                    <p class="ui-muted">Could not load accounts — ${escapeHtml(err?.detail || err?.message || 'unknown error')}</p>
+                </div>
+            </section>`;
+        shell.setStatus('Accounts unavailable', 'bad');
+        return;
+    }
     if (!isCurrent()) return;
 
     const users = data.users || [];
+    const me = _tokenInfo().username;
     const rows = users.length
-        ? users.map((user) => {
-            const roleTone = user.role === 'admin' ? 'is-warn' : 'is-info';
-            return `<tr>
-                <td>${uiIcon('users', 13)} ${escapeHtml(user.username || '—')}</td>
-                <td><span class="ui-tag ${roleTone}">${escapeHtml(user.role || 'user')}</span></td>
-                <td>${user.created_at ? escapeHtml(new Date(user.created_at).toLocaleDateString()) : '—'}</td>
-                <td>${user.last_login ? escapeHtml(new Date(user.last_login).toLocaleString()) : '—'}</td>
-            </tr>`;
-        }).join('')
-        : `<tr><td colspan="4">${emptyState({ title: 'No users configured', hint: 'Accounts appear after the first PAM login.' })}</td></tr>`;
+        ? users.map((user) => _userRow(user, me)).join('')
+        : `<tr><td colspan="7">${emptyState({ title: 'No accounts', hint: 'Create the first account with “Add user”.' })}</td></tr>`;
 
     shell.view.innerHTML = `
         <section class="ui-panel">
             <div class="ui-toolbar">
                 <div>
                     <h2>${uiIcon('users', 13)} Accounts</h2>
-                    <p class="ui-muted">${users.length} user${users.length === 1 ? '' : 's'} registered</p>
+                    <p class="ui-muted">${users.length} account${users.length === 1 ? '' : 's'} · Linux accounts authenticated through PAM</p>
+                </div>
+                <div class="ui-row">
+                    <button class="ui-btn small" data-action="users-refresh" data-testid="settings-users-refresh">${uiIcon('refresh', 12)} Refresh</button>
+                    <button class="ui-btn small primary" data-action="users-add" data-testid="settings-users-add">${uiIcon('plus', 12)} Add user</button>
                 </div>
             </div>
             <div class="ui-panel-body ui-table-wrap">
-                <table class="ui-table">
-                    <thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Last login</th></tr></thead>
+                <table class="ui-table" data-testid="settings-users-table">
+                    <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Home</th><th>Samba</th><th>Last login</th><th>Actions</th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table>
             </div>
@@ -662,12 +674,273 @@ async function renderUsers(isCurrent) {
 
         <section class="ui-panel">
             <h2>${uiIcon('info', 13)} How accounts work</h2>
-            <p class="ui-muted ui-panel-body">Users are imported automatically from Linux system accounts through PAM.
-                The first successful login registers the account with the <code class="ui-code">user</code> role;
-                promote it to <code class="ui-code">admin</code> in the users store if it needs privileged actions.</p>
+            <div class="ui-panel-body ui-list">
+                <div class="ui-list-row"><span class="ui-tag is-info">linux</span><span class="ui-list-row-main">Every EthOS account is a Linux account. PAM authenticates it, its home directory is <code class="ui-code">/home/&lt;user&gt;</code>, and the same name is reused for Samba shares.</span></div>
+                <div class="ui-list-row"><span class="ui-tag is-warn">roles</span><span class="ui-list-row-main"><code class="ui-code">admin</code> has full system access. <code class="ui-code">user</code> is limited to its own home plus <code class="ui-code">/mnt</code> and <code class="ui-code">/media</code>.</span></div>
+                <div class="ui-list-row" data-testid="settings-users-helper-note"><span class="ui-tag is-warn">setup</span><span class="ui-list-row-main">On a server updated from an older release, run <code class="ui-code">sudo bash setup_scripts/setup_service.sh</code> once so the root-owned account helper is installed.</span></div>
+            </div>
         </section>`;
 
+    shell.view.querySelector('[data-action="users-add"]')?.addEventListener('click', () => _openCreateUser());
+    shell.view.querySelector('[data-action="users-refresh"]')?.addEventListener('click', () => renderSection('users'));
+
+    shell.view.querySelectorAll('[data-user-action]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const user = users.find((item) => item.username === button.dataset.user);
+            if (!user) return;
+            const action = button.dataset.userAction;
+            if (action === 'role') _openRoleEditor(user);
+            else if (action === 'password') _openPasswordReset(user);
+            else if (action === 'status') _toggleUserStatus(user);
+            else if (action === 'samba') _openSambaPassword(user);
+            else if (action === 'delete') _openDeleteUser(user);
+        });
+    });
+
     shell.setStatus(`${users.length} account(s)`, 'ok');
+}
+
+function _userRow(user, me) {
+    const name = String(user.username || '');
+    const isMe = name === me;
+    const status = String(user.status || 'active');
+    const statusTone = status === 'active' ? 'is-ok' : (status === 'deleted' ? 'is-bad' : 'is-warn');
+    const roleTone = user.role === 'admin' ? 'is-warn' : 'is-info';
+    const samba = user.samba === true
+        ? '<span class="ui-tag is-ok">enabled</span>'
+        : (user.samba === false ? '<span class="ui-tag">none</span>' : '<span class="ui-muted">n/a</span>');
+    const home = user.home ? escapeHtml(user.home) : '<span class="ui-muted">no Linux account</span>';
+    const disabled = status !== 'active';
+    return `<tr data-testid="settings-users-row-${escapeAttr(name)}">
+        <td>${uiIcon('users', 13)} ${escapeHtml(name)} ${isMe ? '<span class="ui-tag is-info">you</span>' : ''}</td>
+        <td><span class="ui-tag ${roleTone}">${escapeHtml(user.role || 'user')}</span></td>
+        <td><span class="ui-tag ${statusTone}">${escapeHtml(status)}</span></td>
+        <td class="path">${home}</td>
+        <td>${samba}</td>
+        <td>${user.last_login ? escapeHtml(_fmtDate(user.last_login)) : '<span class="ui-muted">never</span>'}</td>
+        <td class="ui-row">
+            ${isMe ? '' : `<button class="ui-btn small" data-user-action="role" data-user="${escapeAttr(name)}" data-testid="settings-users-role-${escapeAttr(name)}">Role</button>`}
+            <button class="ui-btn small" data-user-action="password" data-user="${escapeAttr(name)}" data-testid="settings-users-password-${escapeAttr(name)}">Password</button>
+            ${isMe ? '' : `<button class="ui-btn small" data-user-action="status" data-user="${escapeAttr(name)}" data-testid="settings-users-status-${escapeAttr(name)}">${disabled ? 'Enable' : 'Disable'}</button>`}
+            <button class="ui-btn small" data-user-action="samba" data-user="${escapeAttr(name)}" data-testid="settings-users-samba-${escapeAttr(name)}">Samba</button>
+            ${isMe ? '' : `<button class="ui-btn small danger" data-user-action="delete" data-user="${escapeAttr(name)}" data-testid="settings-users-delete-${escapeAttr(name)}">Delete</button>`}
+        </td>
+    </tr>`;
+}
+
+function _passwordFieldsHtml() {
+    return `
+        <div class="ui-field full"><label>Password</label>
+            <input class="ui-input" type="password" name="password" autocomplete="new-password" aria-label="Password" data-testid="settings-users-password-input"></div>
+        <div class="ui-field full"><label>Confirm password</label>
+            <input class="ui-input" type="password" name="confirm" autocomplete="new-password" aria-label="Confirm password" data-testid="settings-users-password-confirm"></div>`;
+}
+
+function _passwordProblem(values) {
+    const password = String(values.password || '');
+    if (password.length < 10) return 'Use at least 10 characters.';
+    if (password !== values.confirm) return 'The passwords do not match.';
+    if (password.trim() !== password) return 'Do not start or end the password with whitespace.';
+    if (password.includes(':')) return 'The password must not contain a colon.';
+    if (!/[A-Za-z]/.test(password) || !/[^A-Za-z]/.test(password)) {
+        return 'Mix letters with digits or symbols — one character class is not enough.';
+    }
+    return '';
+}
+
+function _usernameProblem(value) {
+    const name = String(value || '').trim();
+    if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(name)) {
+        return 'Use lowercase letters, digits, - and _ (max 32 characters).';
+    }
+    if (name.endsWith('-')) return 'The username must not end with "-".';
+    return '';
+}
+
+function _userError(err) {
+    return err?.detail || err?.message || 'The operation failed.';
+}
+
+async function _openCreateUser() {
+    await showFormModal({
+        title: 'Add user',
+        width: '520px',
+        confirmLabel: 'Create user',
+        bodyHtml: `
+            <div class="ui-fields">
+                <div class="ui-field full"><label>Username</label>
+                    <input class="ui-input" name="username" autocomplete="off" aria-label="Username" data-testid="settings-users-username" autofocus></div>
+                <div class="ui-field"><label>Role</label>
+                    <select class="ui-select" name="role" aria-label="Role" data-testid="settings-users-role-select">
+                        <option value="user">User</option>
+                        <option value="admin">Admin</option>
+                    </select></div>
+                <div class="ui-field"><label>Home directory</label>
+                    <input class="ui-input" readonly disabled aria-label="Home directory (fixed)" value="/home/username"></div>
+                ${_passwordFieldsHtml()}
+                <label class="ui-check full"><input type="checkbox" name="samba" checked aria-label="Also set the Samba password"> Also set the Samba password</label>
+            </div>`,
+        validate(values) {
+            return _usernameProblem(values.username) || _passwordProblem(values);
+        },
+        async onSubmit(values, { setError }) {
+            try {
+                const result = await apiRequest('/api/users', {
+                    method: 'POST',
+                    body: {
+                        username: String(values.username || '').trim(),
+                        password: values.password,
+                        role: values.role,
+                        samba_password: values.samba ? values.password : '',
+                    },
+                });
+                if (result?.samba_error) {
+                    notify({ kind: 'warning', title: 'Samba password', message: result.samba_error });
+                } else {
+                    notify({ kind: 'success', title: 'Account created', message: String(values.username || '').trim() });
+                }
+                renderSection('users');
+            } catch (err) {
+                logError('Settings: create user failed', err?.detail || err?.message);
+                setError(_userError(err));
+                return false;
+            }
+            return true;
+        },
+    });
+}
+
+async function _openRoleEditor(user) {
+    const options = ['user', 'admin'].map((role) => (
+        `<option value="${role}"${user.role === role ? ' selected' : ''}>${role[0].toUpperCase() + role.slice(1)}</option>`
+    )).join('');
+    await showFormModal({
+        title: `Role — ${user.username}`,
+        confirmLabel: 'Save role',
+        bodyHtml: `
+            <div class="ui-field">
+                <label>Role</label>
+                <select class="ui-select" name="role" aria-label="Role" data-testid="settings-users-role-editor">${options}</select>
+            </div>
+            <p class="ui-muted">Admins have full system access. Users are limited to their home plus /mnt and /media.</p>`,
+        async onSubmit(values, { setError }) {
+            try {
+                await apiRequest(`/api/users/${encodeURIComponent(user.username)}`, {
+                    method: 'PATCH', body: { role: values.role },
+                });
+                notify({ kind: 'success', title: 'Role updated', message: `${user.username} is now ${values.role}` });
+                renderSection('users');
+            } catch (err) {
+                logError('Settings: role update failed', err?.detail || err?.message);
+                setError(_userError(err));
+                return false;
+            }
+            return true;
+        },
+    });
+}
+
+async function _openPasswordReset(user) {
+    await showFormModal({
+        title: `Reset password — ${user.username}`,
+        confirmLabel: 'Set password',
+        bodyHtml: `<div class="ui-fields">${_passwordFieldsHtml()}</div>
+            <p class="ui-muted">The new password is written directly to the Linux account.</p>`,
+        validate(values) { return _passwordProblem(values); },
+        async onSubmit(values, { setError }) {
+            try {
+                await apiRequest(`/api/users/${encodeURIComponent(user.username)}/password`, {
+                    method: 'POST', body: { password: values.password },
+                });
+                notify({ kind: 'success', title: 'Password set', message: user.username });
+            } catch (err) {
+                logError('Settings: password reset failed', err?.detail || err?.message);
+                setError(_userError(err));
+                return false;
+            }
+            return true;
+        },
+    });
+}
+
+async function _toggleUserStatus(user) {
+    const disabling = String(user.status || 'active') === 'active';
+    const ok = await showConfirm(
+        disabling ? 'Disable account' : 'Enable account',
+        disabling
+            ? `${user.username} will not be able to sign in (web, SSH or Samba). Its files stay untouched.`
+            : `${user.username} will be able to sign in again.`,
+        { danger: disabling },
+    );
+    if (!ok) return;
+    try {
+        await apiRequest(`/api/users/${encodeURIComponent(user.username)}`, {
+            method: 'PATCH', body: { status: disabling ? 'disabled' : 'active' },
+        });
+        notify({ kind: 'success', title: disabling ? 'Account disabled' : 'Account enabled', message: user.username });
+        renderSection('users');
+    } catch (err) {
+        logError('Settings: status update failed', err?.detail || err?.message);
+        notify({ kind: 'error', title: 'Status update failed', message: _userError(err) });
+    }
+}
+
+async function _openSambaPassword(user) {
+    await showFormModal({
+        title: `Samba password — ${user.username}`,
+        confirmLabel: 'Set Samba password',
+        bodyHtml: `<div class="ui-fields">${_passwordFieldsHtml()}</div>
+            <p class="ui-muted">Creates or updates only the Samba credentials for this Linux account.</p>`,
+        validate(values) { return _passwordProblem(values); },
+        async onSubmit(values, { setError }) {
+            try {
+                await apiRequest(`/api/shares/accounts/${encodeURIComponent(user.username)}/password`, {
+                    method: 'PUT', body: { password: values.password },
+                });
+                notify({ kind: 'success', title: 'Samba password set', message: user.username });
+                renderSection('users');
+            } catch (err) {
+                logError('Settings: Samba password failed', err?.detail || err?.message);
+                setError(_userError(err));
+                return false;
+            }
+            return true;
+        },
+    });
+}
+
+async function _openDeleteUser(user) {
+    await showFormModal({
+        title: `Delete ${user.username}`,
+        confirmLabel: 'Delete account',
+        danger: true,
+        bodyHtml: `
+            <p class="ui-muted">This removes the Linux account and its Samba credentials. Signing in stops immediately.</p>
+            <div class="ui-list ui-panel-body">
+                <label class="ui-check"><input type="checkbox" name="remove_home" aria-label="Delete the home directory as well"> Delete the home directory as well</label>
+                <label class="ui-check"><input type="checkbox" name="remove_ethos_state" checked aria-label="Delete this account's EthOS data"> Delete this account's EthOS data (libraries, trash, wallpaper, favorites, share links)</label>
+            </div>`,
+        async onSubmit(values, { setError }) {
+            const query = `?remove_home=${values.remove_home ? 'true' : 'false'}`
+                + `&remove_ethos_state=${values.remove_ethos_state ? 'true' : 'false'}`;
+            try {
+                const result = await apiRequest(`/api/users/${encodeURIComponent(user.username)}${query}`, {
+                    method: 'DELETE',
+                });
+                if (result?.samba_error) {
+                    notify({ kind: 'warning', title: 'Samba credentials', message: result.samba_error });
+                } else {
+                    notify({ kind: 'success', title: 'Account deleted', message: user.username });
+                }
+                renderSection('users');
+            } catch (err) {
+                logError('Settings: account deletion failed', err?.detail || err?.message);
+                setError(_userError(err));
+                return false;
+            }
+            return true;
+        },
+    });
 }
 
 // ════════════════════════════════════════════════════════════════════════════

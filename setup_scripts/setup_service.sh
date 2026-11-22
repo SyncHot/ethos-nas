@@ -15,9 +15,10 @@
 #      inventory (shares + firewall + USB + power), visudo-validated before install
 #   4. Privileged helpers /usr/local/bin/ethos-usb-partition (USB only),
 #      /usr/local/bin/ethos-docker-install (Docker Engine provisioning),
-#      /usr/local/bin/ethos-set-password (first-run setup claim), and
-#      /usr/local/bin/ethos-samba-accounts (fixed Samba passdb operations), plus
-#      shadow-group membership (pam_unix needs /etc/shadow to verify PAM logins)
+#      /usr/local/bin/ethos-set-password (first-run setup claim),
+#      /usr/local/bin/ethos-samba-accounts (fixed Samba passdb operations) and
+#      /usr/local/bin/ethos-user-accounts (create/lock/delete Linux accounts),
+#      plus shadow-group membership (pam_unix needs /etc/shadow to verify PAM logins)
 #   5. Docker group membership when /var/run/docker.sock exists (no sudo for docker).
 #      ETHOS_INSTALL_DOCKER=1 installs Docker Engine first, so one restart covers it.
 #   6. Removes the old per-feature files ethos-nas-{shares,firewall,usb}
@@ -82,6 +83,10 @@ WRAPPER_BIN="/usr/local/bin/ethos-usb-partition"
 DOCKER_HELPER_BIN="/usr/local/bin/ethos-docker-install"
 SYSTEM_DEPS_HELPER_BIN="/usr/local/bin/ethos-system-deps"
 SAMBA_ACCOUNTS_HELPER_BIN="/usr/local/bin/ethos-samba-accounts"
+# Account lifecycle (deploy/ethos-user-accounts): creates, locks and deletes
+# Linux accounts for the Settings → Users screen. Argument-free sudo rule; the
+# helper validates usernames/passwords and refuses system accounts.
+USER_ACCOUNTS_HELPER_BIN="/usr/local/bin/ethos-user-accounts"
 # First-run setup (deploy/ethos-set-password): sets the admin password the
 # operator chose in the browser wizard. Usable only while
 # /etc/ethos-nas/setup.json exists and is unclaimed.
@@ -115,9 +120,10 @@ if [ "${UNINSTALL}" = 1 ]; then
     rm -f "${DOCKER_HELPER_BIN}"
     rm -f "${SYSTEM_DEPS_HELPER_BIN}"
     rm -f "${SAMBA_ACCOUNTS_HELPER_BIN}"
+    rm -f "${USER_ACCOUNTS_HELPER_BIN}"
     rm -f "${SET_PASSWORD_HELPER_BIN}"
     rm -f "${UPDATE_HELPER_BIN}" "${UPDATE_CONF}" "${UPDATE_PUBKEY_PEM}"
-    echo "✓ removed: ${UNIT_DST}, ${SUDOERS_FILE}, ${WRAPPER_BIN}, ${DOCKER_HELPER_BIN}, ${SYSTEM_DEPS_HELPER_BIN}, ${SAMBA_ACCOUNTS_HELPER_BIN}, ${SET_PASSWORD_HELPER_BIN}, ${UPDATE_HELPER_BIN}"
+    echo "✓ removed: ${UNIT_DST}, ${SUDOERS_FILE}, ${WRAPPER_BIN}, ${DOCKER_HELPER_BIN}, ${SYSTEM_DEPS_HELPER_BIN}, ${SAMBA_ACCOUNTS_HELPER_BIN}, ${USER_ACCOUNTS_HELPER_BIN}, ${SET_PASSWORD_HELPER_BIN}, ${UPDATE_HELPER_BIN}"
     echo "  user '${TARGET_USER}' kept (remove manually with: userdel ${TARGET_USER})"
     exit 0
 fi
@@ -214,8 +220,6 @@ TEE_BIN="$(command -v tee || true)"
 SYSTEMCTL_BIN="$(command -v systemctl || true)"
 UFW_BIN="$(command -v ufw || true)"
 JOURNALCTL_BIN="$(command -v journalctl || true)"
-IPTABLES_BIN="$(command -v iptables || true)"
-IPTABLES_SAVE_BIN="$(command -v iptables-save || true)"
 CAT_BIN="$(command -v cat || true)"
 
 if [ -z "${TEE_BIN}" ] || [ -z "${SYSTEMCTL_BIN}" ]; then
@@ -231,6 +235,10 @@ RULES=(
     # Samba passdb operations accept a strict JSON request on stdin; the root
     # helper validates the action and existing Unix account before invoking tools.
     "${TARGET_USER} ALL=(root) NOPASSWD: ${SAMBA_ACCOUNTS_HELPER_BIN}"
+    # Linux account lifecycle (routers/users.py + deploy/ethos-user-accounts).
+    # Argument-free: one JSON request on stdin, exact key set per action,
+    # uid >= 1000 only, reserved names refused, passwords only on stdin.
+    "${TARGET_USER} ALL=(root) NOPASSWD: ${USER_ACCOUNTS_HELPER_BIN}"
     # Power — system buttons (see routers/system.py; no wildcards in args)
     "${TARGET_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} reboot"
     "${TARGET_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_BIN} shutdown"
@@ -262,12 +270,6 @@ done
 RULES+=("${TARGET_USER} ALL=(root) NOPASSWD: ${UPDATE_HELPER_BIN}")
 if [ -n "${UFW_BIN}" ]; then
     RULES+=("${TARGET_USER} ALL=(root) NOPASSWD: ${UFW_BIN}")
-fi
-if [ -n "${IPTABLES_BIN}" ]; then
-    RULES+=("${TARGET_USER} ALL=(root) NOPASSWD: ${IPTABLES_BIN}")
-fi
-if [ -n "${IPTABLES_SAVE_BIN}" ]; then
-    RULES+=("${TARGET_USER} ALL=(root) NOPASSWD: ${IPTABLES_SAVE_BIN}")
 fi
 if [ -n "${JOURNALCTL_BIN}" ]; then
     RULES+=("${TARGET_USER} ALL=(root) NOPASSWD: ${JOURNALCTL_BIN}")
@@ -527,6 +529,13 @@ SAMBA_ACCOUNTS_SRC="${REPO_DIR}/deploy/ethos-samba-accounts"
 if [ -f "${SAMBA_ACCOUNTS_SRC}" ]; then
     install -m 0755 -o root -g root "${SAMBA_ACCOUNTS_SRC}" "${SAMBA_ACCOUNTS_HELPER_BIN}"
     echo "✓ ${SAMBA_ACCOUNTS_HELPER_BIN} installed (Samba passdb helper)"
+fi
+
+# ── 4d-ter-bis. Account lifecycle helper (create/lock/delete Linux users) ──
+USER_ACCOUNTS_SRC="${REPO_DIR}/deploy/ethos-user-accounts"
+if [ -f "${USER_ACCOUNTS_SRC}" ]; then
+    install -m 0755 -o root -g root "${USER_ACCOUNTS_SRC}" "${USER_ACCOUNTS_HELPER_BIN}"
+    echo "✓ ${USER_ACCOUNTS_HELPER_BIN} installed (Linux account lifecycle helper)"
 fi
 
 # ── 4d-quater. First-run setup helper (claim the appliance in the browser) ──

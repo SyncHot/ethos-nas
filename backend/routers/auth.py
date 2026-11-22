@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -23,10 +24,16 @@ from backend.routers.auth_pam import (
     pam_authenticate, seed_admin_from_system, ensure_user_registered, update_last_login,
     ensure_api_key, find_user_by_api_key, regenerate_api_key,
 )
-from backend.services import users_store
+from backend.services import user_accounts, users_store
 
 logger = logging.getLogger("ethos-nas.routers.auth")
 router = APIRouter()
+
+# Self-service password changes: at most 5 wrong current passwords per 10 min.
+_PASSWORD_FAILURES: dict[str, list[float]] = {}
+_PASSWORD_LOCK = threading.Lock()
+_PASSWORD_WINDOW_SECONDS = 600
+_PASSWORD_MAX_FAILURES = 5
 
 
 def require_admin(request: Request) -> dict:
@@ -133,6 +140,10 @@ async def login(req: _LoginRequest) -> dict:
         if not user:
             logger.warning("Login failed: unknown API key")
             raise HTTPException(status_code=401, detail="Invalid API key")
+        if not users_store.is_active(user):
+            logger.warning("Login refused for %s: account is %s",
+                           user.get("username"), users_store.status_of(user))
+            raise HTTPException(status_code=403, detail="Account is disabled")
         token = _create_token(user["id"], user["username"], user.get("role", "user"))
         logger.info("User %s logged in via API key", user["username"])
         return {
@@ -154,6 +165,10 @@ async def login(req: _LoginRequest) -> dict:
     users_data = users_store.load()
 
     user = next((u for u in users_data if u.get("username") == req.username), None)
+    if user is not None and not users_store.is_active(user):
+        logger.warning("Login refused for %s: account is %s",
+                       req.username, users_store.status_of(user))
+        raise HTTPException(status_code=403, detail="Account is disabled")
     if not user:
         # Auto-register new PAM-validated Linux user with "user" role
         user = ensure_user_registered(req.username, "user")
@@ -213,19 +228,65 @@ async def regen_api_key(authorization: str = Header(default="")) -> dict:
 
 @router.get("/users")
 async def list_users(request: Request) -> dict:
-    """List all users (admin only)."""
+    """List all users (admin only).
+
+    Compatibility alias — the canonical route is GET /api/users (routers/users.py).
+    """
     caller = getattr(request.state, "current_user", None) or {}
     if caller.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-    if not users_store.load():
-        return {"users": [], "total": 0}
-    users = users_store.load()
-
+    accounts = user_accounts.list_accounts(include_deleted=False)
     safe = [
         {
-            "id": u["id"], "username": u["username"], "role": u.get("role", "user"),
+            "id": u.get("id"), "username": u.get("username"),
+            "role": u.get("role") or "user", "status": u.get("status"),
             "created_at": u.get("created_at"), "last_login": u.get("last_login"),
         }
-        for u in users
+        for u in accounts["users"]
     ]
     return {"users": safe, "total": len(safe)}
+
+
+class _PasswordChangeRequest(BaseModel):
+    current_password: str = ""
+    new_password: str = ""
+    model_config = {"extra": "forbid"}
+
+
+@router.post("/password")
+async def change_password(req: _PasswordChangeRequest, request: Request) -> dict:
+    """Change the caller's own password after re-verifying it against PAM."""
+    caller = getattr(request.state, "current_user", None) or {}
+    username = str(caller.get("username") or "")
+    if not username:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    now = time.time()
+    with _PASSWORD_LOCK:
+        attempts = [t for t in _PASSWORD_FAILURES.get(username, [])
+                    if now - t < _PASSWORD_WINDOW_SECONDS]
+        _PASSWORD_FAILURES[username] = attempts
+        if len(attempts) >= _PASSWORD_MAX_FAILURES:
+            raise HTTPException(status_code=429,
+                                detail="Too many attempts; try again in a few minutes")
+
+    if not pam_authenticate(username, req.current_password):
+        with _PASSWORD_LOCK:
+            _PASSWORD_FAILURES.setdefault(username, []).append(now)
+        logger.warning("Password change rejected for %s: wrong current password", username)
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+    try:
+        result = user_accounts.set_password(username, req.new_password, actor=username)
+    except user_accounts.UserPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except user_accounts.UserAccountUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except user_accounts.UserAccountError as exc:
+        logger.error("Password change failed for %s", username, exc_info=True)
+        raise HTTPException(status_code=500, detail="Password change failed") from None
+
+    with _PASSWORD_LOCK:
+        _PASSWORD_FAILURES.pop(username, None)
+    logger.info("User %s changed their password", username)
+    return dict(result, ok=True)

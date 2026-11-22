@@ -141,9 +141,10 @@ def ensure_api_key(username: str) -> str:
                     logger.info("Generated API key for user %s", username)
                 return u["api_key"]
         new_user = {
-            "id": str(len(users) + 1),
+            "id": users_store.new_id(),
             "username": username,
             "role": "user",
+            "status": users_store.STATUS_ACTIVE,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_login": None,
             "source": "api_key_register",
@@ -199,9 +200,10 @@ def ensure_user_registered(username: str, role: str) -> dict:
             if user.get("username") == username:
                 return user
         new_user = {
-            "id": str(len(users) + 1),
+            "id": users_store.new_id(),
             "username": username,
             "role": role,
+            "status": users_store.STATUS_ACTIVE,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_login": None,
             "source": "pam_auto_register",

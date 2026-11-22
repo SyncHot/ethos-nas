@@ -1,0 +1,233 @@
+#!/usr/bin/python3
+"""Narrow root helper for EthOS NAS account lifecycle operations.
+
+EthOS accounts are Linux accounts: PAM decides who can log in, ``pwd`` decides
+the home directory, and Samba reuses the same identity. Creating, locking and
+deleting them needs root (``useradd`` / ``usermod`` / ``userdel`` /
+``chpasswd``), while the web service runs as the unprivileged ``ethos-nas``
+system user. This helper is the single root entry point.
+
+Security boundary — everything below is enforced here, not in the caller:
+
+* no command-line arguments: exactly one JSON request is read from stdin;
+* a bounded request size and an exact key set per action;
+* usernames must match a strict lowercase pattern, must not be reserved and,
+  for operations on an existing account, must resolve to a real interactive
+  user (uid >= 1000) — root and the service account are never touchable;
+* passwords are supplied on stdin (never argv), follow the same policy as the
+  first-run wizard, and are fed to ``chpasswd``;
+* ``create`` refuses an existing name, makes a private group and a bash shell,
+  and grants the service user an ACL on the new home so Files/Photos work;
+* ``delete`` removes the home only when the request explicitly says so.
+
+Runs only as root; ``/etc/sudoers.d/ethos-nas`` grants it argument-free.
+"""
+
+import datetime
+import json
+import os
+import pwd
+import re
+import subprocess
+import sys
+
+SERVICE_USER = "ethos-nas"
+USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+MIN_PASSWORD = 10
+MAX_PASSWORD = 200
+MAX_REQUEST_BYTES = 16384
+COMMAND_TIMEOUT = 30
+
+# Same list as the first-run helper: these names belong to the OS or to EthOS
+# itself; handing one out would break the appliance.
+RESERVED_USERNAMES = frozenset({
+    "root", "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail",
+    "news", "uucp", "proxy", "www-data", "backup", "list", "irc", "gnats",
+    "nobody", "systemd-network", "systemd-resolve", "messagebus", "sshd",
+    "avahi", "ethos-nas", "ethosadmin",
+})
+
+_REQUIRED_KEYS = {
+    "create": frozenset({"action", "username", "password"}),
+    "set_password": frozenset({"action", "username", "password"}),
+    "lock": frozenset({"action", "username"}),
+    "unlock": frozenset({"action", "username"}),
+    "delete": frozenset({"action", "username", "remove_home"}),
+}
+
+
+class HelperError(ValueError):
+    """A request the helper refuses to carry out."""
+
+
+def _username_new(value) -> str:
+    """Validate a login name for a new account (must not exist yet)."""
+    if not isinstance(value, str) or not USERNAME_RE.fullmatch(value):
+        raise HelperError(
+            "Use lowercase letters, digits, '-' and '_' (max 32, not a trailing '-')")
+    if value.endswith("-"):
+        raise HelperError("The username must not end with '-'")
+    if value in RESERVED_USERNAMES:
+        raise HelperError("That username is reserved")
+    try:
+        pwd.getpwnam(value)
+    except KeyError:
+        return value
+    raise HelperError("That username is already taken")
+
+
+def _username_existing(value) -> str:
+    """Validate a login name that must already be an interactive account."""
+    if not isinstance(value, str) or not USERNAME_RE.fullmatch(value):
+        raise HelperError("Invalid username")
+    if value in {"root", SERVICE_USER, "nobody"}:
+        raise HelperError("This account cannot be managed here")
+    try:
+        account = pwd.getpwnam(value)
+    except KeyError:
+        raise HelperError("Linux account not found") from None
+    if account.pw_uid < 1000:
+        raise HelperError("System accounts cannot be managed here")
+    return value
+
+
+def _password(value) -> str:
+    """Same policy as the first-run wizard: length plus two character classes."""
+    if not isinstance(value, str):
+        raise HelperError("Password must be a string")
+    if len(value) < MIN_PASSWORD:
+        raise HelperError(f"Password must be at least {MIN_PASSWORD} characters")
+    if len(value) > MAX_PASSWORD:
+        raise HelperError("Password is too long")
+    if value != value.strip():
+        raise HelperError("Password must not start or end with whitespace")
+    if value.isdigit() or value.isalpha():
+        raise HelperError("Use letters and digits, not just one kind of character")
+    if ":" in value or "\n" in value or "\r" in value:
+        raise HelperError("Password must not contain ':' or a line break")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise HelperError("Password must not contain control characters")
+    return value
+
+
+def _run(args: list[str], *, stdin: str | None = None) -> subprocess.CompletedProcess:
+    try:
+        result = subprocess.run(
+            args, input=stdin, capture_output=True, text=True, timeout=COMMAND_TIMEOUT,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        raise HelperError("Account tooling is unavailable or timed out") from None
+    if result.returncode:
+        raise HelperError(f"Command failed: {args[0]}")
+    return result
+
+
+def _grant_service_access(home: str) -> bool:
+    """Give the unprivileged service user ACL access to a fresh home.
+
+    Mirrors what setup_service.sh does for the admin home: without this, Files,
+    Photos and the editor get 403 for every file the new account owns.
+    """
+    try:
+        pwd.getpwnam(SERVICE_USER)
+    except KeyError:
+        return False  # dev checkout without the service account
+    try:
+        _run(["setfacl", "-m", f"u:{SERVICE_USER}:rwx", home])
+        _run(["setfacl", "-d", "-m", f"u:{SERVICE_USER}:rwx", home])
+        return True
+    except HelperError:
+        # Creation still succeeds — the account is usable over SSH/Samba; only
+        # web file operations would hit a permission error. The caller reports
+        # the warning instead of hiding it.
+        print(f"Warning: could not grant {SERVICE_USER} access to {home}", file=sys.stderr)
+        return False
+
+
+def _create(username: str, password: str) -> dict:
+    _run(["useradd", "-m", "-U", "-s", "/bin/bash", username])
+    try:
+        _run(["chpasswd"], stdin=f"{username}:{password}\n")
+        _run(["chage", "-d", datetime.date.today().isoformat(), username])
+    except HelperError:
+        # Do not leave a half-provisioned account behind without a password.
+        try:
+            _run(["userdel", "-r", username])
+        except HelperError:
+            print("Warning: could not roll back the new account", file=sys.stderr)
+        raise
+    account = pwd.getpwnam(username)
+    acl = _grant_service_access(account.pw_dir)
+    return {"ok": True, "username": username, "uid": account.pw_uid,
+            "home": account.pw_dir, "acl": acl}
+
+
+def handle_request(request) -> dict:
+    if not isinstance(request, dict):
+        raise HelperError("Request must be a JSON object")
+    action = request.get("action")
+    required = _REQUIRED_KEYS.get(action) if isinstance(action, str) else None
+    if required is None:
+        raise HelperError("Unknown account operation")
+    if frozenset(request) != required:
+        raise HelperError("Invalid request")
+
+    if action == "create":
+        username = _username_new(request.get("username"))
+        password = _password(request.get("password"))
+        return _create(username, password)
+
+    if action == "set_password":
+        username = _username_existing(request.get("username"))
+        password = _password(request.get("password"))
+        _run(["chpasswd"], stdin=f"{username}:{password}\n")
+        _run(["chage", "-d", datetime.date.today().isoformat(), username])
+        return {"ok": True, "username": username}
+
+    if action in {"lock", "unlock"}:
+        username = _username_existing(request.get("username"))
+        _run(["usermod", "-L" if action == "lock" else "-U", username])
+        return {"ok": True, "username": username}
+
+    # delete
+    username = _username_existing(request.get("username"))
+    remove_home = request.get("remove_home")
+    if not isinstance(remove_home, bool):
+        raise HelperError("remove_home must be true or false")
+    args = ["userdel"]
+    if remove_home:
+        args.append("-r")
+    args.append(username)
+    try:
+        _run(args)
+    except HelperError as exc:
+        raise HelperError(
+            "Account deletion failed — the user may still have running processes") from exc
+    return {"ok": True, "username": username, "home_removed": remove_home}
+
+
+def main() -> int:
+    if os.geteuid() != 0:
+        print("Account helper must run as root", file=sys.stderr)
+        return 1
+    if len(sys.argv) != 1:
+        print("This helper accepts requests only through stdin", file=sys.stderr)
+        return 1
+    raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
+    if len(raw) > MAX_REQUEST_BYTES:
+        print("Request too large", file=sys.stderr)
+        return 1
+    try:
+        response = handle_request(json.loads(raw))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        print("Request must be JSON", file=sys.stderr)
+        return 1
+    except HelperError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

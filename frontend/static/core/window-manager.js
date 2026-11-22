@@ -1,7 +1,8 @@
 // EthOS NAS — Window Manager (multi-window, drag-drop, snap, taskbar)
 import { escapeHtml, escapeAttr } from './utils.js';
-import { apiFetch } from './api.js';  // auth-header injection (plain fetch → 401 on protected routes)
+import { apiFetch, apiRequest } from './api.js';  // auth-header injection (plain fetch → 401 on protected routes)
 import { showUnifiedToast } from './notification-center.js';  // Unified toast replaces inline showToast()
+import { showFormModal } from './modal.js';
 import { appMiniTileHtml } from './app-icons.js';
 import { setLogContext } from './logger.js';
 
@@ -778,6 +779,55 @@ export function initTopbarMenu() {
         });
     }
 
+    // Self-service password change — re-verifies the current password against PAM.
+    const passwordBtn = dropdown.querySelector('[data-testid="topbar-change-password"]');
+    if (passwordBtn) {
+        passwordBtn.addEventListener('click', async () => {
+            closeTopbarDropdown();
+            await showFormModal({
+                title: 'Change password',
+                width: '460px',
+                confirmLabel: 'Change password',
+                bodyHtml: `
+                    <div class="ui-fields">
+                        <div class="ui-field full"><label>Current password</label>
+                            <input class="ui-input" type="password" name="current_password" autocomplete="current-password" aria-label="Current password" data-testid="topbar-password-current" autofocus></div>
+                        <div class="ui-field full"><label>New password</label>
+                            <input class="ui-input" type="password" name="new_password" autocomplete="new-password" aria-label="New password" data-testid="topbar-password-new"></div>
+                        <div class="ui-field full"><label>Confirm new password</label>
+                            <input class="ui-input" type="password" name="confirm" autocomplete="new-password" aria-label="Confirm new password" data-testid="topbar-password-confirm"></div>
+                    </div>
+                    <p class="ui-muted">Use at least 10 characters mixing letters with digits or symbols.</p>`,
+                validate(values) {
+                    const next = String(values.new_password || '');
+                    if (!values.current_password) return 'Enter your current password.';
+                    if (next.length < 10) return 'Use at least 10 characters.';
+                    if (next !== values.confirm) return 'The new passwords do not match.';
+                    if (!/[A-Za-z]/.test(next) || !/[^A-Za-z]/.test(next)) {
+                        return 'Mix letters with digits or symbols.';
+                    }
+                    return '';
+                },
+                async onSubmit(values, { setError }) {
+                    try {
+                        await apiRequest('/api/auth/password', {
+                            method: 'POST',
+                            body: {
+                                current_password: values.current_password,
+                                new_password: values.new_password,
+                            },
+                        });
+                        showUnifiedToast('Password changed', 'success');
+                    } catch (err) {
+                        setError(err?.detail || err?.message || 'Could not change the password.');
+                        return false;
+                    }
+                    return true;
+                },
+            });
+        });
+    }
+
     // Toggle dropdown on button click
     userBtn.addEventListener('click', e => {
         e.stopPropagation();
@@ -827,11 +877,11 @@ export function closeTopbarDropdown() {
 // Restart overlay — countdown + health probe, then page refresh
 // ════════════════════════════════════════════
 
-export function showRestartOverlay() {
+export function showRestartOverlay({ title = 'Restarting EthOS NAS…', waitTimeout = 90 } = {}) {
     if (document.getElementById('restartOverlay')) return; // already showing
 
     const COUNTDOWN_START = 6;  // seconds of grace before switching to "waiting" state
-    const WAIT_TIMEOUT = 90;    // give up after this many seconds of waiting
+    const WAIT_TIMEOUT = Math.max(30, Number(waitTimeout) || 90);
 
     const overlay = document.createElement('div');
     overlay.id = 'restartOverlay';
@@ -839,7 +889,7 @@ export function showRestartOverlay() {
     overlay.innerHTML = `
         <div style="display:flex;flex-direction:column;align-items:center;gap:14px;padding:36px 48px;border-radius:18px;background:var(--surface-0);border:1px solid var(--border);box-shadow:0 24px 64px rgba(0,0,0,.5);min-width:320px;">
             <div class="spinner" style="width:34px;height:34px;border-width:3px;"></div>
-            <div id="restartOverlayTitle" style="font-size:16px;font-weight:600;color:var(--text-1);">Restarting EthOS NAS…</div>
+            <div id="restartOverlayTitle" style="font-size:16px;font-weight:600;color:var(--text-1);">Restarting…</div>
             <div id="restartOverlayCount" style="font-size:44px;font-weight:700;color:var(--accent,#5b9aff);line-height:1;font-variant-numeric:tabular-nums;">${COUNTDOWN_START}</div>
             <div id="restartOverlayHint" style="font-size:12px;color:var(--text-3);">This page will refresh automatically</div>
         </div>`;
@@ -848,6 +898,7 @@ export function showRestartOverlay() {
     const titleEl = overlay.querySelector('#restartOverlayTitle');
     const countEl = overlay.querySelector('#restartOverlayCount');
     const hintEl  = overlay.querySelector('#restartOverlayHint');
+    titleEl.textContent = title;
 
     let remaining = COUNTDOWN_START;
     let waited = 0;

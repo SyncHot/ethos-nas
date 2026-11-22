@@ -120,6 +120,9 @@ provisioned by another mechanism).
 
 ## Status
 
+Creating further accounts after setup: Settings → Users
+([`user-management.md`](user-management.md)).
+
 - [x] `/api/setup/status` + `/api/setup/claim`, public by exact path
 - [x] claim policy: `local` (LAN claims without a code) / `code` / `open`
 - [x] root helper with single-use state and account pinning

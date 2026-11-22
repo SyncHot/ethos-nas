@@ -33,6 +33,7 @@ from backend.routers.network import router as network_router
 from backend.routers.files import router as files_router
 from backend.routers.terminal import router as terminal_router
 from backend.routers.auth import router as auth_router
+from backend.routers.users import router as users_router
 from backend.routers.setup import router as setup_router
 from backend.routers.backup import router as backup_router
 from backend.services.backup_scheduler import (
@@ -52,7 +53,6 @@ from backend.routers.downloads import (
 )
 from backend.routers.file_ops import router as file_ops_router
 from backend.routers.file_events_ws import _setup_event_broadcaster, router as file_events_router
-from backend.routers.firewall import router as firewall_router
 from backend.routers.access_control import router as access_control_router
 from backend.routers.smart import router as smart_router
 from backend.routers.systemd import router as systemd_router
@@ -402,6 +402,23 @@ async def auth_middleware(request: Request, call_next):
             content={"detail": "Authentication required"},
         )
 
+    # The registry is authoritative for accounts it knows: a disabled/deleted
+    # record rejects the request immediately (a 24 h JWT would otherwise outlive
+    # the account) and a role change applies on the next request, not on the
+    # next login. Tokens minted for unregistered names (tests, first-boot) keep
+    # their claimed role.
+    from backend.services import users_store
+    record = users_store.find_username(str(payload.get("username") or ""))
+    if record is not None:
+        if not users_store.is_active(record):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Account is disabled"},
+            )
+        payload = dict(payload)
+        payload["role"] = str(record.get("role") or "user")
+        payload["sub"] = str(record.get("id") or payload.get("sub") or "")
+
     # Attach user info to request state for downstream use
     request.state.current_user = payload
     return await call_next(request)
@@ -438,11 +455,11 @@ app.include_router(logs_router,      prefix="/api/logs",      tags=["Logs"])
 app.include_router(docker_router,    prefix="/api",           tags=["Docker"])
 app.include_router(storage_router,   prefix="/api/storage",   tags=["Storage"])
 app.include_router(network_router,   prefix="/api/network",   tags=["Network"])
-app.include_router(firewall_router,  prefix="/api/network",   tags=["Network"])
 app.include_router(access_control_router, prefix="/api/security", tags=["Security"])
 app.include_router(files_router,     prefix="/api/files",     tags=["Files"])
 app.include_router(file_ops_router,  prefix="/api/files",     tags=["File Operations"])
 app.include_router(auth_router,      prefix="/api/auth",      tags=["Auth"])
+app.include_router(users_router,     prefix="/api/users",     tags=["Users"])
 app.include_router(setup_router,     prefix="/api/setup",     tags=["Setup"])
 app.include_router(backup_router,     prefix="/api/backup",    tags=["Backup"])
 app.include_router(shares_router,     prefix="/api/shares",    tags=["Shares"])
@@ -478,13 +495,6 @@ app.include_router(docker_logs_router,tags=["Docker"])
 app.include_router(file_events_router, tags=["File Events"])
 app.include_router(notifications_ws_router, tags=["Notifications"])
 app.include_router(stats_ws_router,    tags=["System"])
-
-# Alias /api/users → auth router's /users endpoint
-@app.get("/api/users", tags=["Auth"])
-async def list_users_alias(request: Request):
-    """Alias: GET /api/users → auth.list_users (admin only)."""
-    from backend.routers.auth import list_users
-    return await list_users(request)
 
 
 # ── Frontend (SPA) ────────────────────────────────────────────────────────────

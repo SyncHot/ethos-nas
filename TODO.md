@@ -446,7 +446,7 @@ and swap code paths (keeping `.venv`, `backend/data`, untracked files). Reuse th
 |---|---|---|---|---|
 | **F-01** | **Notification delivery: SMTP + webhook (Telegram/Discord)** | A NAS must tell you when a disk dies or a backup fails while you are not looking. The event bus already exists. | `S–M` | P1-14 |
 | **F-02** | **TOTP 2FA + session/device management + API-key UI** | Single password over a possibly public port; API keys exist but have no management screen. | `M` | — |
-| **F-03** | **Users & Groups: role management + per-share permissions** | Roles exist (`admin`/`user`) but only admins can set them via JSON. Shares have Samba params but no per-user ACL editor. | `M–L` | P0-01, P0-04 |
+| **F-03** | **Users & Groups: group membership + per-share permissions** | Account lifecycle and role management shipped in v2.7.0 (Settings → Users, `docs/user-management.md`). Still missing: Linux group management and a per-user share ACL editor (Shares keep Samba params only). | `M` | P0-01, P0-04 |
 | **F-04** | **Storage health: mdadm RAID status + SMART self-tests + temperature history** | SMART trend alerts exist; RAID degradation (the actual data-loss event) is invisible. | `M` | — |
 | **F-05** | **Snapshot browser (btrfs/zfs) + restore** | "I deleted the wrong folder" is the #1 home-NAS incident; trash covers only deletes. Detect FS support and hide when unavailable. | `L` | — |
 | **F-06** | **UPS (NUT) integration + graceful shutdown + power schedule/WoL** | Unclean shutdown is how NAS filesystems die. | `M` | — |

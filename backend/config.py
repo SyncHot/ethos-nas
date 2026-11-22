@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.6.8"
+APP_VERSION = "2.7.0"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -124,6 +124,13 @@ class Settings:
     SET_PASSWORD_HELPER: str = os.getenv(
         "ETHOS_SET_PASSWORD_HELPER", "/usr/local/bin/ethos-set-password")
     SET_PASSWORD_VIA_SUDO: bool = not os.getenv("ETHOS_SET_PASSWORD_HELPER")
+
+    # Linux account lifecycle (routers/users.py → deploy/ethos-user-accounts).
+    # Same contract as SET_PASSWORD_HELPER: an overridden path (tests) runs
+    # directly; production goes through the root-owned argument-free sudo rule.
+    USER_ACCOUNTS_HELPER: str = os.getenv(
+        "ETHOS_USER_ACCOUNTS_HELPER", "/usr/local/bin/ethos-user-accounts")
+    USER_ACCOUNTS_VIA_SUDO: bool = not os.getenv("ETHOS_USER_ACCOUNTS_HELPER")
 
     # Offsite backup replication (services/backup_remote.py). Credentials stay in
     # rclone's own config; the API never reads or returns it.

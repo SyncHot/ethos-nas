@@ -62,6 +62,20 @@ work for "an installed app can never reach more than the signed-in user".
 | `/api/downloads/qb/torrents/createCategory` | Absolute `savePath` sanitized as the qB caller |
 | `/api/share-links/public/{token}` | Re-checks the creator's scope (410 when it no longer applies) |
 
+## Account lifecycle
+
+- `users.json` is authoritative for accounts it knows: the auth middleware
+  re-reads it and rejects `status != active` with 401, and takes the role from
+  the store — a deleted/disabled account's JWT and API key die immediately, and
+  a demoted admin loses admin rights on the next request.
+- Deleting an account keeps a **tombstone** (`status: deleted`) so revocation is
+  immediate even when `userdel` has to be retried; re-creating the same name
+  revives the record only after the Linux account is gone.
+- New accounts get a real home (`/home/<user>`) plus an `ethos-nas` ACL, so the
+  own-home path scope works from the first login.
+- Deletion can purge the account's `DATA_DIR` slices (libraries, trash, agent
+  dirs, wallpaper, favorites, desktop layout, download tasks, share links).
+
 ## Status
 
 - [x] Fail-closed default identity (`user`, no home)
@@ -82,6 +96,8 @@ work for "an installed app can never reach more than the signed-in user".
       and per-user watch/RSS scans
 - [x] Phase 4 — compose package bind hardening: a package may bind only its own
       package/data roots; another package or the package store is rejected
+- [x] Account lifecycle — registry status/role enforced per request, tombstones,
+      per-user state purge (`docs/user-management.md`)
 - [ ] Phase 5 — follow-up: per-package OS confinement for `venv` packages
 
 ## Verification

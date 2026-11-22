@@ -18,6 +18,7 @@ import os
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -27,7 +28,21 @@ logger = logging.getLogger("ethos-nas.services.users_store")
 
 T = TypeVar("T")
 
+# Account lifecycle states. A missing `status` (records written before the
+# lifecycle feature) means "active"; a deleted account keeps a tombstone so an
+# already-issued JWT/API key cannot keep working after the Linux account is gone.
+STATUS_ACTIVE = "active"
+STATUS_DISABLED = "disabled"
+STATUS_DELETED = "deleted"
+
 _LOCK = threading.Lock()
+
+# Middleware reads the store on every JWT request, so a tiny signature+TTL
+# cache avoids re-parsing users.json for each thumbnail. A write changes the
+# file signature and invalidates it immediately.
+_CACHE_LOCK = threading.Lock()
+_CACHE: dict = {"signature": None, "at": 0.0, "users": []}
+CACHE_TTL = 2.0
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 _DEFAULT_DATA_DIR = _BACKEND_DIR / "data"
@@ -68,6 +83,7 @@ def _write_unlocked(target: Path, users: list[dict]) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+    _invalidate_cache()
 
 
 def _quarantine_unlocked(target: Path) -> None:
@@ -113,6 +129,68 @@ def load() -> list[dict]:
         target = path()
         _migrate_unlocked(target)
         return _read_unlocked(target)
+
+
+def _signature(target: Path):
+    try:
+        stat = target.stat()
+    except OSError:
+        return None
+    return (str(target), stat.st_mtime_ns, stat.st_size)
+
+
+def _invalidate_cache() -> None:
+    with _CACHE_LOCK:
+        _CACHE.update(signature=None, at=0.0, users=[])
+
+
+def load_cached() -> list[dict]:
+    """`load()` behind a short cache keyed by the file signature.
+
+    Used by the auth middleware, which runs for every request. A concurrent
+    write changes mtime/size and forces a reload on the next call; the TTL only
+    bounds how long an unchanged file may keep being served from memory.
+    """
+    target = path()
+    signature = _signature(target)
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        if (signature is not None and _CACHE["signature"] == signature
+                and now - _CACHE["at"] < CACHE_TTL):
+            return [dict(user) for user in _CACHE["users"]]
+
+    users = load()
+    with _CACHE_LOCK:
+        _CACHE.update(signature=_signature(target), at=time.monotonic(),
+                      users=[dict(user) for user in users])
+    return [dict(user) for user in users]
+
+
+def new_id() -> str:
+    """Stable unique id for a new account record.
+
+    The old `str(len(users) + 1)` scheme collided after any deletion/revival;
+    ids are opaque strings, so legacy records keep their numeric ids.
+    """
+    return uuid.uuid4().hex
+
+
+def status_of(user: dict) -> str:
+    return str(user.get("status") or STATUS_ACTIVE)
+
+
+def is_active(user: dict) -> bool:
+    return status_of(user) == STATUS_ACTIVE
+
+
+def find_username(username: str, users: list[dict] | None = None) -> dict | None:
+    """Return the record for `username` from `users` (default: the cached store)."""
+    if not username:
+        return None
+    for user in (users if users is not None else load_cached()):
+        if str(user.get("username") or "") == username:
+            return user
+    return None
 
 
 def save(users: list[dict]) -> None:

@@ -86,8 +86,11 @@ def admin_username() -> str:
         logger.error("Could not read users.json for the admin migration", exc_info=True)
         return "admin"
     for user in users:
-        if str(user.get("role") or "") == "admin":
-            return safe_username(str(user.get("username") or ""))
+        if str(user.get("role") or "") != "admin":
+            continue
+        if users_store.status_of(user) != users_store.STATUS_ACTIVE:
+            continue
+        return safe_username(str(user.get("username") or ""))
     return "admin"
 
 

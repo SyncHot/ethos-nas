@@ -11,6 +11,35 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-22
+
+### Added
+
+- **User management (Settings → Users).** Admins can create a Linux account with
+  a home directory and password, set its Samba password in the same step, change
+  roles, reset passwords, disable/enable and delete accounts. Deletion can keep
+  or remove the home directory and always offers removing the account's EthOS
+  data (libraries, trash, wallpaper, favorites, download tasks, share links).
+- **Self-service password change** from the topbar user menu
+  (`POST /api/auth/password`, current password re-verified by PAM, at most five
+  failed attempts per ten minutes).
+
+### Security
+
+- Account status and role are read from `users.json` on every request: disabling
+  or deleting an account revokes its existing JWT and API key immediately, and a
+  demoted admin loses admin rights without waiting for the 24 h token to expire.
+- Deleted accounts keep a tombstone, so revocation survives a failed `userdel`
+  retry; system accounts (`uid < 1000`) and the service account are untouchable.
+- New accounts get an `ethos-nas` ACL on their home, so per-user file scope works
+  from the first login.
+
+### Upgrade
+
+- Run `sudo bash setup_scripts/setup_service.sh` once on existing servers to
+  install the new root-owned `ethos-user-accounts` helper. Until then account
+  mutations answer 503 with that hint; listing keeps working.
+
 ## [2.6.8] - 2026-11-21
 
 ### Changed

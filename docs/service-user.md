@@ -61,6 +61,7 @@ installer as root (root can setfacl them); docker-compose app data dirs under
 | Area | Rule (exact, no wildcards in args) |
 |---|---|
 | Shares | `tee /etc/samba/smb.conf`; `systemctl reload samba`; `systemctl reload smbd` |
+| Linux accounts (new) | helper `/usr/local/bin/ethos-user-accounts` (argument-free rule). One JSON request on stdin (`create`, `set_password`, `lock`, `unlock`, `delete`); usernames validated, reserved/system accounts (`uid < 1000`) refused, passwords only on stdin. Creating an account also grants the service user an ACL on its new home (see [`user-management.md`](user-management.md)) |
 | Firewall | `/usr/sbin/ufw` (any args); `journalctl` (any args, if installed); `cat` on `/var/log/auth.log`, `/var/log/kern.log`, `/var/log/syslog` + concrete rotated copies (including `.gz` — the app gunzips the bytes itself); `cat /etc/ufw/user.rules` and `user6.rules` |
 | USB | `tee /etc/fstab`; helper `/usr/local/bin/ethos-usb-partition` (argument-free rule; validation lives inside the helper) |
 | Power (new) | `systemctl reboot`; `systemctl shutdown` |
