@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T15:53:41+00:00",
+  "generated_at": "2026-11-22T16:01:53+00:00",
   "latest": {
-    "version": "2.25.0",
-    "git_sha": "5ce6833",
-    "git_sha_full": "5ce68334e96e0ef348c2d12c909a6ed3dfd9a112",
-    "build": 168,
-    "released_at": "2026-11-22T15:53:41+00:00",
-    "notes": "Cameras: continuous recording with retention, timeline playback, motion zones and a live HLS wall"
+    "version": "2.25.1",
+    "git_sha": "61c806c",
+    "git_sha_full": "61c806c315fed26fca6fed521121db16c677602f",
+    "build": 170,
+    "released_at": "2026-11-22T16:01:53+00:00",
+    "notes": "Cameras: stream passwords are no longer written to ffmpeg logs"
   },
   "releases": [
+    {
+      "version": "2.25.1",
+      "git_sha": "61c806c",
+      "git_sha_full": "61c806c315fed26fca6fed521121db16c677602f",
+      "build": 170,
+      "released_at": "2026-11-22T16:01:53+00:00",
+      "notes": "Cameras: stream passwords are no longer written to ffmpeg logs"
+    },
     {
       "version": "2.25.0",
       "git_sha": "5ce6833",
@@ -201,14 +209,6 @@
       "build": 109,
       "released_at": "2026-11-22T09:48:56+00:00",
       "notes": "Video Station: 10-bit HEVC playback fix (VA-API nv12) and automatic software HLS fallback."
-    },
-    {
-      "version": "2.13.0",
-      "git_sha": "110388e",
-      "git_sha_full": "110388e5aa9a28f7a065128750c152324afffc7d",
-      "build": 106,
-      "released_at": "2026-11-22T09:35:35+00:00",
-      "notes": "Video Station: keyless metadata via Cinemeta/TVmaze, optional TMDB, provider picker and cache migration; File Manager archive extraction."
     }
   ]
 }
