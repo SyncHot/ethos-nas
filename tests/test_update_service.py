@@ -215,6 +215,29 @@ def main() -> int:
     finally:
         update_service._process_started_at = original_start
 
+    print("\n[dead helper]")
+    # The helper records its pid, so a `running` job whose pid is gone can only
+    # mean it exited without reporting a result. Leaving that state visible made
+    # the Settings card poll "fetch" forever with no progress.
+    request_file = DATA_DIR / "update" / "request.json"
+    request_file.write_text(json.dumps({"action": "apply"}), encoding="utf-8")
+    result_file = DATA_DIR / "update" / "result.json"
+    result_file.unlink(missing_ok=True)
+    job_file.write_text(json.dumps({
+        "status": "running", "step": "fetch", "detail": "release index",
+        "pid": 999_999_999, "at": update_service._iso(time.time()),
+    }), encoding="utf-8")
+    status = update_service.apply_status()
+    check("dead helper job is not running", status["running"] is False, str(status))
+    check("dead helper job is reported stale", status.get("stale") is True, str(status))
+    check("dead helper produces a failure result",
+          (status.get("result") or {}).get("status") == "failed", str(status))
+    check("dead helper failure names the step it died in",
+          "fetch" in str((status.get("result") or {}).get("detail") or ""), str(status))
+    check("dead helper clears the stale request file", not request_file.exists())
+    check("dead helper result is persisted for later polls",
+          json.loads(result_file.read_text(encoding="utf-8")).get("status") == "failed")
+
     print("\n[reconcile]")
     emitted: list[tuple] = []
     original_emit = update_service.emit_event

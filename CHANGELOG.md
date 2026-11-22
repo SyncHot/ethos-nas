@@ -11,6 +11,22 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.29.1] - 2026-11-22
+
+### Fixed
+
+- **Settings → Updates no longer hangs at “fetch” with no progress.** On a
+  freshly imaged appliance the root helper aborted before writing any result:
+  `/etc/ethos-nas/update.conf` named the build account as the repo owner, which
+  does not exist once the image is claimed by the admin created at first boot
+  (`runuser: user ethosadmin does not exist`). The helper now resolves the
+  owner from `INSTALL_DIR`, reports every exit path through an `EXIT` trap, and
+  records its PID so the backend can tell a dead helper from a slow one; the
+  backend finalizes a dead job as a failure (with the step and a journalctl
+  hint) instead of showing a spinner for two hours. Installs that already ship
+  a single-tag clone refspec also fetch branches and tags explicitly, and no
+  git command can block on a credential prompt.
+
 ## [2.29.0] - 2026-11-22
 
 ### Added

@@ -323,6 +323,11 @@ def _job_is_stale(job: dict) -> bool:
     step `restart` forever — every later update then answered 409 "already
     running". A restart/verify step that predates this process means the helper
     is gone; a job whose last step is over two hours old is treated as hung.
+
+    The helper now records its PID, so a helper that died for any other reason
+    (a `die` in the fetch block, a missing repo owner) is detected immediately
+    instead of two hours later — that was the "update spins with no progress"
+    bug reports.
     """
     if not isinstance(job, dict) or job.get("status") != "running":
         return False
@@ -332,7 +337,59 @@ def _job_is_stale(job: dict) -> bool:
     process_start = _process_started_at()
     if job.get("step") in ("restart", "verify") and process_start and started < process_start:
         return True
+    try:
+        pid = int(job.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    if pid > 0:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            logger.warning("Update helper pid %s is gone (step %s)", pid, job.get("step"))
+            return True
+        except PermissionError:
+            pass  # exists, owned by root — still running
+        except OSError:
+            logger.debug("Could not probe update helper pid %s", pid, exc_info=True)
     return (time.time() - started) > 2 * 3600
+
+
+def _finalize_dead_job(job: dict) -> dict:
+    """Write a terminal result for a helper that is no longer running.
+
+    Only the helper writes these files, so a `running` job with a dead PID can
+    only mean it exited without reporting (set -e before the EXIT trap existed).
+    The UI polled that state forever; turning it into a failure both stops the
+    spinner and tells the operator what to do.
+    """
+    step = str(job.get("step") or "?")
+    detail = (
+        f"the update helper stopped during step {step} without reporting a result; "
+        "see `journalctl -u ethos-nas | grep ethos-update` on the server"
+    )
+    result = {
+        "status": "failed",
+        "step": "done",
+        "from": job.get("from", ""),
+        "to": job.get("to", ""),
+        "version": job.get("version", ""),
+        "detail": detail,
+        "at": _iso(time.time()),
+    }
+    job.update({"status": "failed", "step": "done", "detail": detail, "at": result["at"]})
+    try:
+        state_dir = _state_dir()
+        (state_dir / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        os.chmod(state_dir / "result.json", 0o644)
+        (state_dir / "job.json").write_text(json.dumps(job), encoding="utf-8")
+        os.chmod(state_dir / "job.json", 0o644)
+        request = state_dir / "request.json"
+        if request.exists():
+            request.unlink()
+        logger.warning("Finalized dead update job: %s", detail)
+    except OSError:
+        logger.warning("Could not finalize the dead update job", exc_info=True)
+    return result
 
 
 def helper_available() -> bool:
@@ -348,6 +405,8 @@ def apply_status() -> dict:
     if stale:
         logger.warning("Stale update job (step %s, at %s) — not treated as running",
                        job.get("step"), job.get("at"))
+        if not result:
+            result = _finalize_dead_job(job)
     return {
         "helper": helper_available(),
         "running": job.get("status") == "running" and not stale,

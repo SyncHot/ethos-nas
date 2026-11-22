@@ -46,8 +46,23 @@ def main() -> int:
     check("request file can only ask for apply",
           'data.get("action") == "apply"' in helper)
     check("shallow image clones can reach an older release commit",
-          'fetch --depth=1 origin \\' in helper and "--unshallow" in helper
+          "--depth=1 origin" in helper and "--unshallow" in helper
           and "deepen the shallow clone" in helper)
+    check("fetch tracks branches and tags, not just the pinned tag",
+          "+refs/heads/*:refs/remotes/origin/*" in helper
+          and "+refs/tags/*:refs/tags/*" in helper)
+    check("every remote operation is bounded by a timeout",
+          helper.count('timeout "${FETCH_TIMEOUT}"') >= 4, str(helper.count('timeout "${FETCH_TIMEOUT}"')))
+    check("git can never block on a credential prompt",
+          "export GIT_TERMINAL_PROMPT=0" in helper)
+    check("a stale REPO_OWNER falls back to the install dir owner",
+          'id -u "${REPO_OWNER}"' in helper
+          and 'stat -c %U "${INSTALL_DIR}"' in helper)
+    check("every exit path writes a terminal result",
+          "trap on_exit EXIT" in helper and "RESULT_WRITTEN" in helper
+          and "update helper exited" in helper)
+    check("job.json carries the helper pid for liveness checks",
+          '"pid": os.getppid()' in helper)
     check("no eval", not re.search(r"\beval\b", helper))
     check("git/pip run as the repo owner, not root",
           'runuser -u "${REPO_OWNER}"' in helper and "runuser -u \"${REPO_OWNER}\" -- \"${INSTALL_DIR}/.venv/bin/pip\"" in helper)

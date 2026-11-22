@@ -22,6 +22,11 @@
 # them after the restart.
 set -euo pipefail
 
+# Never let a git command wait for credentials: an appliance has no terminal, so
+# a prompt used to hang the helper forever (the UI showed "fetch" and no
+# progress). Fail fast instead — the trap below reports it.
+export GIT_TERMINAL_PROMPT=0
+
 CONF="/etc/ethos-nas/update.conf"
 LOCK="/run/ethos-update.lock"
 WORK="/var/lib/ethos-update"
@@ -58,8 +63,18 @@ for var in INSTALL_DIR REPO_OWNER SERVICE_USER SERVICE_UNIT DATA_DIR INDEX_URL P
     [ -n "${!var:-}" ] || die "${CONF} does not define ${var}"
 done
 
-STATE_DIR="${DATA_DIR}/update"
-JOB="${STATE_DIR}/job.json"
+# The owner of the install directory is not stable across the appliance's life:
+# an image built by the builder's account is claimed by the admin created at
+# first boot, and update.conf is written once at install time. A stale owner made
+# runuser fail *before* any result was written, so the web UI kept polling a job
+# stuck at step "fetch". Resolve it here instead of trusting the file.
+if ! id -u "${REPO_OWNER}" >/dev/null 2>&1; then
+    RESOLVED_OWNER="$(stat -c %U "${INSTALL_DIR}" 2>/dev/null || true)"
+    { [ -n "${RESOLVED_OWNER}" ] && id -u "${RESOLVED_OWNER}" >/dev/null 2>&1; } \
+        || die "REPO_OWNER '${REPO_OWNER}' does not exist and ${INSTALL_DIR} has no usable owner; re-run setup_scripts/setup_service.sh" 6
+    log "warning: REPO_OWNER '${REPO_OWNER}' does not exist — using '${RESOLVED_OWNER}' (owner of ${INSTALL_DIR})"
+    REPO_OWNER="${RESOLVED_OWNER}"
+fi
 RESULT="${STATE_DIR}/result.json"
 REQUEST="${STATE_DIR}/request.json"
 FROM_SHA=""
@@ -87,6 +102,9 @@ data = {
     "to": to,
     "version": version,
     "detail": detail,
+    # The backend polls /proc/<pid> to tell a hung helper from a dead one: a
+    # killed helper used to leave job.json at "running" for hours.
+    "pid": os.getppid(),
     "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
 }
 tmp = path + ".tmp"
@@ -104,6 +122,7 @@ PY
 }
 
 step() {  # step <name> [detail]
+    CURRENT_STEP="$1"
     json_write "${JOB}" "running" "$1" "${FROM_SHA}" "${TARGET_SHA}" "${TARGET_VERSION}" "${2:-}"
     log "step: $1${2:+ ($2)}"
 }
@@ -112,6 +131,7 @@ finish() {  # finish <status> [detail]
     json_write "${RESULT}" "$1" "done" "${FROM_SHA}" "${TARGET_SHA}" "${TARGET_VERSION}" "${2:-}"
     json_write "${JOB}" "$1" "done" "${FROM_SHA}" "${TARGET_SHA}" "${TARGET_VERSION}" "${2:-}"
     rm -f "${REQUEST}"
+    RESULT_WRITTEN=1
     log "result: $1 ${2:-}"
 }
 
@@ -141,7 +161,22 @@ rollback() {  # rollback <reason>
     exit 1
 }
 
-# ── Request gate ────────────────────────────────────────────────────────────
+# ── Request gate ────────────────────────────────────────────────────────────# Every exit path must leave a terminal state behind. `die` used to return
+# without touching result.json, so the web UI polled job.json (= "running")
+# until the two-hour staleness window expired — "the update spins forever".
+RESULT_WRITTEN=0
+CURRENT_STEP="start"
+on_exit() {
+    local rc=$?
+    if [ "${RESULT_WRITTEN}" -eq 0 ] && [ "${rc}" -ne 0 ]; then
+        local detail="update helper exited (code ${rc}) during step ${CURRENT_STEP}"
+        json_write "${RESULT}" "failed" "done" "${FROM_SHA}" "${TARGET_SHA}" "${TARGET_VERSION}" "${detail}" || true
+        json_write "${JOB}" "failed" "done" "${FROM_SHA}" "${TARGET_SHA}" "${TARGET_VERSION}" "${detail}" || true
+        rm -f "${REQUEST}" || true
+        log "result: failed ${detail}"
+    fi
+}
+trap on_exit EXIT
 [ -f "${REQUEST}" ] || die "no update requested (${REQUEST} is missing)" 4
 if ! python3 - "${REQUEST}" <<'PY'
 import json, sys
@@ -200,7 +235,13 @@ if [ "${FROM_SHA}" = "${TARGET_SHA}" ]; then
 fi
 
 step "apply" "git fetch + reset"
-runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --prune origin >/dev/null 2>&1 \
+# EthOS OS images ship a single-tag refspec (`fetch = +refs/tags/<pin>:refs/tags/<pin>`),
+# so a plain `git fetch` can never see a *newer* tag. Pass explicit refspecs to
+# behave like a normal clone, and bound every fetch: an unreachable or
+# credential-requiring remote must fail the update, not stall it.
+FETCH_TIMEOUT="${FETCH_TIMEOUT:-600}"
+timeout "${FETCH_TIMEOUT}" runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --prune origin \
+    '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*' >/dev/null 2>&1 \
     || rollback "git fetch failed"
 # The OS image ships a --depth 1 clone (small download, fast first boot), and a
 # released commit is almost always an *ancestor* of the new tip: a shallow
@@ -209,14 +250,14 @@ runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --prune origin >/dev
 # commit first (cheap), then deepen the clone if the server refuses.
 if ! runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" cat-file -e "${TARGET_SHA}^{commit}" 2>/dev/null; then
     step "apply" "fetch the signed commit"
-    runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --depth=1 origin \
-        "${TARGET_SHA}" >/dev/null 2>&1 || true
+    timeout "${FETCH_TIMEOUT}" runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch \
+        --depth=1 origin "${TARGET_SHA}" >/dev/null 2>&1 || true
 fi
 if ! runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" cat-file -e "${TARGET_SHA}^{commit}" 2>/dev/null; then
     step "apply" "deepen the shallow clone"
-    runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --unshallow origin \
+    timeout "${FETCH_TIMEOUT}" runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --unshallow origin \
         >/dev/null 2>&1 \
-        || runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --depth=200 origin \
+        || timeout "${FETCH_TIMEOUT}" runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" fetch --depth=200 origin \
             >/dev/null 2>&1 \
         || true
 fi

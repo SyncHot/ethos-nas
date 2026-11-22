@@ -452,17 +452,23 @@ async function _applyUpdate() {
             return;
         }
         const job = state.job || {};
-        if (job.status === 'running') {
+        const result = state.result || {};
+        // `stale` means the helper is gone but its job file still said
+        // "running" (it died before writing a result). Polling that forever was
+        // the "update spins, no progress" bug — treat it as a failure.
+        if (job.status === 'running' && state.stale !== true) {
             task.update({ percent: stepPct[job.step] ?? 20, detail: `${job.step}${job.detail ? ` — ${job.detail}` : ''}` });
             setTimeout(tick, 2000);
             return;
         }
-        if (job.status === 'ok' || job.status === 'up_to_date') {
-            task.finish('done', { percent: 100, detail: job.detail || job.status });
+        const finalStatus = result.status || job.status;
+        const finalDetail = result.detail || job.detail || finalStatus;
+        if (finalStatus === 'ok' || finalStatus === 'up_to_date') {
+            task.finish('done', { percent: 100, detail: finalDetail });
             showRestartOverlay();
-        } else if (job.status === 'rolled_back' || job.status === 'failed') {
-            task.finish('failed', { percent: 100, detail: job.detail || job.status });
-            showAlert('Update failed', job.detail || 'The previous version was restored.');
+        } else if (finalStatus === 'rolled_back' || finalStatus === 'failed') {
+            task.finish('failed', { percent: 100, detail: finalDetail });
+            showAlert('Update failed', finalDetail || 'The previous version was restored.');
         } else {
             setTimeout(tick, 2000);
         }

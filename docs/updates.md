@@ -104,6 +104,32 @@ any job idle for two hours) as **stale**, finalizes it from the checkout at
 startup (`reconcile_result`) and reports the outcome once. A plain service
 restart is enough to clear an already-stuck install; no state file surgery.
 
+### When it fails (v2.29.1)
+
+Three failure modes used to leave the Settings card polling `fetch` forever
+with no progress and no error (`job.json` said `running`, `result.json` was
+never written):
+
+- **Every exit path now leaves a terminal state.** The helper installs an
+  `EXIT` trap (`RESULT_WRITTEN`), so a `die` — bad signature, refused request,
+  failed `runuser` — writes `result.json`/`job.json` with `status: failed` and
+  the step it died in. The card shows the reason instead of spinning.
+- **`job.json` carries the helper PID.** `apply_status()` treats a `running`
+  job whose PID is gone as dead, synthesizes a failure result
+  (`_finalize_dead_job`) and clears `request.json`, so a crashed helper is
+  noticed in seconds, not after the two-hour window.
+- **The repo owner is resolved at runtime.** `/etc/ethos-nas/update.conf` is
+  written once at install time, but an image is built by the builder's account
+  and then claimed by the admin created at first boot — `runuser: user
+  ethosadmin does not exist` aborted the helper before any result was written.
+  The helper now falls back to the owner of `INSTALL_DIR` (and still refuses
+  when that owner is missing).
+
+Remote work is bounded and never interactive: `GIT_TERMINAL_PROMPT=0`, a
+`FETCH_TIMEOUT` (600 s) around every `git fetch`, and explicit
+`+refs/heads/*`/`+refs/tags/*` refspecs — image clones ship a *single-tag*
+refspec, so a plain `git fetch` could never see a newer tag.
+
 Limits (deliberate):
 
 - **Restart is bounded.** The unit stops with `KillMode=mixed` + `TimeoutStopSec=30`

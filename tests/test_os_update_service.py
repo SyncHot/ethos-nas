@@ -145,13 +145,16 @@ def main() -> int:
     check("spawned the allowlisted apply action", "apply" in _calls(), str(_calls()))
 
     print("\n[job state]")
+    # A *fresh* timestamp: the hung-job window is two hours, so a hardcoded past
+    # stamp turned "a live helper counts as running" into a time bomb.
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
     _write_state("job.json", {"status": "running", "step": "upgrade", "percent": 42,
-                              "pid": os.getpid(), "at": "2026-11-22T10:00:00+00:00"})
+                              "pid": os.getpid(), "at": now_iso})
     live = os_update_service.apply_status()
     check("live helper job counts as running", live["running"] is True and live["stale"] is False)
 
     _write_state("job.json", {"status": "running", "step": "upgrade", "percent": 42,
-                              "pid": 999999, "at": "2026-11-22T10:00:00+00:00"})
+                              "pid": 999999, "at": now_iso})
     stale = os_update_service.apply_status()
     check("dead helper pid is stale", stale["stale"] is True and stale["running"] is False)
     check("stale job gets a synthesized failure", (stale["result"] or {}).get("status") == "failed")
