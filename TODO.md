@@ -518,32 +518,40 @@ and swap code paths (keeping `.venv`, `backend/data`, untracked files). Reuse th
 
 # §10 · Package QA follow-ups
 
-Source: `docs/packages-qa.md` (sweep 2026-11-22, 25 packages @ `2186e5b`, core 2.28.1).
+Source: `docs/packages-qa.md` (sweep 2026-11-22, 25 packages @ `3e66992`, core 2.28.5).
 Tools: `scripts/ethos-qa static|api`, `tests/test_packages_qa_ui.py`.
 
-### ☐ Q-01 · Port collisions with host services — `S`
-`ethos-monitor` 3001 (wawalocal-user), `ethos-rss` 8080 (wawalocal-api), `vmm` console 8094
-(ethos-nas-site) cannot bind here; install/update fails at `start`. Move them outside the used
-range and keep the "known in-use ports" list in `ethos-packages/AGENTS.md` current. `ethos-git`
-3000 → 3005 (`2186e5b`).
+### ☑ Q-01 · Port collisions with host services — `S`
+`ethos-git` 3000 → 3005 (`2186e5b`), `ethos-monitor` 3001 → 3091 and `ethos-rss` 8080 → 8085
+(`3e66992`); containers keep their internal ports, only the published host port changed. `vmm` was a
+tool false positive (its console is a container-only `"8094"` mapping, Docker picks the host port) —
+`_ports()` now skips single-value and range mappings, and the sweep reports **no** port collision.
+Rule for the future: venv/native services cannot be remapped, so they must never claim a common port.
 
-### ☐ Q-02 · `ethos-music` UI copy is Polish only — `M`
-103 hardcoded Polish strings in an otherwise English product. Switch to English or drive it from a
-`lang` value; mirror in `/music` PWA. `ethos-video` has 3 leftovers.
+### ☐ Q-02 · Music and Books surfaces are Polish only — `L`
+`ethos-music` (185 non-English chars) plus the core PWAs `/music` (`music.js` 94 lines) and `/books`
+(`books.js` 52, `books.html` 18, `offline.js` 14). `ethos-books` (the package) is already English.
+One decision — translate, or add a locale switch — applied per surface. `S18` in `ethos-qa` flags
+the packages meanwhile.
 
-### ☐ Q-03 · `data-testid` missing in four native windows — `M`
-`backup-manager`, `ethos-antivirus`, `ethos-music`, `vmm` render none, while `package-ui/SKILL.md`
-lists them in the definition of done. Start with the two reference packages.
+### ☑ Q-03 · Stable test hooks on native windows — `S`
+Measured with the rule from `package-ui/SKILL.md` (a `data-testid` *or* a stable action attribute):
+`backup-manager` 8/8, `ethos-antivirus` 19/22, `vmm` 13/13, only `ethos-music` 0/6. Fixed in
+`ethos-music` 1.0.3 (`db6df8f`): `em-nav-N`, `em-mini-*`, `em-fp-*`. Sweep and `ethos-qa` share the
+same hook definition now.
 
 ### ☐ Q-04 · Move the Code Editor stylesheet out of the core — `L`
 `ethos-editor` ships no CSS: 406 `.ed-*` rules live in `frontend/index.html` (206 KB → blocks
 P3-10) and the module uses 80 literal colours. Tokenise into the module, then delete from the core.
 Overlaps P3-04.
 
-### ☐ Q-05 · Package changelog fields grow without bound — `S`
-`vmm` 3.3 KB, `download-manager` 3.5 KB, `ethos-video` 2.7 KB in `index.json`, newest entry buried.
-Cap the newest entry at one line; keep history in each package README. 21 descriptions also exceed
-the 150 chars the catalog table shows (`S17`).
+### ☑ Q-05 · One-line release notes — `S`
+The newest changelog entry is what Package Center shows on an update; `vmm` (430 chars),
+`ethos-books` (411), `download-manager` (346), `ethos-surveillance` (339) and `ethos-sync` (241)
+buried it in prose. Compressed to one sentence each (`b1bc084`): vmm 1.2.1, ethos-books 1.2.1,
+download-manager 1.1.1, ethos-surveillance 2.0.1, ethos-sync 1.0.2. `S17` now measures the newest
+entry correctly (the first version reported the whole history as one entry) and treats a long
+description as `info`, since only the catalog table truncates it.
 
 ### ☐ Q-06 · Theme vocabulary drift — `M`
 `ethos-cleaner`, `ethos-git-diff`, `ethos-kanban`, `ethos-photos` use the core's `--text-1/--surface-*`

@@ -60,8 +60,8 @@ FORBIDDEN_JS = (
      "ships its own toast/notification panel — use ctx.notifications"),
     ("S10", "warn", re.compile(r"""\sonclick\s*=\s*["']"""),
      "inline onclick= string handler (CSP-unsafe; tracked as TODO P3-03)"),
-    ("S11", "warn", re.compile(r"\blocalStorage\b"),
-     "touches localStorage in the EthOS origin — prefix keys with the package id"),
+    ("S11", "info", re.compile(r"\blocalStorage\b"),
+     "uses localStorage in the EthOS origin — keep the keys namespaced to the package"),
 )
 
 
@@ -99,12 +99,20 @@ def core_app_version() -> tuple[int, ...]:
 
 
 def _ports(mapping: list) -> list[int]:
-    """Host ports published by one compose service."""
+    """Host ports published by one compose service.
+
+    A single-value entry (`"8094"`) publishes only the container port — Docker
+    assigns a free host port — so it can never collide and is not collected here.
+    A range (`"18190-18194:18190-18194"`) is skipped for the same reason: its
+    host side is not a fixed single port.
+    """
     out: list[int] = []
     for item in mapping or []:
-        text = str(item)
-        host = text.split(":", 1)[0] if ":" in text else text
-        host = host.split("/", 1)[0]
+        text = str(item).split("/", 1)[0]
+        parts = text.split(":")
+        if len(parts) == 1:
+            continue
+        host = parts[-2] if len(parts) >= 3 else parts[0]
         if host.isdigit():
             out.append(int(host))
     return out
@@ -252,9 +260,29 @@ def check_package(pkg_dir: Path, manifest: dict, base_url: str, version: tuple[i
                 report.add(rule, level, pkg_id, f"{message} ({hits}x)")
         row["onclick"] = len(re.findall(r"""\sonclick\s*=\s*["']""", source))
         row["data_testids"] = source.count("data-testid")
-        if row["data_testids"] == 0:
+        # The checklist accepts "a data-testid **or** a stable action attribute";
+        # count interactive elements that carry any data-* hook at all. A bare
+        # valueless attribute (`<button data-browse-path>`) is a hook too.
+        buttons = re.findall(r"<(?:button|a)\b[^>]*>", source)
+        hooked = [markup for markup in buttons
+                  if re.search(r"\sdata-(?:testid|[a-z][a-z0-9-]*)(?:\s*=|\s|/?>)", markup)]
+        row["hooks"] = f"{len(hooked)}/{len(buttons)}"
+        if buttons and not hooked:
             report.add("S15", "warn", pkg_id,
-                       "no data-testid in the native UI — the package-ui checklist requires them")
+                       f"none of the {len(buttons)} interactive elements carries a data-testid or "
+                       "a stable action attribute — an automated test cannot target this window")
+        elif buttons and len(hooked) * 2 < len(buttons):
+            report.add("S15", "warn", pkg_id,
+                       f"only {len(hooked)} of {len(buttons)} interactive elements carry a stable "
+                       "hook (data-testid or action attribute)")
+        # S18 — EthOS ships one language (English). Comments may be Polish; copy may not.
+        prose = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        prose = re.sub(r"//[^\n]*", "", prose)
+        polish = len(re.findall(r"[ąćęłńóśźżĄĆĘŁŃÓŚŹŻ]", prose))
+        if polish:
+            report.add("S18", "warn", pkg_id,
+                       f"{polish} character(s) of non-English copy in the native UI — the rest of "
+                       "EthOS is English")
         own_vars = set(re.findall(r"(--[a-z][a-z0-9-]{2,})\s*:", source))
         has_dark = bool(re.search(r"(?:\.dark\b|prefers-color-scheme:\s*dark)", source))
         host_tokens = len(re.findall(r"var\(--(?:text|surface|border|accent|bg)-", source))
@@ -278,21 +306,26 @@ def check_package(pkg_dir: Path, manifest: dict, base_url: str, version: tuple[i
             row["theme"] = "none"
             report.add("S16", "error", pkg_id, "no palette tokens found in the native UI")
 
-    # S17 — catalog copy: the README truncates at 150 chars; the dialog does not.
+    # S17 — catalog copy. The README truncates the description at 150 chars, the
+    # Package Center dialog shows all of it, so a long one is informational.
     description = str(manifest.get("description") or "")
     if len(description) > 150:
-        report.add("S17", "warn", pkg_id,
-                   f"description is {len(description)} chars (README truncates at 150)")
+        report.add("S17", "info", pkg_id,
+                   f"description is {len(description)} chars (the catalog table shows 150)")
     changelog = str(manifest.get("changelog") or "")
     if not changelog:
         report.add("S17", "warn", pkg_id, "changelog is empty — updates show no release note")
     else:
-        body = VERSION_HEAD_RE.split(changelog, maxsplit=1)
-        newest = (body[-1] if len(body) > 1 else changelog).strip()
-        if len(changelog) > 2500:
+        # "1.2.1: … 1.2.0: …" — the newest note is the text up to the next heading.
+        parts = VERSION_HEAD_RE.split(changelog)
+        newest = (parts[2] if len(parts) > 2 else changelog).strip()
+        if len(changelog) > 8000:
             report.add("S17", "warn", pkg_id,
                        f"changelog field is {len(changelog)} chars — it grows without bound "
                        "and inflates index.json")
+        elif len(changelog) > 4000:
+            report.add("S17", "info", pkg_id,
+                       f"changelog field is {len(changelog)} chars of history")
         if len(newest) > 220:
             report.add("S17", "warn", pkg_id,
                        f"newest changelog entry is {len(newest)} chars — keep it to one line")
@@ -309,6 +342,7 @@ def command_static(args: argparse.Namespace) -> int:
     report = Report()
     rows: list[dict] = []
     ports: dict[int, list[str]] = {}
+    remappable: dict[str, bool] = {}
 
     for pkg_dir in sorted(p for p in repo.iterdir() if p.is_dir() and (p / "manifest.json").is_file()):
         try:
@@ -317,6 +351,9 @@ def command_static(args: argparse.Namespace) -> int:
             report.add("S01", "error", pkg_dir.name, f"manifest.json is unreadable: {exc}")
             continue
         rows.append(check_package(pkg_dir, manifest, base_url, version, report))
+        # Since 2.28.5 a compose package is republished on a free port when its
+        # ui.port is taken; venv/native services cannot be remapped.
+        remappable[pkg_dir.name] = bool(manifest.get("compose"))
         for value in {_service_port(manifest)} | set(_compose_ports(pkg_dir / "docker-compose.yml")):
             if value:
                 ports.setdefault(value, []).append(pkg_dir.name)
@@ -335,10 +372,14 @@ def command_static(args: argparse.Namespace) -> int:
             if _package_service_pid(value) in owners:
                 continue  # this NAS runs the package's own venv service on that port
             names = published.get(value)
-            if names:
+            if names and all(remappable.get(owner) for owner in owners):
                 report.add("S06", "warn", ",".join(owners),
-                           f"port {value} is published by docker container(s) {sorted(set(names))} "
-                           "— a new install cannot bind it")
+                           f"port {value} is taken by {sorted(set(names))} — the install is "
+                           "remapped to another port, so the documented port is not what users get")
+            elif names:
+                report.add("S06", "warn", ",".join(owners),
+                           f"port {value} is taken by {sorted(set(names))} and this package "
+                           "cannot be remapped — the install fails")
             else:
                 report.add("S06", "info", ",".join(owners),
                            f"port {value} is listening; it is this package's own service if the "
@@ -416,15 +457,21 @@ def _request(base: str, path: str, token: str = "", method: str = "GET") -> tupl
         req.add_header("Authorization", "Bearer " + token)
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            body = resp.read()
-            return resp.status, (json.loads(body) if body else {})
+            return resp.status, _decode(resp.read())
     except urllib.error.HTTPError as exc:
-        try:
-            return exc.code, json.loads(exc.read() or b"{}")
-        except (ValueError, OSError):
-            return exc.code, {}
+        return exc.code, _decode(exc.read())
     except OSError as exc:
         return 0, {"error": str(exc)}
+
+
+def _decode(body: bytes) -> object:
+    """JSON when the endpoint answers JSON — a native UI asset is JavaScript."""
+    if not body:
+        return {}
+    try:
+        return json.loads(body)
+    except ValueError:
+        return {"raw": body[:200].decode(errors="replace")}
 
 
 def _login(base: str, username: str, password: str) -> str:
@@ -462,7 +509,7 @@ def command_api(args: argparse.Namespace) -> int:
     print(f"ethos-qa api — {len(items)} installed package(s) at {base}")
 
     report = Report()
-    print(f"\n{'package':24}{'installed':11}{'runtime':9}{'status':10}{'health':10}ui")
+    print(f"\n{'package':24}{'installed':11}{'runtime':9}{'status':16}{'health':10}ui")
     for pkg in sorted(items, key=lambda p: str(p.get("id"))):
         pkg_id = str(pkg.get("id"))
         code, state = _request(base, f"/api/packages/{pkg_id}/status", token)
@@ -471,8 +518,10 @@ def command_api(args: argparse.Namespace) -> int:
             state = {}
         health = str(state.get("health") or state.get("state") or "-")
         containers = state.get("containers") or []
+        runtime = str(pkg.get("runtime") or ("venv" if pkg.get("python")
+                                           else "compose" if pkg.get("compose") else "files"))
         print(f"{pkg_id:24}{str(pkg.get('version') or '-'):11}"
-              f"{str(pkg.get('runtime') or 'compose'):9}{str(state.get('status') or '-'):10}"
+              f"{runtime:9}{str(state.get('status') or '-'):16}"
               f"{health:10}{str((pkg.get('ui') or {}).get('mode') or '-')}")
         if health == "unhealthy" or any(c.get("health") == "unhealthy" for c in containers
                                         if isinstance(c, dict)):

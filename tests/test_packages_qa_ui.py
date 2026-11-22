@@ -56,6 +56,8 @@ PROBE = """
     const cs = getComputedStyle(root);
     const painted = cs.backgroundImage !== 'none'
         || (cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== 'transparent');
+    const buttons = [...root.querySelectorAll('button,a')];
+    const hooked = buttons.filter((el) => [...el.attributes].some((a) => a.name.startsWith('data-')));
     return {
         empty: false,
         rootClass: root.className || root.tagName,
@@ -64,9 +66,38 @@ PROBE = """
         font: cs.fontFamily.slice(0, 40),
         textLen: (root.innerText || '').trim().length,
         testids: root.querySelectorAll('[data-testid]').length,
-        buttons: root.querySelectorAll('button').length,
+        buttons: buttons.length,
+        hooked: hooked.length,
         height: Math.round(root.getBoundingClientRect().height),
     };
+}
+"""
+
+NAV_PROBE = """
+(id) => {
+    const win = document.querySelector('[data-testid="window-' + id + '"]');
+    const root = win && win.querySelector('.window-body');
+    if (!root) return [];
+    const nodes = root.querySelectorAll(
+        'nav button, [role="tab"], [data-tab], [class*="nav-item"], [class*="side"] button');
+    return [...new Set(nodes)].map((el, i) => ({
+        i,
+        label: (el.dataset.testid || el.textContent || '').trim().slice(0, 28),
+    })).slice(0, 10);
+}
+"""
+
+NAV_CLICK = """
+([id, index]) => {
+    const win = document.querySelector('[data-testid="window-' + id + '"]');
+    const root = win && win.querySelector('.window-body');
+    if (!root) return false;
+    const nodes = [...new Set(root.querySelectorAll(
+        'nav button, [role="tab"], [data-tab], [class*="nav-item"], [class*="side"] button'))];
+    const el = nodes[index];
+    if (!el || el.disabled) return false;
+    el.click();
+    return true;
 }
 """
 
@@ -175,6 +206,7 @@ def main() -> int:
             console_errors: list[str] = []
             page.on("pageerror", lambda exc: page_errors.append(str(exc)))
             page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+            click_nav = os.environ.get("ETHOS_QA_CLICK_NAV", "1") != "0"
             page.goto(base)
             page.wait_for_function("typeof window.openApp === 'function'", timeout=20000)
             theme = os.environ.get("ETHOS_QA_THEME", "light")
@@ -182,7 +214,7 @@ def main() -> int:
                 page.evaluate("() => { document.documentElement.classList.remove('light');"
                               "               document.documentElement.classList.add('dark'); }")
 
-            print(f"\n{'package':24}{'painted':9}{'text':7}{'testids':9}{'buttons':9}root")
+            print(f"\n{'package':24}{'painted':9}{'text':7}{'testids':7}{'hooks':10}{'views':6}root")
             for pkg in seeded:
                 app_id = f"pkg-{pkg['id']}"
                 page_errors.clear()
@@ -200,13 +232,28 @@ def main() -> int:
                 except Exception as exc:  # noqa: BLE001 - a timeout is a finding
                     probe = {"empty": True, "error": str(exc).splitlines()[0][:120]}
 
+                # Walk every rail/tab view: a view that throws on render is a real defect
+                # and the first screen never shows it.
+                views = 0
+                if click_nav and not probe.get("empty"):
+                    for item in page.evaluate(NAV_PROBE, app_id):
+                        if page.evaluate(NAV_CLICK, [app_id, item["i"]]):
+                            views += 1
+                            page.wait_for_timeout(350)
+
                 expected_proxy = pkg["service"]
+                # 503 is "the service or host tool behind this view is not available here"
+                # (no package services, no Samba on a throwaway instance) — informational.
+                unavailable = [e for e in console_errors if "503" in e]
                 real_console = [e for e in console_errors
-                                if not (expected_proxy and ("503" in e or "Failed to load resource" in e))]
+                                if "503" not in e
+                                and not (expected_proxy and "Failed to load resource" in e)]
                 painted = bool(probe.get("painted"))
                 text_len = int(probe.get("textLen") or 0)
                 print(f"{pkg['id']:24}{str(painted):9}{text_len:<7}"
-                      f"{probe.get('testids', '-'):<9}{probe.get('buttons', '-'):<9}"
+                      f"{str(probe.get('testids', '-')):>7}  "
+                      f"{str(probe.get('hooked', 0)) + '/' + str(probe.get('buttons', 0)):9}"
+                      f"{views:<6}"
                       f"{str(probe.get('rootClass') or probe.get('error') or '-')[:40]}")
 
                 if page_errors:
@@ -219,6 +266,9 @@ def main() -> int:
                         failures += 1
                     findings.append({"id": pkg["id"], "level": level, "kind": "console",
                                      "detail": real_console[:3]})
+                if unavailable:
+                    findings.append({"id": pkg["id"], "level": "info", "kind": "unavailable",
+                                     "detail": unavailable[:2]})
                 if probe.get("empty"):
                     failures += 1
                     findings.append({"id": pkg["id"], "level": "error", "kind": "no-content",
@@ -229,9 +279,11 @@ def main() -> int:
                 if not text_len and not probe.get("empty"):
                     findings.append({"id": pkg["id"], "level": "warn", "kind": "no-text",
                                      "detail": "window rendered without any text"})
-                if text_len and probe.get("testids") == 0 and pkg["id"] not in LEGACY:
+                if (text_len and not probe.get("testids") and not probe.get("hooked")
+                        and pkg["id"] not in LEGACY):
                     findings.append({"id": pkg["id"], "level": "warn", "kind": "no-testid",
-                                     "detail": "no data-testid in the rendered window"})
+                                     "detail": "no data-testid or action attribute on any "
+                                               "interactive element"})
                 if SHOTS:
                     SHOTS.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(SHOTS / f"{pkg['id']}.png"))

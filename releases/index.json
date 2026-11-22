@@ -1,13 +1,13 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T18:12:54+00:00",
+  "generated_at": "2026-11-22T17:45:56+00:00",
   "latest": {
     "version": "2.28.6",
     "git_sha": "d25660c",
     "git_sha_full": "d25660c05dd0d5a7e220d1fc40add9ddd76896d1",
     "build": 194,
-    "released_at": "2026-11-22T18:12:54+00:00",
-    "notes": "Package Center shows the effective (re-mapped) port a package listens on and can repair ports when another container took the original one after a boot."
+    "released_at": "2026-11-22T17:45:56+00:00",
+    "notes": "Package Center shows when a package had to move to another port and can repair a port lost to another container."
   },
   "releases": [
     {
@@ -15,8 +15,8 @@
       "git_sha": "d25660c",
       "git_sha_full": "d25660c05dd0d5a7e220d1fc40add9ddd76896d1",
       "build": 194,
-      "released_at": "2026-11-22T18:12:54+00:00",
-      "notes": "Package Center shows the effective (re-mapped) port a package listens on and can repair ports when another container took the original one after a boot."
+      "released_at": "2026-11-22T17:45:56+00:00",
+      "notes": "Package Center shows when a package had to move to another port and can repair a port lost to another container."
     },
     {
       "version": "2.28.5",
