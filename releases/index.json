@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T09:48:56+00:00",
+  "generated_at": "2026-11-22T09:58:19+00:00",
   "latest": {
-    "version": "2.13.1",
-    "git_sha": "57c88e0",
-    "git_sha_full": "57c88e0be30c0dd1ffd24452f71bd29689fc447d",
-    "build": 109,
-    "released_at": "2026-11-22T09:48:56+00:00",
-    "notes": "Video Station: 10-bit HEVC playback fix (VA-API nv12) and automatic software HLS fallback."
+    "version": "2.13.2",
+    "git_sha": "cf4ff5c",
+    "git_sha_full": "cf4ff5c12e55eabd3796b3f8775458d76da4dc03",
+    "build": 112,
+    "released_at": "2026-11-22T09:58:19+00:00",
+    "notes": "Movies with Dolby Digital Plus 5.1(side) audio (WEB-DL rips) play again: AAC is normalised to a standard 5.1/7.1 layout so Chrome accepts the stream. The player logs the real error, retries once and shows the reason; a crashed encoder is logged with its ffmpeg stderr."
   },
   "releases": [
+    {
+      "version": "2.13.2",
+      "git_sha": "cf4ff5c",
+      "git_sha_full": "cf4ff5c12e55eabd3796b3f8775458d76da4dc03",
+      "build": 112,
+      "released_at": "2026-11-22T09:58:19+00:00",
+      "notes": "Movies with Dolby Digital Plus 5.1(side) audio (WEB-DL rips) play again: AAC is normalised to a standard 5.1/7.1 layout so Chrome accepts the stream. The player logs the real error, retries once and shows the reason; a crashed encoder is logged with its ffmpeg stderr."
+    },
     {
       "version": "2.13.1",
       "git_sha": "57c88e0",
@@ -201,14 +209,6 @@
       "build": 58,
       "released_at": "2026-11-20T13:01:19+00:00",
       "notes": "Setup: the 'EthOS is set up' notification now appears after claiming the appliance"
-    },
-    {
-      "version": "2.4.0",
-      "git_sha": "55fe51e",
-      "git_sha_full": "55fe51ef3951edc3c05c314d754f6d2696aedcd0",
-      "build": 56,
-      "released_at": "2026-11-20T13:00:23+00:00",
-      "notes": "Setup: a freshly flashed appliance can be claimed in the browser with the code shown on its screen — no HDMI keyboard, no default password"
     }
   ]
 }
