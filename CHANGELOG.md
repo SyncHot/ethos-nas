@@ -11,6 +11,45 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-11-22
+
+### Added
+
+- **Privileged provisioning from the signed release.** A core update now also
+  applies the new root helpers, the exact sudoers rules declared in
+  `deploy/provision.json`, the systemd unit and allowlisted
+  `/etc/ethos-nas/*.conf` files. After one final
+  `sudo bash setup_scripts/setup_service.sh`, releases no longer need a manual
+  setup run. Spec: `docs/provisioning.md`.
+- `GET /api/system/doctor` reports `system-provisioning` (last applied result)
+  and `checkout-writable` (the backend must not be able to modify the checkout).
+
+### Security
+
+- The provisioner runs as root only from the updater (and the installer), takes
+  no arguments, is not reachable through sudo, writes a **separate**
+  `/etc/sudoers.d/ethos-nas-provided` (the installer's consolidated file is
+  never edited), validates it with `visudo -cf`, and restores every replaced
+  file on failure.
+- It refuses a manifest or helper source owned by, world-writable, or
+  group-writable by the service account — a writable checkout would otherwise
+  let the backend plant a root helper for the next update. The installer warns
+  and the doctor shows `checkout-writable`.
+
+### Changed
+
+- `deploy/ethos-update` now runs `provision` before the restart; the rollback
+  path re-provisions the previous release. Old installs without the provisioner
+  keep a guarded helper-refresh fallback with the one-time setup hint.
+
+### Upgrade
+
+- Run `sudo bash setup_scripts/setup_service.sh` once to install
+  `ethos-provision`. If the doctor reports `checkout-writable`, remove the
+  service user from the repository owner's group first
+  (`sudo gpasswd -d ethos-nas <owner-group>`) — provisioning fails closed on a
+  writable checkout.
+
 ## [2.9.0] - 2026-11-22
 
 ### Added

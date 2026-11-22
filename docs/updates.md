@@ -80,7 +80,8 @@ Helper flow (git-checkout installs):
 fetch signed index → verify Ed25519 (openssl) → take the signed commit
 → git fetch → git reset --hard <sha>   (as the repo owner, never root)
 → .venv/bin/pip install -r requirements.txt
-→ install the refreshed helper atomically (/usr/local/bin/ethos-update)
+→ deploy/ethos-provision applies helpers, sudoers, unit and confs
+  from the same signed checkout (docs/provisioning.md)
 → systemctl restart ethos-nas
 → poll :9000/api/system/status for 90 s
 ```
@@ -108,9 +109,17 @@ Limits (deliberate):
 - Code and dependencies roll back; **JSON stores do not**. A release that
   migrated a store needs the pre-update snapshot restored manually
   (`POST /api/system/config-import`).
+- Privileged configuration (helpers, `/etc/sudoers.d/ethos-nas-provided`, the
+  systemd unit, allowlisted `/etc/ethos-nas/*.conf`) is applied from
+  `deploy/provision.json` in the same signed commit. It has its own
+  backup/restore path, not git; a failed install aborts the update and restores
+  the previous files. Details: [`provisioning.md`](provisioning.md).
 - `git reset --hard` keeps untracked files; nothing in the data dir is touched.
 - One update at a time (`flock`), and the helper never accepts a URL/ref from
   the web UI.
+- Installs older than v2.10.0 still need one `sudo bash setup_scripts/setup_service.sh`
+  to install `ethos-provision`. Afterwards privileged configuration follows the
+  signed release automatically.
 
 ## UI
 

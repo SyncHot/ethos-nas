@@ -192,6 +192,12 @@ Until then Settings → System and `GET /api/system/doctor` show the
 After that one-time setup, `deploy/ethos-update` refreshes the helper file on
 every core update (the sudoers rules never change at runtime).
 
+Since v2.10.0 the same setup also installs `ethos-provision`, which applies
+`deploy/provision.json` on every core update — helper files, the separate
+sudoers file, the unit and allowlisted confs. After that bootstrap, adding a
+helper like this one no longer requires a manual setup run
+(see [`provisioning.md`](provisioning.md)).
+
 ## Status
 
 - [x] `deploy/ethos-os-update` (check/apply, scoped, locked, bounded)

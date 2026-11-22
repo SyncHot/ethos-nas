@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "helpers": [
+    {"name": "ethos-provision", "source": "deploy/ethos-provision"},
+    {"name": "ethos-update", "source": "deploy/ethos-update"},
+    {"name": "ethos-os-update", "source": "deploy/ethos-os-update"},
+    {"name": "ethos-set-password", "source": "deploy/ethos-set-password"},
+    {"name": "ethos-user-accounts", "source": "deploy/ethos-user-accounts"},
+    {"name": "ethos-samba-accounts", "source": "deploy/ethos-samba-accounts"},
+    {"name": "ethos-system-deps", "source": "deploy/ethos-system-deps"}
+  ],
+  "unit": {
+    "source": "deploy/ethos-nas.service"
+  },
+  "sudoers": [
+    "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-update",
+    "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-os-update check",
+    "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-os-update apply",
+    "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-set-password",
+    "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-user-accounts",
+    "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-samba-accounts",
+    "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-system-deps install samba",
+    "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-system-deps remove samba",
+    "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-system-deps install archive-tools",
+    "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-system-deps remove archive-tools"
+  ],
+  "confs": [
+    {
+      "destination": "/etc/ethos-nas/os-update.conf",
+      "lines": [
+        "DATA_DIR='{data_dir}'",
+        "SERVICE_USER='{service_user}'"
+      ]
+    }
+  ]
+}

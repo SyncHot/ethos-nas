@@ -25,7 +25,7 @@ from fastapi import (APIRouter, BackgroundTasks, Depends, File, HTTPException, R
                      UploadFile, WebSocket, WebSocketDisconnect)
 from pydantic import BaseModel
 
-from backend.config import APP_VERSION, settings
+from backend.config import APP_VERSION, INSTALL_DIR, settings
 from backend.services.net_utils import port_is_listening
 from backend.routers.auth import require_admin
 
@@ -301,6 +301,28 @@ def _doctor_checks() -> dict:
     add("os-update-helper", os_update_service.helper_available(), settings.OS_UPDATE_HELPER,
         "Run: sudo bash setup_scripts/setup_service.sh (installs the OS update helper "
         "and its two sudoers rules)", required=False)
+
+    # Privileged configuration applied from the signed release (deploy/ethos-provision).
+    import json as _json
+    try:
+        provision = _json.loads(
+            (settings.DATA_DIR / "provision" / "result.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        provision = {}
+    provision_status = str(provision.get("status") or "not run")
+    add("system-provisioning", provision_status in ("ok", "noop"),
+        f"{provision_status} {provision.get('at') or ''}".strip(),
+        "Run: sudo bash setup_scripts/setup_service.sh once — core updates apply "
+        "the signed configuration automatically afterwards", required=False)
+
+    # The updater installs root helpers from the checkout. The backend must not
+    # be able to modify it, or the service could plant its own root helper.
+    deploy_dir = Path(INSTALL_DIR) / "deploy"
+    writable = os.access(deploy_dir, os.W_OK)
+    add("checkout-writable", not writable, str(deploy_dir),
+        "Remove the service user from the repository owner's group "
+        "(sudo gpasswd -d <service-user> <owner-group>): a writable checkout lets "
+        "the backend plant root helpers", required=False)
 
     # User store reachable
     try:

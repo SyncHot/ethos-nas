@@ -100,6 +100,12 @@ UPDATE_PUBKEY_PEM="/etc/ethos-nas/update-pubkey.pem"
 # rules; the helper never accepts package names, versions or URLs from the UI.
 OS_UPDATE_HELPER_BIN="/usr/local/bin/ethos-os-update"
 OS_UPDATE_CONF="/etc/ethos-nas/os-update.conf"
+# Privileged provisioning (deploy/ethos-provision): applies helper files, the
+# separate sudoers file, the systemd unit and allowlisted confs from
+# deploy/provision.json. Runs as root from this installer and from
+# deploy/ethos-update; it is intentionally NOT reachable through sudo.
+PROVISION_HELPER_BIN="/usr/local/bin/ethos-provision"
+PROVISION_SUDOERS_FILE="/etc/sudoers.d/ethos-nas-provided"
 # Ed25519 release public key (DER/SPKI, base64) — same key as backend/config.py
 # RELEASE_PUBKEY_B64; the private half never leaves the maintainer's machine.
 UPDATE_PUBKEY_DER_B64="MCowBQYDK2VwAyEAsXiL7v0droY2BVyttuDt0Bqq6jB7MpknylJo+/iavqE="
@@ -128,7 +134,9 @@ if [ "${UNINSTALL}" = 1 ]; then
     rm -f "${SET_PASSWORD_HELPER_BIN}"
     rm -f "${UPDATE_HELPER_BIN}" "${UPDATE_CONF}" "${UPDATE_PUBKEY_PEM}"
     rm -f "${OS_UPDATE_HELPER_BIN}" "${OS_UPDATE_CONF}"
-    echo "✓ removed: ${UNIT_DST}, ${SUDOERS_FILE}, ${WRAPPER_BIN}, ${DOCKER_HELPER_BIN}, ${SYSTEM_DEPS_HELPER_BIN}, ${SAMBA_ACCOUNTS_HELPER_BIN}, ${USER_ACCOUNTS_HELPER_BIN}, ${SET_PASSWORD_HELPER_BIN}, ${UPDATE_HELPER_BIN}, ${OS_UPDATE_HELPER_BIN}"
+    rm -f "${PROVISION_HELPER_BIN}" "${PROVISION_SUDOERS_FILE}"
+    rm -rf /var/lib/ethos-provision
+    echo "✓ removed: ${UNIT_DST}, ${SUDOERS_FILE}, ${WRAPPER_BIN}, ${DOCKER_HELPER_BIN}, ${SYSTEM_DEPS_HELPER_BIN}, ${SAMBA_ACCOUNTS_HELPER_BIN}, ${USER_ACCOUNTS_HELPER_BIN}, ${SET_PASSWORD_HELPER_BIN}, ${UPDATE_HELPER_BIN}, ${OS_UPDATE_HELPER_BIN}, ${PROVISION_HELPER_BIN}"
     echo "  user '${TARGET_USER}' kept (remove manually with: userdel ${TARGET_USER})"
     exit 0
 fi
@@ -612,6 +620,16 @@ if [ -f "${OS_UPDATE_SRC}" ]; then
     echo "✓ ${OS_UPDATE_HELPER_BIN} installed (OS package update helper)"
 fi
 
+# ── 4d-quater. Provisioning helper ─────────────────────────────────────────
+# deploy/ethos-provision applies deploy/provision.json (helpers, sudoers,
+# unit, confs) from the signed checkout. No sudoers rule: only root callers
+# (this installer and deploy/ethos-update) ever execute it.
+PROVISION_SRC="${REPO_DIR}/deploy/ethos-provision"
+if [ -f "${PROVISION_SRC}" ]; then
+    install -m 0755 -o root -g root "${PROVISION_SRC}" "${PROVISION_HELPER_BIN}"
+    echo "✓ ${PROVISION_HELPER_BIN} installed (privileged provisioning)"
+fi
+
 # ── 4e. Optionally install Docker Engine now (fresh-server installs) ────────
 if [ "${ETHOS_INSTALL_DOCKER:-0}" = "1" ]; then
     if [ -S /var/run/docker.sock ]; then
@@ -662,6 +680,23 @@ sed -i \
     -e "s|__ETHOS_INSTALL_DIR__|${UNIT_REPO_DIR}|g" \
     "${UNIT_DST}"
 systemctl daemon-reload
+
+# Apply the signed provisioning manifest last: it owns the helper files, the
+# separate /etc/sudoers.d/ethos-nas-provided file, the unit and allowlisted
+# confs. Idempotent — on a healthy install it reports "already up to date".
+if runuser -u "${TARGET_USER}" -- test -w "${REPO_DIR}/deploy" 2>/dev/null; then
+    echo "! WARNING: ${TARGET_USER} can write ${REPO_DIR}/deploy — remove it from the repo" >&2
+    echo "  owner's group first (sudo gpasswd -d ${TARGET_USER} \$(stat -c %G '${REPO_DIR}'))," >&2
+    echo "  otherwise provisioning refuses to install helpers from a writable checkout." >&2
+fi
+if [ -x "${PROVISION_HELPER_BIN}" ] && [ -f "${REPO_DIR}/deploy/provision.json" ]; then
+    echo "→ applying privileged configuration (deploy/provision.json)"
+    if "${PROVISION_HELPER_BIN}"; then
+        echo "✓ privileged configuration applied"
+    else
+        echo "! provisioning failed — check the helper output above" >&2
+    fi
+fi
 
 systemctl enable ethos-nas
 # Restart (not just start) so group changes (docker) are picked up on re-runs.

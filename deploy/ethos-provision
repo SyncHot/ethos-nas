@@ -1,0 +1,447 @@
+#!/bin/bash
+# ethos-provision — apply privileged configuration from the signed checkout.
+#
+# Installed by setup_scripts/setup_service.sh as /usr/local/bin/ethos-provision.
+# Runs as root from exactly two places:
+#   * deploy/ethos-update — after `git reset` to the signed release commit and
+#     before the service restart, so a core update also ships new helpers,
+#     sudoers rules, the systemd unit and allowlisted conf files;
+#   * setup_scripts/setup_service.sh — bootstrap/repair.
+#
+# Contract:
+#   * takes NO arguments (the web UI can never pass a path, rule or command)
+#   * reads <INSTALL_DIR>/deploy/provision.json from the same signed commit
+#   * validates every entry, backs up every replaced file, writes a separate
+#     sudoers file (/etc/sudoers.d/ethos-nas-provided — never the installer's
+#     consolidated one), and restores the backup on any failure
+#   * idempotent: unchanged files are not rewritten
+#
+# Exit codes: 0 ok/noop, 2 usage, 3 busy, 4 invalid manifest, 5 install failed.
+# Spec: docs/provisioning.md.
+set -euo pipefail
+
+CONF="/etc/ethos-nas/update.conf"
+LOCK="/run/ethos-provision.lock"
+DRY="${ETHOS_PROVISION_DRY_RUN:-0}"
+
+log() { printf 'ethos-provision: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit "${2:-1}"; }
+
+if [ "$(id -u)" -ne 0 ] && [ "${DRY}" != "1" ]; then
+    die "must run as root (only a dry run may run unprivileged)" 1
+fi
+if [ "$#" -ne 0 ]; then
+    die "this helper takes no arguments" 2
+fi
+
+[ -r "${CONF}" ] || die "missing ${CONF} — re-run setup_scripts/setup_service.sh" 4
+# shellcheck disable=SC1090
+. "${CONF}"
+for var in INSTALL_DIR SERVICE_USER DATA_DIR; do
+    [ -n "${!var:-}" ] || die "${CONF} does not define ${var}" 4
+done
+
+MANIFEST="${INSTALL_DIR}/deploy/provision.json"
+[ -f "${MANIFEST}" ] || die "missing ${MANIFEST} (signed checkout incomplete?)" 4
+
+if [ "$(id -u)" -eq 0 ]; then
+    exec 9>"${LOCK}" || die "cannot open ${LOCK}" 5
+    flock -n 9 || die "another provisioning run is already active" 3
+fi
+
+exec python3 - "${INSTALL_DIR}" "${SERVICE_USER}" "${DATA_DIR}" "${DRY}" <<'PY'
+import datetime
+import hashlib
+import json
+import os
+import pwd
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+INSTALL_DIR, SERVICE_USER, DATA_DIR, DRY = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+
+
+def _service_ids() -> tuple:
+    try:
+        pw = pwd.getpwnam(SERVICE_USER)
+        return pw.pw_uid, set(os.getgrouplist(SERVICE_USER, pw.pw_gid))
+    except KeyError:
+        return -1, set()
+
+
+SERVICE_UID, SERVICE_GIDS = _service_ids()
+
+MANIFEST = os.path.join(INSTALL_DIR, "deploy", "provision.json")
+DEPLOY_DIR = os.path.realpath(os.path.join(INSTALL_DIR, "deploy"))
+STATE_DIR = os.path.join(DATA_DIR, "provision")
+RESULT = os.path.join(STATE_DIR, "result.json")
+BACKUP_ROOT = "/var/lib/ethos-provision"
+UNIT_PATH = "/etc/systemd/system/ethos-nas.service"
+SUDOERS_PATH = "/etc/sudoers.d/ethos-nas-provided"
+HELPER_DIR = "/usr/local/bin"
+CONF_DIR = "/etc/ethos-nas"
+
+MAX_FILE = 1024 * 1024
+MAX_HELPERS = 50
+MAX_RULES = 200
+MAX_CONFS = 20
+MAX_CONF_LINES = 40
+
+HELPER_RE = re.compile(r"^ethos-[a-z0-9][a-z0-9-]{0,39}$")
+CONF_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+CONF_LINE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,40}='[^'$`\\\n]{0,300}'$")
+ARG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+SUDO_PREFIX = f"{SERVICE_USER} ALL=(root) NOPASSWD: /usr/local/bin/"
+
+
+class ManifestError(RuntimeError):
+    pass
+
+
+def log(message: str) -> None:
+    print(f"ethos-provision: {message}", file=sys.stderr, flush=True)
+
+
+def now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def write_result(status: str, detail: str, changed: list, backup: str = "") -> None:
+    if DRY:
+        return
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        payload = {
+            "status": status,
+            "detail": str(detail)[:1000],
+            "changed": [str(item)[:200] for item in changed][:100],
+            "backup": str(backup)[:200],
+            "at": now_iso(),
+        }
+        tmp = RESULT + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, RESULT)
+        os.chmod(RESULT, 0o644)
+        uid = int(subprocess.run(["id", "-u", SERVICE_USER], capture_output=True, text=True).stdout.strip() or 0)
+        gid = int(subprocess.run(["id", "-g", SERVICE_USER], capture_output=True, text=True).stdout.strip() or 0)
+        os.chown(RESULT, uid, gid)
+    except (OSError, ValueError):
+        log("could not write result.json")
+
+
+def _ensure_protected(path: str) -> None:
+    """The checkout must not be writable by the account that runs the backend.
+
+    This helper executes as root and installs whatever the manifest names. If
+    the service user could modify those files, it could grant itself root
+    through the next core update — fail closed instead.
+    """
+    st = os.stat(path)
+    if SERVICE_UID >= 0 and st.st_uid == SERVICE_UID:
+        raise ManifestError(f"{path} must not be owned by {SERVICE_USER}")
+    if st.st_mode & 0o002:
+        raise ManifestError(f"{path} must not be world-writable")
+    if st.st_mode & 0o020 and st.st_gid in SERVICE_GIDS:
+        raise ManifestError(
+            f"{path} is group-writable by {SERVICE_USER} — remove the service "
+            "user from the repository owner's group (or the group write bit)")
+
+
+def _read_source(rel_path: str, label: str) -> bytes:
+    if not isinstance(rel_path, str) or not rel_path or len(rel_path) > 200:
+        raise ManifestError(f"{label}: invalid source path")
+    full = os.path.join(INSTALL_DIR, rel_path)
+    if os.path.islink(full):
+        raise ManifestError(f"{label}: source must not be a symlink")
+    real = os.path.realpath(full)
+    if not real.startswith(DEPLOY_DIR + os.sep):
+        raise ManifestError(f"{label}: source must live under deploy/")
+    if not os.path.isfile(real):
+        raise ManifestError(f"{label}: source missing ({rel_path})")
+    _ensure_protected(real)
+    size = os.path.getsize(real)
+    if size <= 0 or size > MAX_FILE:
+        raise ManifestError(f"{label}: source size out of range ({size} bytes)")
+    with open(real, "rb") as fh:
+        return fh.read()
+
+
+def _parse_manifest() -> dict:
+    try:
+        _ensure_protected(MANIFEST)
+        with open(MANIFEST, "rb") as fh:
+            if os.path.getsize(MANIFEST) > MAX_FILE:
+                raise ManifestError("provision.json is too large")
+            data = json.loads(fh.read().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise ManifestError(f"provision.json is not valid JSON: {exc}") from None
+    if not isinstance(data, dict) or data.get("schema") != 1:
+        raise ManifestError("unsupported provision manifest schema")
+    unknown = set(data) - {"schema", "helpers", "unit", "sudoers", "confs"}
+    if unknown:
+        raise ManifestError(f"unknown manifest keys: {', '.join(sorted(unknown))}")
+    return data
+
+
+def _plan_helpers(raw) -> list:
+    if not isinstance(raw, list) or len(raw) > MAX_HELPERS:
+        raise ManifestError("helpers must be a list (max 50)")
+    planned, seen = [], set()
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"name", "source"}:
+            raise ManifestError("each helper needs exactly name and source")
+        name = str(item.get("name") or "")
+        source = str(item.get("source") or "")
+        if not HELPER_RE.match(name):
+            raise ManifestError(f"invalid helper name: {name!r}")
+        if name in seen:
+            raise ManifestError(f"duplicate helper: {name}")
+        seen.add(name)
+        if source != f"deploy/{name}":
+            raise ManifestError(f"{name}: source must be deploy/{name}")
+        planned.append({
+            "kind": "helper",
+            "dest": os.path.join(HELPER_DIR, name),
+            "data": _read_source(source, name),
+            "mode": 0o755,
+        })
+    return planned
+
+
+def _plan_unit(raw) -> list:
+    if raw is None:
+        return []
+    if not isinstance(raw, dict) or set(raw) != {"source"}:
+        raise ManifestError("unit needs exactly a source")
+    source = str(raw.get("source") or "")
+    if source != "deploy/ethos-nas.service":
+        raise ManifestError("unit source must be deploy/ethos-nas.service")
+    text = _read_source(source, "unit").decode("utf-8")
+    text = re.sub(r"(?m)^User=.*$", f"User={SERVICE_USER}", text)
+    text = re.sub(r"(?m)^Group=.*$", f"Group={SERVICE_USER}", text)
+    text = text.replace("__ETHOS_INSTALL_DIR__", INSTALL_DIR)
+    if "__ETHOS_" in text:
+        raise ManifestError("unit still contains an unresolved placeholder")
+    if "[Unit]" not in text or "ExecStart=" not in text or f"User={SERVICE_USER}" not in text:
+        raise ManifestError("unit does not look like the EthOS service unit")
+    return [{"kind": "unit", "dest": UNIT_PATH, "data": text.encode("utf-8"), "mode": 0o644}]
+
+
+def _plan_sudoers(raw) -> str:
+    if not isinstance(raw, list) or len(raw) > MAX_RULES:
+        raise ManifestError("sudoers must be a list (max 200)")
+    lines = []
+    for rule in raw:
+        if not isinstance(rule, str) or len(rule) > 200 or "\n" in rule:
+            raise ManifestError("sudoers entries must be single short lines")
+        if not rule.startswith(SUDO_PREFIX):
+            raise ManifestError(f"sudoers rule must start with {SUDO_PREFIX!r}: {rule!r}")
+        if any(ch in rule for ch in "*?#,\\"):
+            raise ManifestError(f"sudoers rule contains a forbidden character: {rule!r}")
+        tokens = rule[len(SUDO_PREFIX):].split()
+        if not tokens or not tokens[0].startswith("ethos-"):
+            raise ManifestError(f"sudoers rule must target an ethos helper: {rule!r}")
+        if any(not ARG_RE.match(token) for token in tokens[1:]):
+            raise ManifestError(f"sudoers arguments must be lowercase words: {rule!r}")
+        lines.append(rule)
+    header = [
+        "# EthOS NAS — privileged configuration applied from the signed release.",
+        "# Generated by deploy/ethos-provision — do not edit by hand.",
+        "# setup_scripts/setup_service.sh keeps its own consolidated file.",
+    ]
+    return "\n".join(header + lines) + "\n"
+
+
+def _plan_confs(raw) -> list:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > MAX_CONFS:
+        raise ManifestError("confs must be a list (max 20)")
+    values = {"data_dir": DATA_DIR, "service_user": SERVICE_USER, "install_dir": INSTALL_DIR}
+    planned, seen = [], set()
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"destination", "lines"}:
+            raise ManifestError("each conf needs exactly destination and lines")
+        dest = str(item.get("destination") or "")
+        match = re.fullmatch(r"/etc/ethos-nas/([a-z0-9][a-z0-9-]{0,39})\.conf", dest)
+        if not match or not CONF_NAME_RE.match(match.group(1)):
+            raise ManifestError(f"invalid conf destination: {dest!r}")
+        if dest == "/etc/ethos-nas/update.conf":
+            raise ManifestError("update.conf is owned by setup_service.sh")
+        if dest in seen:
+            raise ManifestError(f"duplicate conf destination: {dest}")
+        seen.add(dest)
+        lines = item.get("lines")
+        if not isinstance(lines, list) or not 0 < len(lines) <= MAX_CONF_LINES:
+            raise ManifestError(f"{dest}: lines must be a non-empty list")
+        rendered = []
+        for line in lines:
+            if not isinstance(line, str) or len(line) > 400:
+                raise ManifestError(f"{dest}: conf lines must be short strings")
+            try:
+                line = line.format(**values)
+            except (KeyError, IndexError, ValueError):
+                raise ManifestError(f"{dest}: unknown placeholder in {line!r}") from None
+            if not CONF_LINE_RE.match(line):
+                raise ManifestError(f"{dest}: unsafe conf line {line!r}")
+            rendered.append(line)
+        planned.append({
+            "kind": "conf",
+            "dest": dest,
+            "data": ("\n".join([
+                "# Generated by deploy/ethos-provision — do not edit by hand.",
+                *rendered,
+            ]) + "\n").encode("utf-8"),
+            "mode": 0o644,
+        })
+    return planned
+
+
+def build_plan() -> dict:
+    data = _parse_manifest()
+    files = _plan_helpers(data.get("helpers") or [])
+    files += _plan_unit(data.get("unit"))
+    files += _plan_confs(data.get("confs"))
+    return {"files": files, "sudoers": _plan_sudoers(data.get("sudoers") or [])}
+
+
+def _different(path: str, data: bytes) -> bool:
+    try:
+        with open(path, "rb") as fh:
+            return fh.read() != data
+    except OSError:
+        return True
+
+
+def _atomic_write(path: str, data: bytes, mode: int) -> None:
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".ethos-provision-")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, mode)
+        if os.geteuid() == 0:
+            os.chown(tmp, 0, 0)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _backup(paths: list) -> tuple:
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    backup = os.path.join(BACKUP_ROOT, stamp)
+    os.makedirs(backup, mode=0o700, exist_ok=True)
+    os.chmod(backup, 0o700)
+    entries = {}
+    for path in paths:
+        if os.path.exists(path):
+            name = path.strip("/").replace("/", "_")
+            shutil.copy2(path, os.path.join(backup, name))
+            entries[path] = name
+        else:
+            entries[path] = None
+    with open(os.path.join(backup, "files.json"), "w", encoding="utf-8") as fh:
+        json.dump(entries, fh)
+    os.chmod(os.path.join(backup, "files.json"), 0o600)
+    return backup, entries
+
+
+def _restore(backup: str, entries: dict) -> None:
+    unit_touched = False
+    for path, name in entries.items():
+        try:
+            if name:
+                shutil.copy2(os.path.join(backup, name), path)
+            elif os.path.exists(path):
+                os.unlink(path)
+        except OSError:
+            log(f"could not restore {path}")
+        if path == UNIT_PATH:
+            unit_touched = True
+    if unit_touched and os.path.isdir("/run/systemd/system"):
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+
+
+def _install_sudoers(text: str) -> None:
+    directory = os.path.dirname(SUDOERS_PATH)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".ethos-nas-provided.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o600)
+        check = subprocess.run(["visudo", "-cf", tmp], capture_output=True, text=True)
+        if check.returncode != 0:
+            raise ManifestError((check.stderr or "visudo rejected the rules").strip()[:500])
+        os.chmod(tmp, 0o440)
+        os.chown(tmp, 0, 0)
+        os.replace(tmp, SUDOERS_PATH)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _daemon_reload() -> None:
+    if os.path.isdir("/run/systemd/system"):
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+
+
+def main() -> int:
+    try:
+        plan = build_plan()
+        files = plan["files"]
+        changed = [item["dest"] for item in files if _different(item["dest"], item["data"])]
+        sudoers_changed = _different(SUDOERS_PATH, plan["sudoers"].encode("utf-8"))
+    except ManifestError as exc:
+        log(str(exc))
+        write_result("failed", str(exc), [])
+        return 4
+
+    if DRY:
+        log(f"dry run: {len(changed)} file(s), sudoers changed={sudoers_changed}")
+        for dest in changed:
+            log(f"would install {dest}")
+        return 0
+
+    if not changed and not sudoers_changed:
+        log("configuration already up to date")
+        write_result("noop", "", [])
+        return 0
+
+    targets = changed + ([SUDOERS_PATH] if sudoers_changed else [])
+    backup, entries = _backup(targets)
+    try:
+        for item in files:
+            if item["dest"] in changed:
+                _atomic_write(item["dest"], item["data"], item["mode"])
+        if sudoers_changed:
+            _install_sudoers(plan["sudoers"])
+        if UNIT_PATH in changed:
+            _daemon_reload()
+    except Exception as exc:  # restore first, report second
+        log(f"install failed: {exc} — restoring {backup}")
+        _restore(backup, entries)
+        write_result("failed", f"{type(exc).__name__}: {exc}", changed, backup)
+        return 5
+
+    digest = hashlib.sha256(plan["sudoers"].encode("utf-8")).hexdigest()[:12]
+    log(f"applied {len(changed)} file(s), sudoers {digest}")
+    write_result("ok", "", changed, backup)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY

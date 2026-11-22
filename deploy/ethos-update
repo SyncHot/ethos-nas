@@ -122,6 +122,12 @@ rollback() {  # rollback <reason>
     runuser -u "${REPO_OWNER}" -- git -C "${INSTALL_DIR}" reset --hard "${FROM_SHA}" >/dev/null
     runuser -u "${REPO_OWNER}" -- "${INSTALL_DIR}/.venv/bin/pip" install \
         --disable-pip-version-check -q -r "${INSTALL_DIR}/requirements.txt" || true
+    # Restore the privileged configuration of the *previous* release before it
+    # restarts: the failed update may already have installed new helpers,
+    # sudoers rules or a unit file.
+    if [ -x /usr/local/bin/ethos-provision ] && [ -f "${INSTALL_DIR}/deploy/provision.json" ]; then
+        /usr/local/bin/ethos-provision || log "warning: provisioning rollback failed"
+    fi
     systemctl restart "${SERVICE_UNIT}" || true
     for _ in $(seq 1 "${HEALTH_TIMEOUT}"); do
         code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "${HEALTH_URL}" || true)"
@@ -224,25 +230,52 @@ runuser -u "${REPO_OWNER}" -- "${INSTALL_DIR}/.venv/bin/pip" install \
     --disable-pip-version-check -q -r "${INSTALL_DIR}/requirements.txt" \
     || rollback "dependency install failed"
 
-# Refresh the installed helper from the signed checkout. The running script is
-# replaced atomically (.new + mv), so subsequent updates get the scoped variant
-# above without a manual setup_service.sh run.
-step "helper" "install updated ethos-update"
-if install -m 0755 "${INSTALL_DIR}/deploy/ethos-update" "/usr/local/bin/ethos-update.new"; then
-    mv -f "/usr/local/bin/ethos-update.new" "/usr/local/bin/ethos-update" \
-        || log "warning: could not replace the installed helper — continuing"
+# Apply the privileged configuration from the signed checkout (helpers, the
+# separate ethos-nas-provided sudoers file, the systemd unit, allowlisted
+# confs). A failure aborts the update before the restart, which triggers the
+# code rollback above — and that rollback re-provisions the previous release.
+step "provision" "privileged configuration"
+if [ -x /usr/local/bin/ethos-provision ] && [ -f "${INSTALL_DIR}/deploy/provision.json" ]; then
+    /usr/local/bin/ethos-provision || rollback "system provisioning failed"
 else
-    log "warning: could not stage the updated helper — continuing"
-fi
-# The OS package helper is refreshed only when setup_service.sh already
-# installed it: its sudoers rules are written by the installer, so a server
-# that never re-ran the setup keeps showing the "helper not installed" hint.
-if [ -x /usr/local/bin/ethos-os-update ] && [ -f "${INSTALL_DIR}/deploy/ethos-os-update" ]; then
-    if install -m 0755 "${INSTALL_DIR}/deploy/ethos-os-update" "/usr/local/bin/ethos-os-update.new"; then
-        mv -f "/usr/local/bin/ethos-os-update.new" "/usr/local/bin/ethos-os-update" \
-            || log "warning: could not replace the OS update helper — continuing"
-    else
-        log "warning: could not stage the OS update helper — continuing"
+    log "warning: ethos-provision is not installed — run setup_service.sh once"
+    # Old installs: refresh the helpers directly, but only when the service
+    # user cannot have modified them. A checkout writable by the backend would
+    # otherwise turn the next update into arbitrary root code execution.
+    SERVICE_UID="$(id -u "${SERVICE_USER}")"
+    SERVICE_GIDS=" $(id -G "${SERVICE_USER}") "
+    check_helper_source() {
+        local src="$1"
+        [ -f "${src}" ] || return 0
+        local uid gid mode
+        uid="$(stat -c %u "${src}")"
+        gid="$(stat -c %g "${src}")"
+        mode="$(stat -c %a "${src}")"
+        [ "${uid}" != "${SERVICE_UID}" ] \
+            || die "refusing ${src}: owned by ${SERVICE_USER}" 7
+        [ $((10#${mode} & 002)) -eq 0 ] \
+            || die "refusing ${src}: world-writable" 7
+        if [ $((10#${mode} & 020)) -ne 0 ] && [[ "${SERVICE_GIDS}" == *" ${gid} "* ]]; then
+            die "refusing ${src}: group-writable by ${SERVICE_USER}" 7
+        fi
+    }
+    check_helper_source "${INSTALL_DIR}/deploy/ethos-update"
+    if [ -f "${INSTALL_DIR}/deploy/ethos-update" ]; then
+        if install -m 0755 "${INSTALL_DIR}/deploy/ethos-update" "/usr/local/bin/ethos-update.new"; then
+            mv -f "/usr/local/bin/ethos-update.new" "/usr/local/bin/ethos-update" \
+                || log "warning: could not replace the installed helper — continuing"
+        else
+            log "warning: could not stage the updated helper — continuing"
+        fi
+    fi
+    if [ -x /usr/local/bin/ethos-os-update ] && [ -f "${INSTALL_DIR}/deploy/ethos-os-update" ]; then
+        check_helper_source "${INSTALL_DIR}/deploy/ethos-os-update"
+        if install -m 0755 "${INSTALL_DIR}/deploy/ethos-os-update" "/usr/local/bin/ethos-os-update.new"; then
+            mv -f "/usr/local/bin/ethos-os-update.new" "/usr/local/bin/ethos-os-update" \
+                || log "warning: could not replace the OS update helper — continuing"
+        else
+            log "warning: could not stage the OS update helper — continuing"
+        fi
     fi
 fi
 
