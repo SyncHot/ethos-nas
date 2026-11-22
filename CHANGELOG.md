@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.26.1] - 2026-11-22
+
+### Fixed
+
+- **Cameras: a camera's own retention setting is now enforced.** The janitor used
+  only the global default, so `record.retention_days` set on one camera (for
+  example 3 days on a camera whose RTSP is intermittent) was ignored. Each camera
+  is now purged with its own value; the newest run of every camera is always kept.
+
 ## [2.26.0] - 2026-11-22
 
 ### Added

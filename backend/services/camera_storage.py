@@ -220,10 +220,19 @@ def purge(retention_days: int | None = None, quota_pct: int | None = None) -> di
     cfg = camera_settings.load()
     days = cfg["default_retention_days"] if retention_days is None else int(retention_days)
     quota = cfg["quota_pct"] if quota_pct is None else int(quota_pct)
-    cutoff = time.time() - max(0, days) * 86400
     removed_bytes = 0
     removed_dirs = 0
     root = storage_root()
+
+    # A camera may override the global retention (`record.retention_days`).
+    try:
+        from backend.services import camera_service
+
+        overrides = {c["id"]: (c.get("record") or {}).get("retention_days")
+                     for c in camera_service._load_cameras()["cameras"]}
+    except Exception:  # noqa: BLE001 — a bad store must not stop retention
+        logger.error("Could not read per-camera retention overrides", exc_info=True)
+        overrides = {}
 
     try:
         camera_dirs = [p for p in recordings_root().iterdir() if p.is_dir()]
@@ -231,11 +240,17 @@ def purge(retention_days: int | None = None, quota_pct: int | None = None) -> di
         camera_dirs = []
 
     for cam_dir in camera_dirs:
+        override = overrides.get(cam_dir.name)
+        try:
+            cam_days = float(override) if override is not None else float(days)
+        except (TypeError, ValueError):
+            cam_days = float(days)
+        cam_cutoff = time.time() - max(0.0, cam_days) * 86400
         newest = _newest_run(cam_dir)
         for newest_mtime, path in _run_dirs(cam_dir):
             if path == newest or (time.time() - newest_mtime) < ACTIVE_GRACE_S:
                 continue
-            if days > 0 and newest_mtime >= cutoff:
+            if cam_days > 0 and newest_mtime >= cam_cutoff:
                 break  # this and every later run is still inside retention
             try:
                 removed_bytes += dir_size(path)

@@ -52,7 +52,8 @@ one ffmpeg per stream (CameraPipeline supervisor, restart 5/15/60 s)
 - The live window is deleted/rotated by ffmpeg (`delete_segments`); the janitor
   never touches it.
 - A run is only purged when its newest file is ≥ 5 min old and it is not the
-  camera's newest run, so a write in progress is never deleted.
+  camera's newest run, so a write in progress is never deleted. Each camera may
+  override the global retention with `record.retention_days`.
 - The quota is a **free-space budget**: the janitor lets recordings grow only
   into space that keeps `100 − quota_pct` of the volume free, so a system disk
   that already holds other data is never filled (it is not `total × quota_pct`).
@@ -191,5 +192,5 @@ but are admin-only; the desktop app records through `record.mode`.
   URL-like camera names (v2.25.1).
 - 2026-11-22 — v2.26.0: single-stream cameras archive from the live ffmpeg (one
   RTSP session for live + recording + motion) and the retention quota is based
-  on actual free space. `tests/test_cameras_core.py` **55/55**; combined
+  on actual free space. `tests/test_cameras_core.py` **58/58**; combined
   live+archive+frames command verified against an H.264 file input.

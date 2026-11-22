@@ -8,6 +8,7 @@ Run:
 """
 
 import os
+import shutil
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -227,6 +228,35 @@ def main() -> int:
               f"{usage['quota_bytes']} != {usage['recordings_bytes']}")
     finally:
         camera_storage.shutil.disk_usage = real_disk_usage
+
+    print("\nPart I — per-camera retention override")
+    other_id = "cam_bbbbbbbbbbbb"
+    real_load = camera_service._load_cameras
+    try:
+        aged = (datetime.now() - timedelta(days=3)).timestamp()
+        newer = (datetime.now() - timedelta(days=1)).timestamp()
+        per_camera = {(cam_id, "06-00-00"): aged, (other_id, "07-00-00"): aged,
+                      (other_id, "09-00-00"): newer}
+        for (cid, run), mtime in per_camera.items():
+            run_dir = camera_storage.run_dir(cid, day, run)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            marker = run_dir / "seg00000.m4s"
+            marker.write_bytes(b"x" * 32)
+            os.utime(marker, (mtime, mtime))
+        camera_service._load_cameras = lambda: {"version": 2, "cameras": [
+            {"id": cam_id, "record": {"retention_days": 0}},
+            {"id": other_id, "record": {"retention_days": None}},
+        ]}
+        camera_storage.purge(retention_days=30, quota_pct=80)
+        check("per-camera retention=0 purges that camera only",
+              not camera_storage.run_dir(cam_id, day, "06-00-00").exists())
+        check("global retention keeps the other camera's old run",
+              camera_storage.run_dir(other_id, day, "07-00-00").exists())
+        check("newest run of every camera is always kept",
+              camera_storage.run_dir(other_id, day, "09-00-00").exists())
+    finally:
+        camera_service._load_cameras = real_load
+        shutil.rmtree(camera_storage.camera_recordings_dir(other_id), ignore_errors=True)
 
     failures = [name for name, ok, _ in _results if not ok]
     print(f"\n{len(_results) - len(failures)}/{len(_results)} checks passed")
