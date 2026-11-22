@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T14:11:13+00:00",
+  "generated_at": "2026-11-22T14:12:32+00:00",
   "latest": {
-    "version": "2.21.1",
-    "git_sha": "faf3194",
-    "git_sha_full": "faf3194e6bfaf6e881f329f1acc3769f24a6b595",
-    "build": 156,
-    "released_at": "2026-11-22T14:11:13+00:00",
-    "notes": ""
+    "version": "2.22.0",
+    "git_sha": "f6637ab",
+    "git_sha_full": "f6637ab0c9fad84bfb732f961b86e50e20c53ebf",
+    "build": 158,
+    "released_at": "2026-11-22T14:12:32+00:00",
+    "notes": "Books: offline retry/cancel, locked-phone progress, offline reading without a session, faster large libraries, EPUB swipe and PDF pinch"
   },
   "releases": [
+    {
+      "version": "2.22.0",
+      "git_sha": "f6637ab",
+      "git_sha_full": "f6637ab0c9fad84bfb732f961b86e50e20c53ebf",
+      "build": 158,
+      "released_at": "2026-11-22T14:12:32+00:00",
+      "notes": "Books: offline retry/cancel, locked-phone progress, offline reading without a session, faster large libraries, EPUB swipe and PDF pinch"
+    },
     {
       "version": "2.21.1",
       "git_sha": "faf3194",
@@ -201,14 +209,6 @@
       "build": 95,
       "released_at": "2026-11-22T08:30:15+00:00",
       "notes": "Download Manager: Resume repairs tasks queued under an old, unwritable download folder"
-    },
-    {
-      "version": "2.12.0",
-      "git_sha": "6d0e8eb",
-      "git_sha_full": "6d0e8eb443031108d61adbc33461a2c6fc4b686c",
-      "build": 92,
-      "released_at": "2026-11-22T08:15:52+00:00",
-      "notes": "Video Station: HLS playback with VA-API hardware decode/encode, cinema UI 2.0 and mobile parity."
     }
   ]
 }
