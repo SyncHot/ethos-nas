@@ -113,6 +113,7 @@ jobs:
                    tests/test_video_thumb_pipeline.py \
                    tests/test_video_player_teardown.py \
                    tests/test_a11y.py \
+                   tests/test_package_proxy_error.py \
                    tests/test_app_ui.py; do
             echo "::group::$t"
             python "$t"

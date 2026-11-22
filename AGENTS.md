@@ -12,6 +12,7 @@ serves the API (`/api/*`), WebSockets and the SPA.
 | Daemon | systemd `ethos-nas` — **no auto-reload**. Restart only via UI: Settings → Restart (`POST /api/system/restart`). Fallback: ask the user to run `sudo systemctl restart ethos-nas`. Logs: `journalctl -u ethos-nas -f` |
 | Isolated instance | `ETHOS_PORT=9002 ETHOS_DATA_DIR=/tmp/ethos-test-data nohup .venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 9002 &` — **always** set `ETHOS_DATA_DIR` |
 | Tests | `.venv/bin/python run_tests.py` — needs `ETHOS_TEST_PASSWORD` |
+| Packages QA | `.venv/bin/python scripts/ethos-qa static --repo ~/apps/compose/ethos-packages --live` · `tests/test_packages_qa_ui.py` — findings in `docs/packages-qa.md` |
 | Health | `curl -sf http://localhost:9000/api/system/status` (HTTP 401 = up) |
 | Swagger | http://localhost:9000/docs |
 

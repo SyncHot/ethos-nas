@@ -39,6 +39,7 @@ Needs `ETHOS_TEST_PASSWORD` (never hardcoded). Prefer the targeted subset, then 
 | Auth / security / paths | `tests/test_security_invariants.py`, `tests/test_logging_convention.py` |
 | Any router | `tests/test_router_smoke.py` |
 | Frontend escaping/UI | `tests/test_frontend_escaping.py`, `tests/test_a11y.py`, `tests/test_ui_states.py` |
+| Packages / catalog | `scripts/ethos-qa static --repo ~/apps/compose/ethos-packages --live`, `tests/test_packages_qa_ui.py`, `scripts/ethos-pack lint\|verify` |
 | A feature | `tests/test_<feature>.py` (Playwright) |
 | Everything | `ETHOS_TEST_PASSWORD=... .venv/bin/python run_tests.py` |
 
