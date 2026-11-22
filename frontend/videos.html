@@ -75,9 +75,20 @@
             <div class="vd-searchbar">
                 <input id="vd-search" type="search" placeholder="Search movies, series, episodes…"
                        aria-label="Search the video library" autocomplete="off">
+                <button type="button" class="vd-btn small" id="vd-select-btn">Select</button>
             </div>
             <div id="vd-content" class="vd-content" aria-live="polite"></div>
         </main>
+
+        <!-- Multi-select: queue many films in the default version -->
+        <div id="vd-select-bar" class="vd-select-bar" role="region" aria-label="Selected films" hidden>
+            <span id="vd-select-count">0 selected</span>
+            <button type="button" class="vd-btn small" id="vd-select-all">Select all</button>
+            <button type="button" class="vd-btn primary small" id="vd-select-download" disabled>
+                ⬇ Download · <span id="vd-select-download-label">1080p</span>
+            </button>
+            <button type="button" class="vd-icon-btn" id="vd-select-cancel" aria-label="Cancel selection">✕</button>
+        </div>
     </div>
 
     <!-- Detail sheet -->

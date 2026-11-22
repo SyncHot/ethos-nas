@@ -37,6 +37,8 @@ const state = {
     downloadQuality: 'balanced',
     downloadQualities: [],
     downloadTimer: null,
+    selectMode: false,
+    selected: new Set(),
     installPrompt: null,
     offline: !navigator.onLine,
     localOnly: false,
@@ -56,6 +58,13 @@ const els = {
     menu: $('vd-menu'),
     search: $('vd-search'),
     content: $('vd-content'),
+    selectBtn: $('vd-select-btn'),
+    selectBar: $('vd-select-bar'),
+    selectCount: $('vd-select-count'),
+    selectAll: $('vd-select-all'),
+    selectDownload: $('vd-select-download'),
+    selectDownloadLabel: $('vd-select-download-label'),
+    selectCancel: $('vd-select-cancel'),
     sheet: $('vd-sheet'),
     sheetBody: $('vd-sheet-body'),
     downloads: $('vd-downloads'),
@@ -209,6 +218,7 @@ function logout() {
     try { localStorage.removeItem('token'); } catch { /* ignore */ }
     setToken(null);
     stopPlayer();
+    if (els.selectBar) setSelectMode(false);
     state.library = null;
     state.home = { continue_watching: [], recently_added: [] };
     showLogin();
@@ -267,6 +277,7 @@ async function boot() {
         state.library = data;
         state.localOnly = false;
         render();
+        loadDownloadSettings();
     } catch (error) {
         if (error?.status === 401) { showLogin('Your session expired — sign in again.'); return; }
         // Offline (or the NAS is down): an installed PWA must still show what it
@@ -337,6 +348,7 @@ function render() {
             ? `<section class="vd-shelf"><div class="vd-shelf-head"><h2>Results</h2><span>${hits.length}</span></div>
                <div class="vd-grid">${hits.map((item) => cardHtml(item)).join('')}</div></section>`
             : `<div class="vd-empty"><b>No matches</b>Nothing in the library matches “${esc(state.query)}”.</div>`;
+        paintSelection();
         return;
     }
     if (!state.library) { renderLoading('Reading your library…'); return; }
@@ -358,7 +370,88 @@ function render() {
         pieces.push(`<div class="vd-empty"><b>No videos yet</b>Add a folder in the desktop Videos app (Settings → Library).</div>`);
     }
     els.content.innerHTML = pieces.join('');
+    paintSelection();
     updateDownloadsBadge();
+}
+
+// ── multi-select (queue many films at once) ───────────────────────────────
+
+function setSelectMode(on) {
+    state.selectMode = !!on;
+    if (!state.selectMode) state.selected.clear();
+    els.content.classList.toggle('is-selecting', state.selectMode);
+    els.selectBtn.textContent = state.selectMode ? 'Done' : 'Select';
+    els.selectBtn.classList.toggle('primary', state.selectMode);
+    els.selectBar.hidden = !state.selectMode;
+    els.selectDownloadLabel.textContent = qualityLabel(state.downloadQuality);
+    paintSelection();
+}
+
+function paintSelection() {
+    els.content.querySelectorAll('.vd-card[data-path]').forEach((card) => {
+        card.classList.toggle('is-selected', state.selected.has(card.dataset.path));
+    });
+    if (!els.selectBar) return;
+    els.selectCount.textContent = `${state.selected.size} selected`;
+    els.selectDownload.disabled = state.selected.size === 0;
+    els.selectAll.textContent = allVisibleSelected() ? 'Clear all' : 'Select all';
+    els.selectDownloadLabel.textContent = qualityLabel(state.downloadQuality);
+}
+
+function visibleItems() {
+    const seen = new Set();
+    const out = [];
+    els.content.querySelectorAll('[data-path]').forEach((el) => {
+        const path = el.dataset.path;
+        if (!path || seen.has(path)) return;
+        const item = findItem(path);
+        if (!item) return;
+        seen.add(path);
+        out.push(item);
+    });
+    return out;
+}
+
+function allVisibleSelected() {
+    const items = visibleItems();
+    return items.length > 0 && items.every((item) => state.selected.has(item.path));
+}
+
+function toggleSelect(path, cardEl) {
+    if (state.selected.has(path)) state.selected.delete(path);
+    else state.selected.add(path);
+    if (cardEl) cardEl.classList.toggle('is-selected', state.selected.has(path));
+    paintSelection();
+}
+
+function selectAllVisible() {
+    const items = visibleItems();
+    if (allVisibleSelected()) state.selected.clear();
+    else items.forEach((item) => state.selected.add(item.path));
+    paintSelection();
+}
+
+async function downloadSelected() {
+    const quality = state.downloadQuality;
+    const items = [...state.selected].map((path) => findItem(path)).filter(Boolean);
+    if (!items.length) return;
+    setSelectMode(false);
+    let queued = 0;
+    let failed = 0;
+    for (const item of items) {
+        try {
+            await queueDownload(item, quality);
+            queued += 1;
+        } catch (error) {
+            failed += 1;
+            logWarn('Batch download failed', `${item.path}: ${apiError(error)}`);
+        }
+    }
+    state.downloads = downloadsSnapshot();
+    updateDownloadsBadge();
+    render();
+    if (failed) toast(`${queued} queued · ${failed} failed`, 'warning');
+    else toast(`${queued} queued · ${qualityLabel(quality)}`, 'success');
 }
 
 function findItem(path) {
@@ -605,6 +698,19 @@ async function retryOne(id) {
 
 // ── settings ──────────────────────────────────────────────────────────────
 
+async function loadDownloadSettings() {
+    try {
+        const data = await apiJson('/api/videos/download-settings');
+        if (data?.quality) state.downloadQuality = data.quality;
+        if (Array.isArray(data?.qualities) && data.qualities.length) state.downloadQualities = data.qualities;
+        if (els.selectBar) paintSelection();
+        renderSettings();
+    } catch (error) {
+        // Older core / offline: keep the local default.
+        logWarn('Download settings load failed', String(error));
+    }
+}
+
 function renderSettings() {
     if (!els.qualityOptions) return;
     const choices = state.downloadQualities.length ? state.downloadQualities : [
@@ -623,14 +729,7 @@ async function openSettings() {
     els.menu.hidden = true;
     els.settings.hidden = false;
     renderSettings();
-    try {
-        const data = await apiJson('/api/videos/download-settings');
-        state.downloadQuality = data.quality || 'balanced';
-        state.downloadQualities = Array.isArray(data.qualities) ? data.qualities : [];
-        renderSettings();
-    } catch (error) {
-        toast(`Settings unavailable: ${apiError(error)}`, 'error');
-    }
+    await loadDownloadSettings();
 }
 
 async function saveDownloadQuality(value) {
@@ -639,6 +738,7 @@ async function saveDownloadQuality(value) {
         state.downloadQuality = data.quality || value;
         state.downloadQualities = Array.isArray(data.qualities) ? data.qualities : state.downloadQualities;
         renderSettings();
+        if (els.selectBar) paintSelection();
         toast('Default download version saved', 'success');
     } catch (error) {
         toast(`Could not save: ${apiError(error)}`, 'error');
@@ -1097,8 +1197,17 @@ function bindEvents() {
         const el = event.target.closest('[data-action]');
         if (!el) return;
         const item = findItem(el.dataset.path);
-        if (el.dataset.action === 'open' && item) openSheet(item);
+        if (el.dataset.action !== 'open' || !item) return;
+        if (state.selectMode) {
+            toggleSelect(item.path, el.closest('.vd-card'));
+            return;
+        }
+        openSheet(item);
     });
+    els.selectBtn.addEventListener('click', () => setSelectMode(!state.selectMode));
+    els.selectCancel.addEventListener('click', () => setSelectMode(false));
+    els.selectAll.addEventListener('click', selectAllVisible);
+    els.selectDownload.addEventListener('click', downloadSelected);
     els.sheetBody.addEventListener('click', (event) => {
         const el = event.target.closest('[data-action]');
         if (!el) return;

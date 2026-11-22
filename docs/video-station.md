@@ -583,6 +583,10 @@ export was a full re-encode. The queue, the versions and the speed are now a sha
   default version.
 - **Package** (ethos-video 2.2.0): a Downloads section that shows the same queue and a “Save to
   this computer” link, a version picker on the detail page and the default in Settings.
+- **Multi-select** (core 2.18.0, ethos-video 2.3.0): Movies / Library / Search grids (and the
+  phone `/videos` grid) get a **Select** mode — tap posters or **Select all**, then
+  **Download · <default version>**. Each title is queued through the same `POST /exports`; the
+  NAS renders them one at a time. The phone app also loads the saved default on start.
 
 ### Measurements (N150, isolated `:9002`)
 - 1080p H.264 + AC3 MKV, `original`: remux in seconds (video copy, audio → AAC).

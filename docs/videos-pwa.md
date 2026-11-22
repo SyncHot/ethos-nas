@@ -53,6 +53,9 @@ icon can be pinned.
    job is active) and **reconciles on every start**: a render that continued
    while the app was closed reappears with its stage and position instead of
    being marked lost. Only the transfer needs the page — the NAS queue does not.
+   **Select** turns the grid into a picker (`Select all` + the default version
+   on the Download button), so a whole holiday batch is one tap; every selected
+   film is queued through the same endpoint.
 4. When a job is `done` the page streams `GET /api/videos/exports/{id}/download`
    through a counting `TransformStream` straight into **Cache Storage**
    (`ethos-media-v1`, key `/__media/<job id>`) — a multi-GB film never sits in
@@ -138,6 +141,7 @@ after a reload; nothing outside the caller's scope is ever returned.
 - [x] Finite MP4 render queue with caps, dedupe and notifications
 - [x] Server-backed multi-film queue, rolling window and `original` copy mode
   (core 2.16.0)
+- [x] Multi-select batch queueing in the default version (core 2.18.0)
 - [x] Cache Storage downloads with Range-capable offline playback
 - [x] Service worker precache + `/__media` handler + shell fallback
 - [x] Retention hook, shutdown handling, `docs` + `CHANGELOG`

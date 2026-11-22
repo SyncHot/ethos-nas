@@ -58,12 +58,19 @@ def main() -> int:
           'data-q="high"' not in videos and "Source</button>" not in videos)
     check("polling is throttled and visibility-aware",
           "startDownloadPolling" in videos and "visibilityState" in videos)
+    check("multi-select queues many films",
+          "downloadSelected" in videos and "selectAllVisible" in videos
+          and "state.selected" in videos and "is-selecting" in videos)
 
     check("markup has the settings entry", 'id="vd-settings-btn"' in page)
     check("markup has the download version group", 'id="vd-quality-options"' in page)
     check("markup has the queue summary", 'id="vd-downloads-summary"' in page)
+    check("markup has the multi-select bar",
+          'id="vd-select-bar"' in page and 'id="vd-select-btn"' in page
+          and 'id="vd-select-download"' in page)
     check("styles define the version choices", ".vd-choice" in css)
     check("styles define the stage labels", '.vd-dl-stage[data-tone="ok"]' in css)
+    check("styles define the selection state", ".is-selecting" in css and ".vd-select-bar" in css)
 
     failed = [r for r in RESULTS if not r[1]]
     print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} checks passed")

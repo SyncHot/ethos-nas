@@ -11,6 +11,23 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.18.0] - 2026-11-22
+
+### Added
+
+- **Videos: pick many films at once and download them in one go.** Tap
+  **Select** in the phone app (`/videos`) or the desktop Video Station window,
+  tap the posters (or **Select all**), then **Download · <default version>**.
+  Every selected film is queued in the version from Settings — the NAS still
+  prepares them one at a time, so a whole holiday batch is one action.
+
+### Changed
+
+- The Videos phone app now loads the saved download default on start, so the
+  one-tap Download and the batch Download always show the same version as
+  Settings (previously the first download after opening the app used 1080p
+  until Settings was opened).
+
 ## [2.17.0] - 2026-11-22
 
 ### Added
