@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T17:37:51+00:00",
+  "generated_at": "2026-11-22T17:45:56+00:00",
   "latest": {
-    "version": "2.28.5",
-    "git_sha": "ebcf236",
-    "git_sha_full": "ebcf236e27f6a6bcab7690bb7f0d38afe06937b0",
-    "build": 191,
-    "released_at": "2026-11-22T17:37:51+00:00",
-    "notes": "Packages install even when their port is already taken: the published host port is re-mapped to a free one and kept stable across updates."
+    "version": "2.28.6",
+    "git_sha": "d25660c",
+    "git_sha_full": "d25660c05dd0d5a7e220d1fc40add9ddd76896d1",
+    "build": 194,
+    "released_at": "2026-11-22T17:45:56+00:00",
+    "notes": "Package Center shows when a package had to move to another port and can repair a port lost to another container."
   },
   "releases": [
+    {
+      "version": "2.28.6",
+      "git_sha": "d25660c",
+      "git_sha_full": "d25660c05dd0d5a7e220d1fc40add9ddd76896d1",
+      "build": 194,
+      "released_at": "2026-11-22T17:45:56+00:00",
+      "notes": "Package Center shows when a package had to move to another port and can repair a port lost to another container."
+    },
     {
       "version": "2.28.5",
       "git_sha": "ebcf236",
@@ -201,14 +209,6 @@
       "build": 138,
       "released_at": "2026-11-22T13:07:38+00:00",
       "notes": "Music: Polubione is a normal playlist (liked tracks download to the phone) and downloads resync when the app returns to the foreground"
-    },
-    {
-      "version": "2.18.0",
-      "git_sha": "070524a",
-      "git_sha_full": "070524a03eec3a0dc3a6f496f1c39edb50afb1db",
-      "build": 135,
-      "released_at": "2026-11-22T13:00:52+00:00",
-      "notes": "Videos: Select many films at once (phone and desktop) and download them in one go using your default version."
     }
   ]
 }
