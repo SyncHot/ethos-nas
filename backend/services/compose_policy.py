@@ -114,9 +114,15 @@ def _binds_share_rw(volumes: list) -> bool:
             mode = "ro" if volume.get("read_only") else "rw"
         else:
             continue
+        # Named volumes and package-relative paths are not share binds; only
+        # absolute host paths can be one (a relative path must not be resolved
+        # against the core's cwd, which usually lives under /home).
+        raw = str(source or "").strip()
+        if not (raw.startswith("/") or raw.startswith("~")):
+            continue
         if "ro" in mode.split(","):
             continue
-        real = os.path.realpath(os.path.expanduser(str(source or "")))
+        real = os.path.realpath(os.path.expanduser(raw))
         if any(real == root or real.startswith(root + os.sep) for root in _ALLOWED_BIND_ROOTS):
             return True
     return False

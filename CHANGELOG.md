@@ -11,6 +11,16 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.28.1] - 2026-11-22
+
+### Fixed
+
+- **Package policy: no more false share-write warnings.** A relative volume source (a named volume
+  such as `clamav-db:/var/lib/clamav`) was resolved against the core's working directory, which
+  normally lives under `/home`, and reported as a read-write share bind without `PUID`/`PGID`. Only
+  absolute host paths can be a share bind, so the warning now fires just for those — and the whole
+  25-package catalog validates without a single warning.
+
 ## [2.28.0] - 2026-11-22
 
 ### Added

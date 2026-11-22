@@ -142,6 +142,25 @@ for name, service in {
     check(f"compose rejects {name}", bool(errors), str(errors))
 check("latest image warns", bool(lint_compose({"services": {"a": {"image": "nginx:latest"}}})[1]))
 
+print("Compose policy — share writes")
+
+def _share_warnings(service):
+    return lint_compose({"services": {"app": {"image": "x:1", **service}}})[1]
+
+check("rw share bind without an owner warns",
+      any("PUID/PGID" in w for w in _share_warnings({"volumes": ["/mnt:/data"]})))
+check("rw share bind with PUID is quiet",
+      not any("PUID/PGID" in w for w in _share_warnings({
+          "volumes": ["/mnt:/data"],
+          "environment": {"PUID": "${ETHOS_SERVICE_UID}", "PGID": "${ETHOS_SERVICE_GID}"}})))
+check("read-only share bind is quiet",
+      not any("PUID/PGID" in w for w in _share_warnings({"volumes": ["/mnt:/data:ro"]})))
+check("named volumes are not share binds",
+      not any("PUID/PGID" in w for w in _share_warnings({"volumes": ["data:/data"]})))
+check("read-only long syntax is quiet",
+      not any("PUID/PGID" in w for w in _share_warnings({
+          "volumes": [{"type": "bind", "source": "/media", "target": "/media", "read_only": True}]})))
+
 print("Compose policy — package store binds")
 from backend.services.packages_store import APPS_DIR, PACKAGES_ROOT  # noqa: E402
 
