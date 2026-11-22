@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T13:33:18+00:00",
+  "generated_at": "2026-11-22T13:50:37+00:00",
   "latest": {
-    "version": "2.20.1",
-    "git_sha": "59c2515",
-    "git_sha_full": "59c25156c1dc4de4c816dfb17f4bc5f0a53023ff",
-    "build": 147,
-    "released_at": "2026-11-22T13:33:18+00:00",
-    "notes": "Music: playlist downloads run four at a time (setting 1/2/4/6), roughly twice as fast"
+    "version": "2.20.2",
+    "git_sha": "739f72e",
+    "git_sha_full": "739f72e924953e785de4a8ee807b4cb0a97c763d",
+    "build": 149,
+    "released_at": "2026-11-22T13:50:37+00:00",
+    "notes": "System: a core update now restarts in seconds instead of being hard-killed after 90 s, and no longer reports interrupted downloads"
   },
   "releases": [
+    {
+      "version": "2.20.2",
+      "git_sha": "739f72e",
+      "git_sha_full": "739f72e924953e785de4a8ee807b4cb0a97c763d",
+      "build": 149,
+      "released_at": "2026-11-22T13:50:37+00:00",
+      "notes": "System: a core update now restarts in seconds instead of being hard-killed after 90 s, and no longer reports interrupted downloads"
+    },
     {
       "version": "2.20.1",
       "git_sha": "59c2515",
@@ -201,14 +209,6 @@
       "build": 88,
       "released_at": "2026-11-22T07:05:03+00:00",
       "notes": "Provisioning: core updates apply helpers, sudoers, unit and confs from the signed release"
-    },
-    {
-      "version": "2.9.0",
-      "git_sha": "c811b30",
-      "git_sha_full": "c811b306653b1b7b03fcbcf53630ae05b51f295e",
-      "build": 86,
-      "released_at": "2026-11-22T06:47:45+00:00",
-      "notes": "Downloads: torrent and hoster-link provider slots, including tb7.pl multihoster support"
     }
   ]
 }
