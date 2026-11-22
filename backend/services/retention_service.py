@@ -76,6 +76,11 @@ def _areas() -> list[tuple[str, Path, float | None, int | None]]:
          None, settings.THUMB_CACHE_MAX_FILES),
         ("video_thumbs", settings.DATA_DIR / "video_thumbs",
          None, settings.VIDEO_THUMB_CACHE_MAX_FILES),
+        # Offline downloads prepared by Video Station. `video_render.RenderManager`
+        # owns both the files and the job rows (TTL / byte cap / job cap), so here
+        # the area is only measured — never swept — to avoid orphaning job rows.
+        ("video_exports", settings.DATA_DIR / "video_exports" / "files",
+         None, None),
     ]
 
 
@@ -195,6 +200,12 @@ async def _loop() -> None:
                 await asyncio.to_thread(sweep)
             except Exception:
                 logger.error("Retention sweep failed", exc_info=True)
+            try:
+                from backend.services import video_render
+
+                await asyncio.to_thread(video_render.MANAGER.sweep)
+            except Exception:
+                logger.error("Video export sweep failed", exc_info=True)
             try:
                 from backend.services import config_archive
 

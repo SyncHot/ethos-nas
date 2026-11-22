@@ -32,6 +32,12 @@ NOTE_FOLD = (254, 215, 170)   # orange-200
 NOTE_LINE = (146, 64, 14)     # amber-800
 NOTE_CHECK = (22, 163, 74)    # green-600
 
+# Videos PWA palette (matches frontend/manifest-videos.webmanifest).
+VIDEO_TOP = (27, 34, 51)      # slate-900-ish cinema
+VIDEO_BOTTOM = (11, 13, 18)   # near-black
+VIDEO_PLAY = (242, 178, 62)   # gold
+VIDEO_RING = (242, 178, 62)
+
 
 def _blend(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
     return (round(a[0] + (b[0] - a[0]) * t),
@@ -158,6 +164,50 @@ def render_note(size: int, *, rounded_ratio: float = 0.22, padding_ratio: float 
     return bytes(rows)
 
 
+def _in_triangle(px: float, py: float,
+                 a: tuple[float, float], b: tuple[float, float],
+                 c: tuple[float, float]) -> bool:
+    def sign(p1, p2, p3):
+        return (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1])
+    d1 = sign((px, py), a, b)
+    d2 = sign((px, py), b, c)
+    d3 = sign((px, py), c, a)
+    has_neg = d1 < 0 or d2 < 0 or d3 < 0
+    has_pos = d1 > 0 or d2 > 0 or d3 > 0
+    return not (has_neg and has_pos)
+
+
+def render_video(size: int, *, rounded_ratio: float = 0.22,
+                 padding_ratio: float = 0.0) -> bytes:
+    """Return RGBA pixel rows for the Videos PWA icon (gold play on cinema dark)."""
+    radius = size * rounded_ratio
+    inset = size * padding_ratio
+    inner = size - 2 * inset
+    ax, ay = inset + inner * 0.36, inset + inner * 0.26
+    bx, by = inset + inner * 0.36, inset + inner * 0.74
+    cx, cy = inset + inner * 0.74, inset + inner * 0.50
+    ring_r = inner * 0.40
+    ring_w = inner * 0.055
+    centre = size / 2
+    rows = bytearray()
+    for y in range(size):
+        rows.append(0)  # PNG filter type 0
+        for x in range(size):
+            px, py = x + 0.5, y + 0.5
+            if not _rounded(px, py, size, radius):
+                rows.extend((0, 0, 0, 0))
+                continue
+            t = y / max(1, size - 1)
+            r, g, b = _blend(VIDEO_TOP, VIDEO_BOTTOM, t)
+            dist = ((px - centre) ** 2 + (py - centre) ** 2) ** 0.5
+            if abs(dist - ring_r) <= ring_w / 2:
+                r, g, b = VIDEO_RING
+            if _in_triangle(px, py, (ax, ay), (bx, by), (cx, cy)):
+                r, g, b = VIDEO_PLAY
+            rows.extend((r, g, b, 255))
+    return bytes(rows)
+
+
 def write_png(path: Path, size: int, pixels: bytes) -> None:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (struct.pack(">I", len(data)) + kind + data
@@ -193,6 +243,16 @@ def main() -> None:
     # Maskable: keep the note inside the 80 % safe zone.
     write_png(OUT / "notes-maskable-512.png", 512,
               render_note(512, rounded_ratio=0.0, padding_ratio=0.10))
+
+    print("Writing Videos PWA icons to", OUT)
+    for size in (192, 512):
+        write_png(OUT / f"videos-{size}.png", size, render_video(size))
+    # iOS home screen: no transparency, corners are added by the OS.
+    write_png(OUT / "videos-apple-touch-icon.png", 180,
+              render_video(180, rounded_ratio=0.0))
+    # Maskable: keep the glyph inside the 80 % safe zone.
+    write_png(OUT / "videos-maskable-512.png", 512,
+              render_video(512, rounded_ratio=0.0, padding_ratio=0.10))
 
 
 if __name__ == "__main__":

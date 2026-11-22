@@ -84,6 +84,9 @@ def main() -> int:
         for i in range(4):
             _touch(tmp / "video_thumbs" / f"v{i}.webp", age_seconds=i * 60)
 
+        # video_exports: owned by RenderManager, retention only measures it
+        _touch(tmp / "video_exports" / "files" / "old.mp4", age_seconds=40 * 86400)
+
         summary = rs.sweep()
 
         check("old chunk upload removed", not (tmp / "temp_chunks" / "old.part").exists())
@@ -102,12 +105,17 @@ def main() -> int:
         check("thumbnail cache keeps the newest", thumbs == ["t0.webp", "t1.webp", "t2.webp"], str(thumbs))
         vthumbs = sorted(p.name for p in (tmp / "video_thumbs").glob("*.webp"))
         check("video thumb cache capped at 3", len(vthumbs) == 3, str(vthumbs))
+        check("video exports are left to RenderManager",
+              (tmp / "video_exports" / "files" / "old.mp4").exists())
         check("summary counts removals", summary["removed_files"] >= 5, str(summary))
         check("summary reports freed bytes", summary["freed_bytes"] > 0, str(summary))
 
         usage = rs.usage()
         check("usage lists every area", set(usage["areas"]) == {
-            "temp_chunks", "transcodes", "trash", "thumbnails", "video_thumbs"})
+            "temp_chunks", "transcodes", "trash", "thumbnails", "video_thumbs",
+            "video_exports"})
+        check("usage counts video exports", usage["areas"]["video_exports"]["files"] == 1,
+              str(usage["areas"]["video_exports"]))
         check("usage counts files", usage["areas"]["thumbnails"]["files"] == 3,
               str(usage["areas"]["thumbnails"]))
         check("usage totals are positive", usage["total_bytes"] > 0 and usage["total_files"] > 0)

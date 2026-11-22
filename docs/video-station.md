@@ -490,6 +490,34 @@ the live edge and errors on seeks outside the window.
 Verified in Chromium 157 (`aac`, `opus`, `none` all `readyState 4`) and in the
 Electron browser without AAC/Opus (`none` plays, 14.7 s in).
 
+## Phase 12 — Videos PWA with offline downloads (2026-11-22)
+
+The native `ethos-video` APK is kept for Android TV only; phones install
+`/videos` instead. The web app keeps the features the APK had: **downloads that
+work offline**, **fullscreen** and a **wake lock**.
+
+- `POST /api/videos/exports {path, q, a}` renders one finite, seekable MP4
+  (`build_render_cmd`: `+faststart`, `-progress pipe:1`, same hw/software paths
+  and standard AAC layouts as playback). Job states
+  `queued → rendering → done | failed | cancelled`; `429` while a render is
+  already running for that user, `409` after three stored copies, `507` when the
+  data volume is short (2 GiB preflight, 20 GiB area cap, 7-day TTL).
+- `services/video_render.py` owns the queue: its own `TranscodeLimiter(1)`,
+  per-source dedupe, stderr tail on failure, atomic `.part → .mp4` rename,
+  restart recovery (active rows become `failed: Interrupted`) and a
+  `users=[owner]` notification with an *Open Videos* action.
+- The page stores the finished file in **Cache Storage** under `/__media/<id>`;
+  the shared service worker answers that URL — including `Range` — so the film
+  plays and seeks with no network. IndexedDB (`ethos-videos-db`) keeps the
+  download rows, posters and `.vtt` subtitles.
+- Player extras: `navigator.wakeLock` (re-acquired on visibility change),
+  fullscreen + `orientation.lock('landscape')`, Media Session metadata and
+  `setPositionState`, resume sync (5 s writes, `/resume/all` on reconnect).
+
+Spec: `docs/videos-pwa.md`. Tests: `tests/test_video_render.py`,
+`tests/test_video_api.py` (`/exports`), `tests/test_video_engine.py`
+(`build_render_cmd`), `tests/test_pwa_assets.py`.
+
 ## Status
 - [x] Phase 1 — docs + metadata service + API enrichment + /home endpoint
 - [x] Phase 2 — frontend home/movies/series + player subtitle picker
@@ -504,6 +532,10 @@ Electron browser without AAC/Opus (`none` plays, 14.7 s in).
       media-engine diagnostics, per-user My List, Android HLS parity
 - [x] Phase 9 — keyless Cinemeta/TVmaze metadata, optional TMDB, provider UI,
       source attribution and cache migration (`docs/video-metadata.md`)
+- [x] Phase 10 — AAC channel layout: black-screen fix on 5.1(side) E-AC-3
+- [x] Phase 11 — audio codec negotiation (`acodec=aac|opus|none`) + hls.js
+- [x] Phase 12 — `/videos` PWA: offline MP4 downloads, fullscreen, wake lock
+      (`docs/videos-pwa.md`); APK kept for Android TV
 
 ## Verification log
 | Date | What | Result |

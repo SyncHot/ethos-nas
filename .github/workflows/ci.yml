@@ -67,6 +67,7 @@ jobs:
                    tests/test_security_invariants.py \
                    tests/test_router_smoke.py \
                    tests/test_video_engine.py \
+                   tests/test_video_render.py \
                    tests/test_video_hls.py \
                    tests/test_video_library.py \
                    tests/test_video_api.py \

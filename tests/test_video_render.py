@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""Offline render manager checks (Videos PWA).
+
+Isolated instance, no server and no ffmpeg — every job is driven by a tiny
+Python stand-in for ffmpeg so the queue, the caps, the dedupe, cancellation and
+the sweeper can be asserted deterministically:
+
+    .venv/bin/python tests/test_video_render.py
+"""
+
+import asyncio
+import importlib
+import json
+import shutil
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from backend.config import settings  # noqa: E402
+
+_results: list[tuple[str, bool, str]] = []
+
+
+def check(name: str, ok: bool, detail: str = "") -> None:
+    _results.append((name, bool(ok), detail))
+    print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f" — {detail}" if detail and not ok else ""))
+
+
+# Stand-ins for ffmpeg: argv is [python, -c, SCRIPT, out_path, mode].
+_SCRIPT = r"""
+import sys, time
+out, mode = sys.argv[1], sys.argv[2]
+if mode == "fail":
+    sys.stderr.write("Invalid data found when processing input\n")
+    sys.exit(3)
+if mode == "slow":
+    time.sleep(30)
+for i in range(1, 5):
+    print(f"out_time_us={i * 500000}", flush=True)
+with open(out, "wb") as fh:
+    fh.write(b"\0" * 2048)
+"""
+
+
+def fake_ffmpeg(mode: str = "ok"):
+    def factory(part_path: str) -> list[str]:
+        return [sys.executable, "-c", _SCRIPT, part_path, mode]
+    return factory
+
+
+async def _wait(job, timeout: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout
+    while job.active and time.monotonic() < deadline:
+        await asyncio.sleep(0.02)
+
+
+def _manager(tmp: Path, **kwargs):
+    module = importlib.import_module("backend.services.video_render")
+    return module, module.RenderManager(base_dir=tmp / "video_exports", **kwargs)
+
+
+INFO = {"duration": 4.0, "streams": []}
+
+
+async def main() -> int:
+    tmp = Path(tempfile.mkdtemp(prefix="ethos-render-test-"))
+    original_data_dir = settings.DATA_DIR
+    settings.DATA_DIR = tmp
+    try:
+        module, mgr = _manager(tmp)
+
+        # ── happy path ────────────────────────────────────────────────────
+        job = await mgr.start(owner="alice", abs_path=str(tmp / "Movie.mkv"),
+                              info=INFO, quality="fast", audio_idx=0,
+                              source_key="movie|fast|0", cmd_factory=fake_ffmpeg())
+        check("start returns a queued job", job.status in ("queued", "rendering"), job.status)
+        await _wait(job)
+        check("render finishes", job.status == "done", f"{job.status} {job.error}")
+        check("render records the output size", job.size == 2048, str(job.size))
+        check("render sets 100%", job.percent == 100.0, str(job.percent))
+        path = mgr.download_path(job.id, "alice")
+        check("download path exists", path.is_file(), str(path))
+        check("download path is the job file", path.name == f"{job.id}.mp4", path.name)
+        public = mgr.get(job.id, "alice").public()
+        check("public shape has a download url",
+              public["download_url"] == f"/api/videos/exports/{job.id}/download",
+              str(public.get("download_url")))
+        check("public shape exposes the file name only",
+              public.get("name") == "Movie.mkv" and "path" not in public, str(public))
+
+        # ── dedupe ────────────────────────────────────────────────────────
+        again = await mgr.start(owner="alice", abs_path=str(tmp / "Movie.mkv"),
+                                info=INFO, quality="fast", audio_idx=0,
+                                source_key="movie|fast|0", cmd_factory=fake_ffmpeg())
+        check("same source reuses the finished render", again.id == job.id, again.id)
+
+        # ── per-user caps ─────────────────────────────────────────────────
+        store = json.loads((tmp / "video_exports" / "jobs.json").read_text() or "{}")
+        check("jobs are persisted", any(r["id"] == job.id for r in store.get("jobs", [])),
+              str(store)[:120])
+
+        _module, tiny = _manager(tmp, max_per_user=1)
+        try:
+            await tiny.start(owner="alice", abs_path=str(tmp / "Other.mkv"), info=INFO,
+                             quality="fast", audio_idx=0, source_key="other|fast|0",
+                             cmd_factory=fake_ffmpeg())
+            check("stored-download cap rejects a new job", False, "no RenderLimit")
+        except module.RenderLimit:
+            check("stored-download cap rejects a new job", True)
+
+        _module, lowdisk = _manager(tmp, min_free_bytes=1 << 62)
+        try:
+            await lowdisk.start(owner="bob", abs_path=str(tmp / "Other.mkv"), info=INFO,
+                                quality="fast", audio_idx=0, source_key="other|fast|0",
+                                cmd_factory=fake_ffmpeg())
+            check("free-space preflight rejects", False, "no RenderDiskError")
+        except module.RenderDiskError:
+            check("free-space preflight rejects", True)
+
+        # ── busy ──────────────────────────────────────────────────────────
+        slow = await mgr.start(owner="carol", abs_path=str(tmp / "Slow.mkv"), info=INFO,
+                               quality="fast", audio_idx=0, source_key="slow|fast|0",
+                               cmd_factory=fake_ffmpeg("slow"))
+        try:
+            await mgr.start(owner="carol", abs_path=str(tmp / "Slow2.mkv"), info=INFO,
+                            quality="fast", audio_idx=0, source_key="slow2|fast|0",
+                            cmd_factory=fake_ffmpeg("slow"))
+            check("one active render per user", False, "no RenderBusy")
+        except module.RenderBusy:
+            check("one active render per user", True)
+
+        # ── cancel ────────────────────────────────────────────────────────
+        await asyncio.sleep(0.1)
+        cancelled = await mgr.cancel(slow.id, "carol")
+        check("cancel marks the job cancelled", cancelled.status == "cancelled",
+              cancelled.status)
+        check("cancel removes the partial file",
+              not (mgr.files_dir / f"{slow.id}.mp4.part").exists())
+        mgr.delete(slow.id, "carol")
+        try:
+            mgr.get(slow.id, "carol")
+            check("delete forgets the job", False, "still present")
+        except module.RenderNotFound:
+            check("delete forgets the job", True)
+
+        # ── failures ──────────────────────────────────────────────────────
+        bad = await mgr.start(owner="dave", abs_path=str(tmp / "Broken.mkv"), info=INFO,
+                              quality="fast", audio_idx=0, source_key="bad|fast|0",
+                              cmd_factory=fake_ffmpeg("fail"))
+        await _wait(bad)
+        check("ffmpeg failure marks the job failed", bad.status == "failed", bad.status)
+        check("failure keeps the stderr tail", "Invalid data" in bad.error, bad.error)
+        check("failure leaves no partial file",
+              not (mgr.files_dir / f"{bad.id}.mp4.part").exists())
+
+        # ── ownership ─────────────────────────────────────────────────────
+        try:
+            mgr.get(job.id, "mallory")
+            check("another user cannot read the job", False, "leaked")
+        except module.RenderNotFound:
+            check("another user cannot read the job", True)
+        try:
+            mgr.download_path(job.id, "mallory")
+            check("another user cannot download", False, "leaked")
+        except module.RenderNotFound:
+            check("another user cannot download", True)
+
+        # ── expiry + restart recovery ─────────────────────────────────────
+        sweep_removed = mgr.sweep()
+        check("fresh downloads survive a sweep", sweep_removed == 0, str(sweep_removed))
+        job.finished_at = time.time() - 8 * 86400
+        mgr._persist()
+        expired = mgr.sweep()
+        check("expired download is swept", expired >= 1, str(expired))
+        check("expired file is removed", not (mgr.files_dir / f"{job.id}.mp4").exists())
+
+        _module, restarted = _manager(tmp)
+        pending = await restarted.start(owner="erin", abs_path=str(tmp / "Later.mkv"),
+                                       info=INFO, quality="fast", audio_idx=0,
+                                       source_key="later|fast|0",
+                                       cmd_factory=fake_ffmpeg("slow"))
+        restarted._persist()
+        _module, recovered = _manager(tmp)
+        revived = recovered.get(pending.id, "erin")
+        check("interrupted job is failed on restart", revived.status == "failed", revived.status)
+        check("interrupted job explains itself", "Interrupted" in revived.error, revived.error)
+        await restarted.cancel(pending.id, "erin")
+
+        snap = recovered.snapshot()
+        check("snapshot reports counters",
+              {"jobs", "active", "done", "bytes", "free_bytes"} <= set(snap), str(snap))
+        check("snapshot counts no active job", snap["active"] == 0, str(snap))
+
+        failed = [r for r in _results if not r[1]]
+        print(f"\n{len(_results) - len(failed)}/{len(_results)} checks passed")
+        return 1 if failed else 0
+    finally:
+        settings.DATA_DIR = original_data_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))

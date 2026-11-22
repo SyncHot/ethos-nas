@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Videos — EthOS</title>
+    <meta name="description" content="Watch your NAS video library on the phone, download movies for offline playback.">
+    <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+    <link rel="manifest" href="/manifest-videos.webmanifest">
+    <link rel="apple-touch-icon" href="/static/icons/videos-apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Videos">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <link rel="stylesheet" href="/static/css/tokens.css">
+    <link rel="stylesheet" href="/static/css/videos.css">
+    <script>
+        (function () {
+            try {
+                var theme = localStorage.getItem('ethos-theme');
+                document.documentElement.className = theme === 'light' ? 'light' : 'dark';
+            } catch (_) {
+                document.documentElement.className = 'dark';
+            }
+        })();
+    </script>
+</head>
+<body>
+    <div id="toastContainer" class="toast-container" aria-live="polite" role="status"></div>
+
+    <!-- Sign-in (the NAS credentials, same JWT as the desktop) -->
+    <section id="vd-login" class="vd-login" hidden>
+        <form id="vd-login-form" class="vd-login-card" autocomplete="on">
+            <div class="vd-login-icon" aria-hidden="true">🎬</div>
+            <h1>EthOS Videos</h1>
+            <p>Sign in with your NAS account.</p>
+            <label>
+                <span>Username</span>
+                <input id="vd-username" name="username" autocapitalize="none" autocorrect="off"
+                       autocomplete="username" placeholder="marcin" required>
+            </label>
+            <label>
+                <span>Password</span>
+                <input id="vd-password" name="password" type="password" autocomplete="current-password" required>
+            </label>
+            <button type="submit" class="vd-btn primary" id="vd-login-submit">Sign in</button>
+            <p id="vd-login-error" class="vd-login-error" role="alert"></p>
+        </form>
+    </section>
+
+    <!-- Main app -->
+    <div id="vd-app" class="vd-app" hidden>
+        <header class="vd-top">
+            <div class="vd-brand">
+                <img class="vd-brand-icon" src="/static/icons/videos-192.png" alt="" width="22" height="22" decoding="async">
+                <strong>Videos</strong>
+            </div>
+            <span id="vd-net" class="vd-pill" role="status" hidden>Offline</span>
+            <div class="vd-top-actions">
+                <button type="button" class="vd-icon-btn" id="vd-install" title="Install app" hidden>⤓</button>
+                <button type="button" class="vd-icon-btn" id="vd-downloads-btn" title="Downloads"
+                        aria-label="Downloads">⬇<span id="vd-downloads-badge" class="vd-badge" hidden>0</span></button>
+                <button type="button" class="vd-icon-btn" id="vd-menu-btn" title="Menu"
+                        aria-label="Menu" aria-expanded="false">⋯</button>
+            </div>
+            <div id="vd-menu" class="vd-menu" hidden>
+                <button type="button" id="vd-theme">Toggle theme</button>
+                <button type="button" id="vd-logout">Sign out</button>
+            </div>
+        </header>
+
+        <main id="vd-main" class="vd-main">
+            <div class="vd-searchbar">
+                <input id="vd-search" type="search" placeholder="Search movies, series, episodes…"
+                       aria-label="Search the video library" autocomplete="off">
+            </div>
+            <div id="vd-content" class="vd-content" aria-live="polite"></div>
+        </main>
+    </div>
+
+    <!-- Detail sheet -->
+    <div id="vd-sheet" class="vd-sheet" hidden>
+        <div class="vd-sheet-backdrop" data-close="sheet"></div>
+        <article class="vd-sheet-card" role="dialog" aria-modal="true" aria-labelledby="vd-sheet-title">
+            <button type="button" class="vd-sheet-close" data-close="sheet" aria-label="Close">✕</button>
+            <div id="vd-sheet-body"></div>
+        </article>
+    </div>
+
+    <!-- Downloads -->
+    <div id="vd-downloads" class="vd-sheet" hidden>
+        <div class="vd-sheet-backdrop" data-close="downloads"></div>
+        <article class="vd-sheet-card" role="dialog" aria-modal="true" aria-label="Downloads">
+            <button type="button" class="vd-sheet-close" data-close="downloads" aria-label="Close">✕</button>
+            <h2 class="vd-sheet-h2">Downloads</h2>
+            <p class="vd-hint">Movies stored on this device play without the NAS. Space is managed by the browser.</p>
+            <div id="vd-downloads-list" class="vd-downloads-list"></div>
+            <p id="vd-storage" class="vd-storage"></p>
+        </article>
+    </div>
+
+    <!-- Player -->
+    <div id="vd-player" class="vd-player" hidden>
+        <video id="vd-video" playsinline webkit-playsinline preload="metadata"></video>
+        <div class="vd-player-ui" id="vd-player-ui">
+            <div class="vd-player-top">
+                <button type="button" class="vd-icon-btn" id="vd-player-back" aria-label="Back">←</button>
+                <span id="vd-player-title" class="vd-player-title"></span>
+                <span id="vd-player-mode" class="vd-pill" hidden></span>
+                <span id="vd-player-enc" class="vd-pill gold" hidden></span>
+            </div>
+            <div class="vd-player-center">
+                <button type="button" class="vd-bigplay" id="vd-bigplay" aria-label="Play">▶</button>
+            </div>
+            <div class="vd-player-bottom">
+                <div class="vd-seek-wrap">
+                    <div class="vd-seek-buffer"><i id="vd-buffered"></i></div>
+                    <input id="vd-seek" class="vd-seek" type="range" min="0" max="100" step="0.1" value="0" aria-label="Seek">
+                </div>
+                <div class="vd-player-row">
+                    <button type="button" class="vd-icon-btn primary" id="vd-playpause" aria-label="Play/pause">▶</button>
+                    <button type="button" class="vd-icon-btn" id="vd-back10">-10</button>
+                    <button type="button" class="vd-icon-btn" id="vd-fwd10">+10</button>
+                    <span id="vd-time" class="vd-time">0:00 / --:--</span>
+                    <span class="vd-grow"></span>
+                    <select id="vd-audio" class="vd-select" aria-label="Audio track" hidden></select>
+                    <select id="vd-quality" class="vd-select" aria-label="Quality">
+                        <option value="fast">720p</option>
+                        <option value="balanced">1080p</option>
+                        <option value="high">Source</option>
+                    </select>
+                    <button type="button" class="vd-icon-btn" id="vd-fullscreen" aria-label="Fullscreen">⛶</button>
+                </div>
+            </div>
+        </div>
+        <div id="vd-player-error" class="vd-player-error" hidden>
+            <p id="vd-player-error-text"></p>
+            <div class="vd-error-actions">
+                <button type="button" class="vd-btn" id="vd-player-retry">Try again</button>
+                <button type="button" class="vd-btn" id="vd-player-close">Back</button>
+            </div>
+        </div>
+    </div>
+
+    <noscript>EthOS Videos needs JavaScript. Open the desktop at / to manage your library.</noscript>
+    <script type="module" src="/static/videos/videos.js"></script>
+</body>
+</html>

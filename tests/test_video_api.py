@@ -83,6 +83,24 @@ def call(base: str, method: str, path: str, tok: str | None = None,
         return 0, str(exc).encode()
 
 
+def head(base: str, path: str, tok: str | None = None, *, range_header: str = "",
+         timeout: float = 45.0) -> tuple[int, dict]:
+    """GET that returns headers only (status + dict), for Content-Disposition/Range."""
+    req = urllib.request.Request(base + path, method="GET")
+    if tok:
+        req.add_header("Authorization", f"Bearer {tok}")
+    if range_header:
+        req.add_header("Range", range_header)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read(1)
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}
+    except urllib.error.HTTPError as exc:
+        return exc.code, {k.lower(): v for k, v in exc.headers.items()}
+    except (OSError, ValueError):
+        return 0, {}
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="ethos-video-api-"))
     data_dir = tmp / "data"
@@ -201,6 +219,69 @@ def main() -> int:
             code, _ = call(base, "POST", "/api/videos/hls", user,
                            {"path": "/etc/passwd", "t": 0, "a": 0, "q": "balanced"})
             check("non-admin HLS outside the scope is blocked", code == 403, str(code))
+
+            # ── offline downloads (finite MP4 render) ──────────────────────
+            code, body = call(base, "POST", "/api/videos/exports", admin,
+                              {"path": str(sample), "q": "fast", "a": 0})
+            export = json.loads(body) if code == 202 else {}
+            job_id = export.get("id", "")
+            check("export render is queued",
+                  code == 202 and bool(job_id) and export.get("status") in
+                  ("queued", "rendering", "done"), f"{code} {body[:300]}")
+            check("queued export has no download url yet",
+                  export.get("status") == "done" or export.get("download_url") is None,
+                  str(export.get("download_url")))
+            status = export.get("status")
+            for _ in range(180):
+                if status in ("done", "failed", "cancelled"):
+                    break
+                time.sleep(1)
+                code, body = call(base, "GET", f"/api/videos/exports/{job_id}", admin)
+                if code == 200:
+                    status = json.loads(body).get("status")
+            check("export render finishes", status == "done", f"{status} {body[:300]}")
+            code, body = call(base, "GET", f"/api/videos/exports/{job_id}", admin)
+            finished = json.loads(body) if code == 200 else {}
+            check("export reports size and quality label",
+                  finished.get("size", 0) > 0 and finished.get("quality_label") == "720p",
+                  str(finished)[:300])
+            check("export response hides server paths",
+                  "path" not in finished and finished.get("name") == "sample.mkv",
+                  str(finished)[:300])
+
+            code, headers = head(base, f"/api/videos/exports/{job_id}/download", admin)
+            disposition = headers.get("content-disposition", "")
+            check("export download is an mp4 attachment",
+                  code == 200 and "attachment" in disposition and ".mp4" in disposition,
+                  f"{code} {disposition}")
+            code, headers = head(base, f"/api/videos/exports/{job_id}/download", admin,
+                                 range_header="bytes=0-99")
+            check("export download supports Range",
+                  code == 206 and headers.get("content-range", "").startswith("bytes 0-99/"),
+                  f"{code} {headers.get('content-range')}")
+            check("export download is never cached",
+                  headers.get("cache-control") == "no-store", str(headers.get("cache-control")))
+
+            code, body = call(base, "POST", "/api/videos/exports", admin,
+                              {"path": str(sample), "q": "fast", "a": 0})
+            repeated = json.loads(body) if code in (200, 202) else {}
+            check("same file+quality reuses the render", repeated.get("id") == job_id,
+                  f"{code} {body[:200]}")
+            code, _ = call(base, "GET", f"/api/videos/exports/{job_id}", user)
+            check("another user cannot see the export", code == 404, str(code))
+            code, _ = call(base, "POST", "/api/videos/exports", user, {"path": "/etc/passwd"})
+            check("non-admin export outside the scope is blocked", code in (403, 404), str(code))
+            code, _ = call(base, "POST", "/api/videos/exports", admin,
+                           {"path": str(share / "missing.mkv")})
+            check("export of a missing file is 404", code == 404, str(code))
+            code, body = call(base, "GET", "/api/videos/exports", admin)
+            check("export list is per-user",
+                  code == 200 and [j["id"] for j in json.loads(body).get("jobs", [])] == [job_id],
+                  body[:300])
+            code, _ = call(base, "DELETE", f"/api/videos/exports/{job_id}", admin)
+            check("export delete works", code == 200, str(code))
+            code, _ = call(base, "GET", f"/api/videos/exports/{job_id}", admin)
+            check("deleted export is gone", code == 404, str(code))
 
             code, _ = call(base, "POST", "/api/videos/resume", admin,
                            {"path": str(sample), "time": 60, "duration": 600})

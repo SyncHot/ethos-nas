@@ -1,9 +1,19 @@
 # Third-party notices
 
-EthOS NAS bundles **no** third-party JavaScript, no fonts and no image assets:
-wallpapers and icons are generated (CSS gradients, `scripts/make_icons.py`,
-hand-authored SVG in `frontend/static/core/*`). Libraries are loaded from CDNs
-at runtime and remain under their own licenses.
+EthOS NAS bundles exactly **one** third-party JavaScript file (hls.js, see
+below); everything else — wallpapers and icons — is generated (CSS gradients,
+`scripts/make_icons.py`, hand-authored SVG in `frontend/static/core/*`). Other
+libraries are loaded from CDNs at runtime and remain under their own licenses.
+
+## Vendored libraries
+
+| Library | Version | License | Used in |
+|---|---|---|---|
+| [hls.js](https://github.com/video-dev/hls.js) | 1.7.4 | Apache-2.0 | `frontend/static/vendor/hls.min.js` — `/videos` PWA and the Video package player |
+
+hls.js is served from the same origin so the PWA can play HLS in browsers
+without native support and still work offline. License text:
+<https://github.com/video-dev/hls.js/blob/master/LICENSE>.
 
 ## Runtime libraries (CDN, not vendored)
 

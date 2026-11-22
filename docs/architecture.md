@@ -1,6 +1,6 @@
 # Architecture
 
-How a request flows, who owns what, and where state lives. Status: 2026-11-22 (Sticky Notes PWA + package ribbon).
+How a request flows, who owns what, and where state lives. Status: 2026-11-22 (Sticky Notes + Videos PWAs, package ribbon).
 
 > Always-on rules (security, logging, workflow) live in [`AGENTS.md`](../AGENTS.md); this file is the
 > detailed map.
@@ -30,7 +30,7 @@ browser / Android ──HTTP──▶ FastAPI (backend/main.py)
 
 | Level | Who | Enforcement |
 |---|---|---|
-| Public | login, APK version, desktop icons, docs, share-link tokens, PWA plumbing (`/notes`, both manifests, `/sw.js`) | exact-path allowlist in `main.py` |
+| Public | login, APK version, desktop icons, docs, share-link tokens, PWA plumbing (`/notes`, `/videos`, three manifests, `/sw.js`) | exact-path allowlist in `main.py` |
 | User | files (scoped), photos, music, video, downloads, notes, editor, search | JWT only |
 | Admin | system control, processes kill, terminal host/sudo, docker/systemd/packages/storage/shares/firewall/backup/cleaner/cron/logs | `require_admin` dependency |
 
@@ -138,7 +138,7 @@ _CONFIG_STORE = json_store.get(CONFIG_FILE, dict, version=2,
 
 ## Installable apps (PWA)
 
-Two installable surfaces share one service worker:
+Three installable surfaces share one service worker:
 
 - **Desktop shell** — `frontend/manifest.webmanifest` (served at
   `/manifest.webmanifest` as `application/manifest+json`) with 192/512 icons + a maskable
@@ -147,18 +147,28 @@ Two installable surfaces share one service worker:
   `frontend/manifest-notes.webmanifest`: `id`/`scope`/`start_url` = `/notes`, standalone,
   New note / New task shortcuts, GET share target. It is the phone capture surface for the
   `ethos-sticky-notes` package; spec in `docs/notes-pwa.md`.
+- **Videos** — `/videos` (`frontend/videos.html`) with
+  `frontend/manifest-videos.webmanifest`: `id`/`scope`/`start_url` = `/videos`, standalone,
+  phone-first player with offline downloads (server-rendered MP4 in Cache Storage), fullscreen
+  and a wake lock. Spec in `docs/videos-pwa.md`; the APK remains for Android TV only.
 - `frontend/sw.js` (served at `/sw.js` with `Service-Worker-Allowed: /`) is **network-first**:
   the network answer always wins and the cache only answers when the NAS is unreachable, so a
   deploy can never be masked by a stale worker (the failure mode `frontend_cache_middleware`
   exists to prevent). It skips `/api/*`, websockets, `Range` requests and any `?token=` URL,
-  precaches the desktop and `/notes` shells, and handles Web Push: `push` shows the package
-  reminder and `notificationclick` focuses/opens `/notes`. It registers from `static/app.js`
-  only in a secure context (https or localhost — a plain-http LAN install silently skips it).
-- `/manifest.webmanifest`, `/manifest-notes.webmanifest`, `/sw.js`, `/notes` and `/notes/` are
-  **exact** `public_paths` in `main.py` (the browser fetches them while the login overlay is up).
-  The notes page itself still requires a JWT for every package/API call.
-- Guards: `tests/test_pwa_assets.py` (both manifests, icons, shell/push handlers) and
-  `tests/test_notes_pwa.py` (live login gate, quick add, offline queue).
+  precaches the desktop, `/notes` and `/videos` shells, and handles Web Push: `push` shows the
+  package reminder and `notificationclick` focuses/opens the target page. It registers from
+  `static/app.js` only in a secure context (https or localhost — a plain-http LAN install
+  silently skips it).
+- `/__media/*` is a **synthetic** origin handled entirely by the worker: it serves the
+  downloaded films from Cache Storage (`ethos-media-v1`) and answers `Range` with valid
+  `206`/`416` slices, so offline seeking works. The media cache is never pruned on activate.
+- `/manifest.webmanifest`, `/manifest-notes.webmanifest`, `/manifest-videos.webmanifest`,
+  `/sw.js`, `/notes`, `/notes/`, `/videos` and `/videos/` are **exact** `public_paths` in
+  `main.py` (the browser fetches them while the login overlay is up). The notes and videos
+  pages still require a JWT for every API call.
+- Guards: `tests/test_pwa_assets.py` (all manifests, icons, shell/push/media handlers),
+  `tests/test_notes_pwa.py` (live login gate, quick add, offline queue) and
+  `tests/test_video_render.py` (offline render queue behind the downloads).
 
 ## Frontend structure
 

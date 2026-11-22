@@ -61,7 +61,7 @@ from pydantic import BaseModel
 # services/path_scope.py, so the caller's identity is enforced here too).
 from backend.config import settings
 from backend.routers.files import _sanitize, _sanitize_read
-from backend.services import path_scope, task_registry, user_data, video_engine, video_hls
+from backend.services import path_scope, task_registry, user_data, video_engine, video_hls, video_render
 from backend.services.metadata import service as metadata_service
 from backend.services.metadata.base import MetadataConfigError
 from backend.services.video_metadata import parse_video_name
@@ -162,6 +162,7 @@ FFPROBE_BIN = shutil.which("ffprobe")
 
 _ENGINE = video_engine.HardwareProbe(FFMPEG_BIN, FFPROBE_BIN)
 _HLS = video_hls.MANAGER
+_RENDER = video_render.MANAGER
 
 _resume_lock = asyncio.Lock()
 
@@ -1037,6 +1038,113 @@ async def hls_segment(sid: str, name: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Segment not found")
     return FileResponse(str(target), media_type="video/mp4",
                         headers={"Cache-Control": "no-store"})
+
+
+# ── Offline downloads: finite MP4 render ────────────────────────────────────
+
+
+class RenderRequest(BaseModel):
+    path: str
+    q: str = "fast"
+    a: int = 0
+
+
+@router.post("/exports", status_code=202)
+async def create_export(payload: RenderRequest) -> dict:
+    """Prepare a compact MP4 (H.264 + AAC) for offline playback on a phone.
+
+    Returns 202 with the job; poll ``GET /exports/{id}`` until ``done`` and then
+    download ``/exports/{id}/download``. One active render per user, three stored
+    copies, 2 GiB free-space preflight, 7-day retention.
+    """
+    abs_path = _sanitize_read(payload.path)
+    if not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if not FFMPEG_BIN:
+        raise HTTPException(status_code=503, detail="ffmpeg not available")
+
+    info = await _probe(abs_path)
+    quality = payload.q if payload.q in QUALITY_PRESETS else "fast"
+    cfg_options = _load_config()["options"]
+    audio_bitrate = cfg_options["audio_bitrate"]
+    engine_status = await _ENGINE.status()
+    encoder = engine_status.get("encoder")
+    decode_hw = False
+    if encoder and cfg_options.get("hardware_decode", True):
+        decode_hw, _reason = await _ENGINE.can_decode_hw(
+            abs_path, info, encoder, engine_status.get("device"),
+        )
+
+    def _factory(out_path: str) -> list[str]:
+        return video_engine.build_render_cmd(
+            FFMPEG_BIN, abs_path, info, encoder, payload.a, quality,
+            audio_bitrate, out_path, decode_hw=decode_hw,
+            device=engine_status.get("device"), loglevel=settings.FFMPEG_LOGLEVEL,
+        )
+
+    try:
+        st = os.stat(abs_path)
+        source_key = f"{abs_path}|{st.st_size}|{int(st.st_mtime)}|{quality}|{payload.a}"
+        job = await _RENDER.start(
+            owner=user_data.current_username(), abs_path=abs_path, info=info,
+            quality=quality, audio_idx=payload.a, source_key=source_key,
+            cmd_factory=_factory,
+        )
+    except video_render.RenderBusy as exc:
+        raise HTTPException(status_code=429, detail=str(exc),
+                            headers={"Retry-After": "10"}) from exc
+    except video_render.RenderLimit as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except video_render.RenderDiskError as exc:
+        raise HTTPException(status_code=507, detail=str(exc)) from exc
+    return job.public()
+
+
+@router.get("/exports")
+async def list_exports() -> dict:
+    """This user's offline renders (newest first)."""
+    return {"jobs": [job.public() for job in _RENDER.list_for(user_data.current_username())]}
+
+
+@router.get("/exports/{job_id}")
+async def export_status(job_id: str) -> dict:
+    try:
+        return _RENDER.get(job_id, user_data.current_username()).public()
+    except video_render.RenderNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete("/exports/{job_id}")
+async def delete_export(job_id: str) -> dict:
+    """Cancel a running render or delete a finished file."""
+    owner = user_data.current_username()
+    try:
+        job = _RENDER.get(job_id, owner)
+    except video_render.RenderNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if job.active:
+        await _RENDER.cancel(job_id, owner)
+    else:
+        _RENDER.delete(job_id, owner)
+    return {"ok": True}
+
+
+@router.get("/exports/{job_id}/download")
+async def download_export(job_id: str) -> FileResponse:
+    """Serve the rendered MP4 with a friendly filename (Range works)."""
+    owner = user_data.current_username()
+    try:
+        job = _RENDER.get(job_id, owner)
+        path = _RENDER.download_path(job_id, owner)
+    except video_render.RenderNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    stem = os.path.splitext(os.path.basename(job.path))[0][:120] or "video"
+    label = video_render.QUALITY_LABELS.get(job.quality, job.quality)
+    return FileResponse(
+        str(path), media_type="video/mp4",
+        filename=f"{stem} ({label}).mp4",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/subtitles")

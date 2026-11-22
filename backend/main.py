@@ -297,6 +297,8 @@ async def lifespan(app: FastAPI):
     await _package_runtime_stop.shutdown_all()
     from backend.services import video_hls as _video_hls
     await _video_hls.MANAGER.stop_all()
+    from backend.services import video_render as _video_render
+    await _video_render.MANAGER.stop_all()
     from backend.services.camera_service import stop_all_recordings
     from backend.services.task_registry import shutdown as shutdown_tasks
     await shutdown_tasks()
@@ -398,6 +400,11 @@ async def auth_middleware(request: Request, call_next):
         "/notes",
         "/notes/",
         "/manifest-notes.webmanifest",
+        # Videos PWA (phone library + offline downloads). Same rules: the page
+        # and manifest load before sign-in, every API call needs the JWT.
+        "/videos",
+        "/videos/",
+        "/manifest-videos.webmanifest",
     }
     if path in public_paths:
         return await call_next(request)
@@ -591,6 +598,25 @@ async def serve_notes_slash() -> FileResponse:
 @app.get("/manifest-notes.webmanifest", include_in_schema=False)
 async def notes_manifest() -> FileResponse:
     return FileResponse(str(FRONTEND_DIR / "manifest-notes.webmanifest"),
+                        media_type="application/manifest+json")
+
+
+# Videos PWA: the phone counterpart of the Video Station package. A separate
+# HTML entry (like /notes) because the desktop shell is the wrong tool on a
+# phone and this page must load before the user has a token.
+@app.get("/videos", include_in_schema=False)
+async def serve_videos() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "videos.html"), media_type="text/html")
+
+
+@app.get("/videos/", include_in_schema=False)
+async def serve_videos_slash() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "videos.html"), media_type="text/html")
+
+
+@app.get("/manifest-videos.webmanifest", include_in_schema=False)
+async def videos_manifest() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "manifest-videos.webmanifest"),
                         media_type="application/manifest+json")
 
 

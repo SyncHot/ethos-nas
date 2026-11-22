@@ -14,11 +14,18 @@
  * websockets, `Range` requests (media streaming), and any URL carrying a token
  * in the query string.
  *
+ * Offline downloads are the one deliberate exception: `/__media/<id>` is served
+ * from the dedicated `ethos-media-v1` cache (written by /videos), including
+ * synthesised 206 responses for Range requests. That cache is never pruned by a
+ * shell update.
+ *
  * Bump CACHE_VERSION when the shell URLs change; old caches are pruned on
  * activate.
  */
 
-const CACHE_VERSION = 'ethos-shell-v5';
+const CACHE_VERSION = 'ethos-shell-v6';
+const MEDIA_CACHE = 'ethos-media-v1';
+const MEDIA_PREFIX = '/__media/';
 const SHELL_URLS = [
     '/',
     '/manifest.webmanifest',
@@ -37,6 +44,18 @@ const SHELL_URLS = [
     '/static/icons/notes-512.png',
     '/static/icons/notes-maskable-512.png',
     '/static/icons/notes-apple-touch-icon.png',
+    // Videos PWA (offline library + downloads).
+    '/videos',
+    '/videos/',
+    '/manifest-videos.webmanifest',
+    '/static/css/videos.css',
+    '/static/videos/videos.js',
+    '/static/videos/offline.js',
+    '/static/vendor/hls.min.js',
+    '/static/icons/videos-192.png',
+    '/static/icons/videos-512.png',
+    '/static/icons/videos-maskable-512.png',
+    '/static/icons/videos-apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -54,7 +73,10 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
     event.waitUntil((async () => {
         const names = await caches.keys();
-        await Promise.all(names.filter((n) => n !== CACHE_VERSION).map((n) => caches.delete(n)));
+        // Keep the offline-download bucket: wiping it on every shell update
+        // would silently delete the user's downloaded movies.
+        const keep = new Set([CACHE_VERSION, MEDIA_CACHE]);
+        await Promise.all(names.filter((n) => !keep.has(n)).map((n) => caches.delete(n)));
         await self.clients.claim();
     })());
 });
@@ -71,6 +93,11 @@ function isCacheable(request, url) {
 self.addEventListener('fetch', (event) => {
     const request = event.request;
     const url = new URL(request.url);
+    if (url.origin === self.location.origin && url.pathname.startsWith(MEDIA_PREFIX)
+            && (request.method === 'GET' || request.method === 'HEAD')) {
+        event.respondWith(serveMedia(request, url));
+        return;
+    }
     if (!isCacheable(request, url)) return;             // let the browser handle it
 
     event.respondWith((async () => {
@@ -86,11 +113,12 @@ self.addEventListener('fetch', (event) => {
             const cached = await caches.match(request, { ignoreSearch: false });
             if (cached) return cached;
             if (request.mode === 'navigate') {
-                // The notes PWA keeps its own shell when the NAS is unreachable;
-                // every other navigation falls back to the desktop shell.
-                const fallback = (url.pathname === '/notes' || url.pathname === '/notes/')
-                    ? url.pathname
-                    : '/';
+                // Each standalone PWA keeps its own shell when the NAS is
+                // unreachable; every other navigation falls back to the desktop.
+                const path = url.pathname;
+                const fallback = (path === '/notes' || path === '/notes/') ? path
+                    : (path === '/videos' || path === '/videos/') ? path
+                        : '/';
                 const shell = await caches.match(fallback, { ignoreSearch: true });
                 if (shell) return shell;
             }
@@ -98,6 +126,52 @@ self.addEventListener('fetch', (event) => {
         }
     })());
 });
+
+// ── Offline media (/__media/<exportId>) ─────────────────────────────────────
+// Written by /static/videos/offline.js. <video> always asks with `Range`, and a
+// plain 200 makes some browsers refuse to seek, so the worker synthesises 206
+// slices from the cached Blob. A missing entry answers 404 (download again).
+async function serveMedia(request, url) {
+    const cache = await caches.open(MEDIA_CACHE);
+    const cached = await cache.match(url.pathname);
+    if (!cached) return new Response('Not found', { status: 404 });
+    if (request.method === 'HEAD') {
+        const headers = new Headers(cached.headers);
+        headers.set('Accept-Ranges', 'bytes');
+        return new Response(null, { status: 200, headers });
+    }
+    const range = request.headers.get('range');
+    if (!range) {
+        const headers = new Headers(cached.headers);
+        headers.set('Accept-Ranges', 'bytes');
+        return new Response(cached.body, { status: 200, headers });
+    }
+    let blob;
+    try { blob = await cached.blob(); } catch { return cached; }
+    const size = blob.size;
+    const match = /bytes=(\d*)-(\d*)/.exec(range);
+    let start = match && match[1] ? parseInt(match[1], 10) : 0;
+    let end = match && match[2] ? parseInt(match[2], 10) : size - 1;
+    if (!Number.isFinite(start) || start < 0) start = 0;
+    if (!Number.isFinite(end) || end >= size) end = size - 1;
+    if (start > end || start >= size) {
+        return new Response(null, {
+            status: 416,
+            headers: { 'Content-Range': `bytes */${size}` },
+        });
+    }
+    const slice = blob.slice(start, end + 1);
+    return new Response(slice, {
+        status: 206,
+        statusText: 'Partial Content',
+        headers: {
+            'Content-Type': 'video/mp4',
+            'Content-Range': `bytes ${start}-${end}/${size}`,
+            'Content-Length': String(slice.size),
+            'Accept-Ranges': 'bytes',
+        },
+    });
+}
 
 // ── Web Push (Sticky Notes reminders) ───────────────────────────────────────
 // The package service sends `{title, body, tag, url, note_id, …}`. Show one

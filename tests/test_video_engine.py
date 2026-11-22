@@ -180,6 +180,39 @@ def test_commands() -> None:
         check(f"HLS cmd contains {token}", token in joined, joined)
 
 
+def test_render_command() -> None:
+    cmd = ve.build_render_cmd(
+        "ffmpeg", "/x/movie.mkv", HEVC, "vaapi", 0, "fast", "160k",
+        "/data/video_exports/files/job1.mp4.part",
+        decode_hw=True, device="/dev/dri/renderD128")
+    joined = " ".join(cmd)
+    for token in ("-hwaccel vaapi", "h264_vaapi", "scale_vaapi=w=-2:h=720",
+                  "-progress pipe:1", "-nostats", "-movflags +faststart",
+                  "-f mp4", "/data/video_exports/files/job1.mp4.part", "-sn"):
+        check(f"render cmd contains {token}", token in joined, joined)
+    check("render cmd is finite (no -re)", "-re" not in cmd, joined)
+    check("render cmd writes a file", cmd[-1].endswith("job1.mp4.part"), cmd[-1])
+
+    silent = ve.build_render_cmd(
+        "ffmpeg", "/x/movie.mkv", HEVC, "libx264", 0, "balanced", "192k",
+        "/tmp/o.mp4", progress=False)
+    check("progress can be disabled", "-progress" not in silent, " ".join(silent))
+    check("software path scales to 1080p",
+          "scale=-2:1080" in " ".join(silent), " ".join(silent))
+
+    noaudio = ve.build_render_cmd(
+        "ffmpeg", "/x/movie.mkv", HEVC, "vaapi", 0, "fast", "160k",
+        "/tmp/o.mp4", acodec="none")
+    check("render can drop audio", "-an" in noaudio, " ".join(noaudio))
+
+    opus = ve.build_render_cmd(
+        "ffmpeg", "/x/movie.mkv", HEVC, "vaapi", 1, "fast", "160k",
+        "/tmp/o.mp4", acodec="opus")
+    opus_joined = " ".join(opus)
+    check("render can encode opus", "libopus" in opus_joined and "0:a:1" in opus_joined,
+          opus_joined)
+
+
 def test_playlist_and_segments() -> None:
     text = ('#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:4.0,\nseg00000.m4s\n')
     rewritten = rewrite_playlist(text, "tok en")
@@ -221,6 +254,7 @@ def main() -> int:
     test_aac_channel_layout()
     test_audio_codec_negotiation()
     test_commands()
+    test_render_command()
     test_playlist_and_segments()
     asyncio.run(test_probe_without_ffmpeg())
     asyncio.run(test_limiter())

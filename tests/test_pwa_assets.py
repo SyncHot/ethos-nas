@@ -144,6 +144,60 @@ def main() -> int:
     check("bootstrap registers the worker", "serviceWorker.register('/sw.js')" in app)
     check("registration requires a secure context", "isSecureContext" in app)
 
+    # ── Videos PWA (`/videos`) ──────────────────────────────────────────────
+    videos_manifest_path = FRONTEND / "manifest-videos.webmanifest"
+    check("videos manifest exists", videos_manifest_path.is_file())
+    try:
+        videos_manifest = json.loads(videos_manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        check("videos manifest is valid JSON", False, str(exc))
+        videos_manifest = {}
+    for key in ("name", "short_name", "id", "start_url", "scope", "display",
+                "theme_color", "background_color"):
+        check(f"videos manifest has {key}", bool(videos_manifest.get(key)),
+              str(videos_manifest.get(key)))
+    check("videos manifest is scoped to /videos",
+          videos_manifest.get("id") == "/videos"
+          and videos_manifest.get("start_url") == "/videos"
+          and videos_manifest.get("scope") == "/videos", str(videos_manifest.get("scope")))
+    videos_icons = videos_manifest.get("icons") or []
+    check("videos manifest ships 192 and 512 icons",
+          {"192x192", "512x512"} <= {i.get("sizes") for i in videos_icons},
+          str({i.get("sizes") for i in videos_icons}))
+    check("videos manifest ships a maskable icon",
+          any(i.get("purpose") == "maskable" for i in videos_icons), str(videos_icons))
+    for icon in videos_icons:
+        src = icon.get("src") or ""
+        dims = png_size(FRONTEND / src.lstrip("/"))
+        check(f"videos icon {src} is a PNG of the declared size",
+              dims is not None and f"{dims[0]}x{dims[1]}" == icon.get("sizes"),
+              f"{dims} vs {icon.get('sizes')}")
+    videos_touch = FRONTEND / "static" / "icons" / "videos-apple-touch-icon.png"
+    check("videos apple-touch-icon is 180×180", png_size(videos_touch) == (180, 180),
+          str(png_size(videos_touch)))
+
+    videos_html = (FRONTEND / "videos.html").read_text()
+    check("videos page links its manifest",
+          'rel="manifest" href="/manifest-videos.webmanifest"' in videos_html)
+    check("videos page loads the shared tokens + videos styles",
+          "/static/css/tokens.css" in videos_html and "/static/css/videos.css" in videos_html)
+    check("videos page loads its module", "/static/videos/videos.js" in videos_html)
+    check("videos page has a toast host and a player",
+          'id="toastContainer"' in videos_html and 'id="vd-player"' in videos_html)
+
+    check("core serves the videos shell", "serve_videos" in main_py and "videos.html" in main_py)
+    check("videos shell + manifest are public paths",
+          '"/videos",' in main_py and '"/videos/",' in main_py
+          and '"/manifest-videos.webmanifest",' in main_py)
+    check("worker precaches the videos shell",
+          "'/videos'," in sw and "/static/videos/videos.js" in sw
+          and "/static/css/videos.css" in sw)
+    check("worker keeps the offline media cache on activate",
+          "MEDIA_CACHE" in sw and "new Set([CACHE_VERSION, MEDIA_CACHE])" in sw)
+    check("worker serves offline media with Range",
+          "'/__media/'" in sw and "Partial Content" in sw and "Content-Range" in sw)
+    check("videos shell cache version was bumped", "ethos-shell-v6" in sw)
+
     failed = [r for r in _results if not r[1]]
     print(f"\n{len(_results) - len(failed)}/{len(_results)} checks passed")
     return 1 if failed else 0

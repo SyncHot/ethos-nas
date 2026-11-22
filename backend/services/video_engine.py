@@ -290,6 +290,43 @@ def build_hls_cmd(
     ]
 
 
+def build_render_cmd(
+    ffmpeg: str,
+    abs_path: str,
+    info: dict,
+    encoder: str | None,
+    track_idx: int,
+    quality: str,
+    audio_bitrate: str,
+    out_path: str,
+    *,
+    decode_hw: bool = False,
+    device: str | None = None,
+    acodec: str = "aac",
+    loglevel: str = "error",
+    progress: bool = True,
+) -> list[str]:
+    """Finite MP4 render used for offline downloads (seekable, +faststart).
+
+    Unlike `/transcode` (a non-seekable pipe) and HLS (a sliding window), this
+    writes one complete file: the phone can Range-seek it and the browser cache
+    can store it. Video is always re-encoded so the result plays on any phone.
+    """
+    pre, video, filters = build_video_args(
+        info, "transcode", encoder, quality, decode_hw=decode_hw, device=device,
+    )
+    audio = build_audio_args(info, track_idx, "transcode", audio_bitrate, acodec)
+    cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", loglevel]
+    if progress:
+        # Machine-readable progress on stdout (`out_time_us=…`, `progress=end`).
+        cmd += ["-progress", "pipe:1", "-nostats"]
+    cmd += [*pre, "-i", abs_path, "-map", "0:v:0", *video]
+    if filters:
+        cmd += ["-vf", ",".join(filters)]
+    cmd += [*audio, "-sn", "-movflags", "+faststart", "-f", "mp4", out_path]
+    return cmd
+
+
 class TranscodeLimiter:
     """Small async limiter shared by the pipe and HLS paths."""
 
@@ -578,6 +615,7 @@ __all__ = [
     "bitrate_for",
     "build_audio_args",
     "build_hls_cmd",
+    "build_render_cmd",
     "build_transcode_cmd",
     "build_video_args",
     "prune_decode_cache",
