@@ -58,6 +58,14 @@ PROBE = """
         || (cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== 'transparent');
     const buttons = [...root.querySelectorAll('button,a')];
     const hooked = buttons.filter((el) => [...el.attributes].some((a) => a.name.startsWith('data-')));
+    const broken = [...root.querySelectorAll('img')]
+        .filter((img) => img.complete && img.naturalWidth === 0)
+        .map((img) => img.getAttribute('src') || '')
+        .slice(0, 3);
+    const badAlt = root.querySelectorAll('img:not([alt])').length;
+    const nameless = buttons.filter((el) => !(el.textContent || '').trim()
+        && !el.getAttribute('aria-label') && !el.getAttribute('title')
+        && !el.querySelector('img[alt]:not([alt=""])')).length;
     return {
         empty: false,
         rootClass: root.className || root.tagName,
@@ -68,6 +76,10 @@ PROBE = """
         testids: root.querySelectorAll('[data-testid]').length,
         buttons: buttons.length,
         hooked: hooked.length,
+        broken,
+        badAlt,
+        nameless,
+        overflowX: root.scrollWidth > root.clientWidth + 4,
         height: Math.round(root.getBoundingClientRect().height),
     };
 }
@@ -214,19 +226,22 @@ def main() -> int:
                 page.evaluate("() => { document.documentElement.classList.remove('light');"
                               "               document.documentElement.classList.add('dark'); }")
 
-            print(f"\n{'package':24}{'painted':9}{'text':7}{'testids':7}{'hooks':10}{'views':6}root")
+            print(f"\n{'package':24}{'painted':9}{'text':7}{'testids':7}{'hooks':10}{'views':6}{'ms':6}root")
             for pkg in seeded:
                 app_id = f"pkg-{pkg['id']}"
                 page_errors.clear()
                 console_errors.clear()
+                started = time.monotonic()
                 page.evaluate("id => { window.__qaApp = id; window.openApp(id); }", app_id)
                 probe: dict = {}
+                render_ms = 0
                 try:
                     page.wait_for_function(
                         "id => { const w = document.querySelector('[data-testid=\"window-' + id + '\"]');"
                         "        return w && w.querySelector('.window-body')"
                         "            && w.querySelector('.window-body').firstElementChild; }",
                         arg=app_id, timeout=15000)
+                    render_ms = int((time.monotonic() - started) * 1000)
                     page.wait_for_timeout(1200 if pkg["service"] else 700)
                     probe = page.evaluate(PROBE)
                 except Exception as exc:  # noqa: BLE001 - a timeout is a finding
@@ -253,7 +268,7 @@ def main() -> int:
                 print(f"{pkg['id']:24}{str(painted):9}{text_len:<7}"
                       f"{str(probe.get('testids', '-')):>7}  "
                       f"{str(probe.get('hooked', 0)) + '/' + str(probe.get('buttons', 0)):9}"
-                      f"{views:<6}"
+                      f"{views:<6}{render_ms:<6}"
                       f"{str(probe.get('rootClass') or probe.get('error') or '-')[:40]}")
 
                 if page_errors:
@@ -284,6 +299,25 @@ def main() -> int:
                     findings.append({"id": pkg["id"], "level": "warn", "kind": "no-testid",
                                      "detail": "no data-testid or action attribute on any "
                                                "interactive element"})
+                if probe.get("broken"):
+                    findings.append({"id": pkg["id"], "level": "warn", "kind": "broken-image",
+                                     "detail": probe["broken"]})
+                if probe.get("overflowX"):
+                    findings.append({"id": pkg["id"], "level": "warn", "kind": "overflow-x",
+                                     "detail": "the window root scrolls horizontally"})
+                if probe.get("badAlt"):
+                    findings.append({"id": pkg["id"], "level": "info", "kind": "img-alt",
+                                     "detail": f"{probe['badAlt']} image(s) without alt"})
+                if probe.get("nameless"):
+                    findings.append({"id": pkg["id"], "level": "info", "kind": "a11y-name",
+                                     "detail": f"{probe['nameless']} icon button(s) with no text, "
+                                               "aria-label or title"})
+                if render_ms > 4000:
+                    findings.append({"id": pkg["id"], "level": "warn", "kind": "slow-open",
+                                     "detail": f"first view took {render_ms} ms"})
+                elif render_ms > 2000:
+                    findings.append({"id": pkg["id"], "level": "info", "kind": "slow-open",
+                                     "detail": f"first view took {render_ms} ms"})
                 if SHOTS:
                     SHOTS.mkdir(parents=True, exist_ok=True)
                     page.screenshot(path=str(SHOTS / f"{pkg['id']}.png"))

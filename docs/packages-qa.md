@@ -36,6 +36,12 @@ ETHOS_QA_SHOTS=/tmp/qa-shots .venv/bin/python tests/test_packages_qa_ui.py
 in the dark palette, and `ETHOS_QA_CLICK_NAV=0` keeps it to the first screen (by default it clicks
 every rail/tab view of every window). Neither tool installs, starts, stops or uninstalls anything.
 
+| Sweep finding | Meaning |
+|---|---|
+| `pageerror`, empty window, no console-clean first view | hard failure (exit 1) |
+| `broken-image`, `overflow-x`, `no-testid`, `unstyled` | defect in the package |
+| `unavailable` (`503`), `img-alt`, `a11y-name`, `slow-open` | informational, environment or polish |
+
 Findings are `error` (contract broken), `warn` (defect or drift) or `info` (needs a human eye — for
 example a listening port whose owner cannot be read without root).
 
@@ -78,7 +84,10 @@ UI sweep: **18/18 native windows render**, no uncaught page error, no unexpected
 every window painted in light **and** dark, no iframe for native modules, and — after `ethos-music`
 1.0.3 — **every window exposes a stable hook** on its interactive elements. The sweep then walks
 **every rail/tab view** (66 switches across the 18 windows): no view throws, no view renders blank.
-A `503` is reported as `info` — on a throwaway instance the package services and Samba are absent.
+It also measures per window: **no broken image, no horizontal overflow, no `<img>` without `alt`,
+no icon-only button without `text`/`aria-label`/`title`**, and the first view renders in 200–700 ms
+(`ethos-git-diff` 2.1 s, the only outlier — `info`). A `503` is reported as `info` — on a throwaway
+instance the package services and Samba are absent.
 
 ## P1 — visible defect, fix next
 
