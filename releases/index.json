@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T14:38:50+00:00",
+  "generated_at": "2026-11-22T14:43:27+00:00",
   "latest": {
-    "version": "2.24.0",
-    "git_sha": "883aa9e",
-    "git_sha_full": "883aa9eb97c2933b90ccdec623f8243ae3b267d6",
-    "build": 164,
-    "released_at": "2026-11-22T14:38:50+00:00",
-    "notes": "Host: an optional setup script adds zram swap and stops systemd-oomd from killing sessions at 50 % pressure"
+    "version": "2.24.1",
+    "git_sha": "344d855",
+    "git_sha_full": "344d855484c05a663db5fbd57956fccc7e979107",
+    "build": 166,
+    "released_at": "2026-11-22T14:43:27+00:00",
+    "notes": "Host: zram now really uses zstd and the swap tuning is no longer overridden by an older sysctl file"
   },
   "releases": [
+    {
+      "version": "2.24.1",
+      "git_sha": "344d855",
+      "git_sha_full": "344d855484c05a663db5fbd57956fccc7e979107",
+      "build": 166,
+      "released_at": "2026-11-22T14:43:27+00:00",
+      "notes": "Host: zram now really uses zstd and the swap tuning is no longer overridden by an older sysctl file"
+    },
     {
       "version": "2.24.0",
       "git_sha": "883aa9e",
@@ -201,14 +209,6 @@
       "build": 103,
       "released_at": "2026-11-22T09:07:42+00:00",
       "notes": "Desktop: right-click menus stay inside the window, with wrapped labels on narrow screens."
-    },
-    {
-      "version": "2.12.4",
-      "git_sha": "9b8d60b",
-      "git_sha_full": "9b8d60bd0911a24ef2daa90ac4b0a93cd2bcb197",
-      "build": 101,
-      "released_at": "2026-11-22T08:58:03+00:00",
-      "notes": "Tasks: OS updates keep a single progress row that finishes even when you leave Settings."
     }
   ]
 }
