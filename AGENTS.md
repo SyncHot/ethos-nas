@@ -25,7 +25,9 @@ serves the API (`/api/*`), WebSockets and the SPA.
 - State: JSON under `settings.DATA_DIR` via `services/json_store.py`.
 - Frontend: `index.html` (Tailwind CDN + CSS variables) · `static/app.js` (bootstrap/wiring) ·
   `static/apps/<app>.js` (app code) · `static/core/` (`window-manager`, `api`, `ws`, `registry`,
-  `upload-engine`, `modal`, `notification-center`, `utils`). New app code never goes in `app.js`.
+  `upload-engine`, `modal`, `notification-center`, `package-ribbon`, `utils`) · `static/notes/` is
+  the standalone `/notes` PWA module · `static/css/{tokens,ribbon-host}.css` hold shared tokens and
+  the right-edge ribbon layer. New app code never goes in `app.js`.
 - Auth: PAM → JWT → `Authorization: Bearer` (also cookie, `?token=` for media and WebSockets).
 - API changes follow `docs/api-conventions.md`.
 - Docker compose projects must be named `ethos-<name>` so labels in `.env` match.
@@ -75,6 +77,9 @@ notify named accounts, omit it for a broadcast. The frontend calls
 `core/notification-center.js` owns the toasts, the right-edge sheet and the bell badge —
 **apps and packages must not build their own toast, panel, badge or event history**
 (`tests/test_notification_ui.py`). Native packages use `ctx.notifications.{toast,emit,open}`.
+Web Push permission (for example Sticky Notes reminders) goes through
+`requestNotificationPermission()` in `core/notification-center.js`; the service worker owns the
+`push` / `notificationclick` handlers, and no app or package touches the `Notification` API.
 
 **Sharing.** Cross-account access exists only as an explicit view-only grant in
 `<DATA_DIR>/sharing.json`, managed by `services/sharing_service.py` and exposed at `/api/sharing`.
@@ -95,6 +100,19 @@ status pill, both themes). No `<style>` injection, no hardcoded colours, no `.gl
 in apps. Files, Terminal and Login are the only documented layout exceptions. Spec
 `docs/app-ui.md`; rule `.github/instructions/app-ui.instructions.md`; skill `app-ui`; guard
 `tests/test_app_ui.py`.
+
+**Package ribbon.** A pinned native package may declare `ui.ribbon = {entry, title}`. The core
+mounts exactly one ribbon in `#ethos-ribbon-host` through `core/package-ribbon.js` (z 950, hidden
+below 900 px) and calls the entry's `mount(host, ctx)`; the package owns all visuals and must not
+build its own fixed right-edge host. `ctx.setDesktopGutter(44)` shifts the desktop icon grid
+(`--desktop-right-gutter`). Spec `docs/sticky-notes.md`, `docs/packages.md`; guard
+`tests/test_package_ribbon.py`.
+
+**PWA.** The desktop shell and the Sticky Notes `/notes` app share `frontend/sw.js`.
+`/manifest.webmanifest`, `/manifest-notes.webmanifest`, `/sw.js`, `/notes` and `/notes/` are
+**exact** public paths; the worker is network-first, never caches `/api/*`, and owns
+`push`/`notificationclick` for package reminders. Notes API calls still require a JWT. Spec
+`docs/notes-pwa.md`; guard `tests/test_pwa_assets.py`, `tests/test_notes_pwa.py`.
 
 **Updates.** Core releases ship a **signed** `releases/index.json` + `.sig`, produced only by
 `scripts/ethos-release publish` (offline Ed25519 key at `~/.ethos-pack/ethos-packages/repo.key`, public

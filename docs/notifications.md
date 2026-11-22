@@ -164,7 +164,8 @@ Options: `kind`/`type`, `title`, `message`, `action`, `autoDismissMs`,
 
 Other exports: `dismissNotification(id)`, `openNotifications({filter})`,
 `closeNotifications()`, `toggleNotificationDrawer()`, `markAllRead()`,
-`clearAll()`, `getUnreadCount()`, `pollUnreadCount()`,
+`clearAll()`, `getUnreadCount()`, `requestNotificationPermission()` (the only
+permission-prompt helper apps and PWAs may call), `pollUnreadCount()`,
 `startNotificationPolling()`, `connectNotificationStream()`.
 `showToast` / `showUnifiedToast` are deprecated aliases of the same pipeline.
 
@@ -200,8 +201,27 @@ The ⚙ button in the sheet header toggles two per-browser options stored in
 - **Sound** — a short two-tone WebAudio cue for `warning`/`error` backend events
   (default off; enabling it plays a sample).
 - **Desktop** — native `Notification` while the tab is in the background
-  (default off; requests permission on enable). Clicking it focuses the tab and
-  opens the sheet. No service worker required, so it only fires while a tab is open.
+  (default off; requests permission on enable through
+  `requestNotificationPermission()`). Clicking it focuses the tab and opens the sheet. No
+  service worker required, so it only fires while a tab is open.
+
+## Web Push (package reminders)
+
+The Notification Center is the in-app history. Web Push is a separate delivery channel used by
+the Sticky Notes package for due reminders — it does **not** write to `notifications.json` by
+itself:
+
+- The service worker (`frontend/sw.js`) handles `push` (shows the reminder) and
+  `notificationclick` (focuses an open `/notes` window or opens one at `/notes?note=<id>`).
+- Permission is requested only through `requestNotificationPermission()` from this module. No
+  app, package or PWA calls `Notification.requestPermission()` directly (guard:
+  `tests/test_notification_ui.py`).
+- Push subscriptions are owned by the package service (`push.json`, VAPID), not by the Notification
+  Center. A device without a subscription falls back to the package's `/reminders/due` endpoint
+  while the page is visible.
+- If a reminder should also appear in the sheet, the page emits it through the package API
+  (`package_id`) — that is a normal persisted event, not a second toast/history UI.
+- Specs: `docs/sticky-notes.md` (package) and `docs/notes-pwa.md` (mobile surface).
 
 ## Styling contract
 
@@ -230,7 +250,8 @@ Rules:
 1. New UI feedback → `notify(...)`; never a local `div` toast.
 2. Persistent events → backend `emit_event(...)`; **no second history UI**.
 3. Never write `#notificationCount` — `_setBadge()` is the only writer.
-4. Never call the desktop `Notification` API outside the core module.
+4. Never call the desktop `Notification` API outside the core module; apps/PWAs that need Web
+   Push permission call `requestNotificationPermission()`.
 5. Escape every server string (`escapeHtml` / `escapeAttr`) before `innerHTML`.
 6. Long-running work reports through `core/progress.js` (see `docs/progress-ui.md`)
    and emits **one summary** notification, not one per item.

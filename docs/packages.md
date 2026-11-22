@@ -146,6 +146,18 @@ repo/
     install them from publishers you trust. A package that needs a service sets `ui.port`; calls go
     through the authenticated `/proxy/` endpoint (GET, POST, PUT, PATCH and DELETE are forwarded),
     so the service can stay bound to loopback.
+  - **Right-edge ribbon (`ui.ribbon`).** A pinned native package may opt into a desktop ribbon:
+    `"ui": {"mode": "native", "entry": "frontend/app.js",
+    "ribbon": {"entry": "frontend/ribbon.js", "title": "Sticky Notes"}}`. The ribbon entry must be
+    listed in `files[]` and export `mount(host, ctx)` (or a default function); it may return a
+    cleanup function. The core mounts **one** ribbon in `#ethos-ribbon-host` (`z-index: 950`, hidden
+    below 900 px), gives it the same authenticated proxy/notification/log services as a native
+    window plus `ctx.openApp(appId)` and `ctx.setDesktopGutter(px)`, and unmounts it when the
+    package is uninstalled or the setting is disabled. The package owns all visuals; it must not
+    create a second fixed host or cover the Notification Center. `setDesktopGutter(44)` makes
+    `registry._gridGeometry` shift the rightmost desktop icon column via
+    `--desktop-right-gutter`. Reference implementation: `ethos-sticky-notes` (`frontend/ribbon.js`,
+    `docs/sticky-notes.md`). `ui.ribbon` requires `min_ethos_version` ≥ 2.14.1.
   - **Window shell.** Native UIs reuse the EthOS AntiVirus layout and tokens — 218 px rail with a
     text-only nav, panel/table/summary building blocks, one status line and the shared
     `ctx.progress`/`ctx.modal` helpers. The exact rules live in `ethos-packages/AGENTS.md` →
@@ -209,7 +221,11 @@ Rules enforced by `package_schema.validate_manifest`:
 - `python.wheels` must be non-empty, hash-pinned, and carry `arch` `x86_64`, `aarch64` or `any`.
   `any` is accepted only for a `-none-any.whl`. Sdists and bare filenames are rejected.
   `url` may point at an upstream file (PyPI CDN); the signed manifest's `sha256` is the
-  integrity guarantee, so wheels do not have to be copied into this repository.
+  integrity guarantee, so wheels do not have to be copied into this repository. When a dependency
+  only publishes an sdist (for example `http_ece`), build a wheel and commit it under the package's
+  `wheels/` directory, then point the entry at
+  `https://raw.githubusercontent.com/…/<pkg>/wheels/<file>.whl`. `scripts/ethos-wheels` supports
+  `--find-links <dir>` plus `--local-url-base <base>` for exactly this case (Sticky Notes uses it).
 - `min_ethos_version` is enforced at install time (409 when the core is older).
 - `requires` is installed first (depth-first, cycle-checked); `conflicts` blocks the install when
 the named package is already present, and uninstalling a package that others require is refused.
