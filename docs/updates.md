@@ -5,7 +5,8 @@ published release from Settings → Updates; the privileged helper verifies the
 signed index, applies the commit, restarts the service and rolls back on failure.
 
 > Ubuntu **package** upgrades (apt) are a separate layer with their own helper
-> and no rollback — see [`os-updates.md`](os-updates.md).
+> and no rollback — see [`os-updates.md`](os-updates.md). Whole-system A/B image
+> updates are the third layer — see [`os-image-updates.md`](os-image-updates.md).
 
 ## Why
 

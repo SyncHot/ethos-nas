@@ -170,6 +170,10 @@ def main() -> int:
             ("POST", "/api/system/update", None, 403),
             ("POST", "/api/system/os-update/check", None, 403),
             ("POST", "/api/system/os-update", None, 403),
+            ("POST", "/api/system/os-image/check", None, 403),
+            ("POST", "/api/system/os-image/download", None, 403),
+            ("POST", "/api/system/os-image/install", None, 403),
+            ("DELETE", "/api/system/os-image/download", None, 403),
             ("GET", "/api/security/autoban", None, 403),
             ("GET", "/api/security/bans", None, 403),
         ]:
@@ -233,6 +237,8 @@ def main() -> int:
             ("GET", "/api/system/update/status", 200),
             ("GET", "/api/system/os-update", 200),
             ("GET", "/api/system/os-update/status", 200),
+            ("GET", "/api/system/os-image", 200),
+            ("GET", "/api/system/os-image/status", 200),
             ("GET", "/api/security/autoban", 200),
         ]:
             got = _call(base, "GET", path, admin)

@@ -8,6 +8,9 @@ a deliberate, manual action.
 
 Three independent update layers exist; this document covers the middle one.
 
+> Whole-system (A/B) image updates are a separate channel —
+> [`os-image-updates.md`](os-image-updates.md).
+
 | Layer | Mechanism | Rollback | Owner |
 |---|---|---|---|
 | EthOS application | signed git release + `deploy/ethos-update` | yes (previous commit, 90 s probe) | `ethos-nas` |

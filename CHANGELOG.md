@@ -11,6 +11,34 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-11-22
+
+### Added
+
+- **EthOS OS image updates (A/B).** Settings → System checks the signed
+  `ethos-os-release` index, downloads the slot-agnostic rootfs artifact with
+  SHA-256 verification, and writes it into the standby slot through the new
+  `ethos-os-image` root helper. Reboot is a separate, explicit action; the
+  image's boot counter and health gate roll a bad slot back automatically. Data
+  on the shared `ETHOS-DATA` partition is never touched.
+- APIs: `GET /api/system/os-image`, `GET …/status`, `POST …/check`,
+  `POST …/download`, `POST …/install`, `DELETE …/download` (admin on mutations).
+- UI: **EthOS OS** card with slot state, download/install progress and a
+  reboot prompt; single-slot installs show the reflash hint read-only.
+
+### Security
+
+- `ethos-os-image apply` takes no arguments, is allowlisted by provisioning,
+  verifies the signed index and image hash itself, resolves the target by
+  partition label and **refuses to write the active slot**. It never reboots and
+  writes metadata only after `e2fsck` plus a read-only verification pass.
+
+### Upgrade
+
+- `sudo bash setup_scripts/setup_service.sh` once installs/refreshes the helper
+  through `deploy/provision.json` (v2.10.0 provisioning). A/B images only; a
+  single-slot installation keeps working and shows the reflash guidance.
+
 ## [2.10.0] - 2026-11-22
 
 ### Added

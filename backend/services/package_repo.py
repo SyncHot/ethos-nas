@@ -7,15 +7,18 @@ sha256 of every compose/file artifact. An unsigned source can be added only as
 
 import asyncio
 import base64
+import hashlib
 import ipaddress
 import json
 import logging
+import os
 import re
 import socket
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 from cryptography.exceptions import InvalidSignature
@@ -324,3 +327,53 @@ def download_verified(url: str, destination, expected_sha256: str, *, max_bytes:
         raise PackageError(f"Checksum mismatch for {url}", 502)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
+
+
+def download_to_file(url: str, destination, *, max_bytes: int,
+                     expected_sha256: str = "", progress=None) -> dict:
+    """Stream a large artifact to disk (OS images are far too big for get_bytes).
+
+    Same HTTPS/private-host/redirect guards as get_bytes, plus a hard size cap,
+    streaming sha256 and an optional progress callback (bytes_done, total).
+    The final file only appears after the checksum matches.
+    """
+    validate_url(url)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_suffix(destination.suffix + ".part")
+    digest = hashlib.sha256()
+    written = 0
+    opener = urllib.request.build_opener(_SafeRedirectHandler())
+    try:
+        with opener.open(url, timeout=60) as response, open(tmp, "wb") as fh:
+            try:
+                total = int(response.headers.get("Content-Length") or 0)
+            except (TypeError, ValueError):
+                total = 0
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise PackageError(f"Artifact exceeds the {max_bytes} byte limit: {url}", 400)
+                fh.write(chunk)
+                digest.update(chunk)
+                if progress is not None:
+                    try:
+                        progress(written, total)
+                    except Exception:
+                        logger.debug("Download progress callback failed", exc_info=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if expected_sha256 and digest.hexdigest() != require_sha256(expected_sha256, "artifact sha256"):
+            raise PackageError(f"Checksum mismatch for {url}", 502)
+        os.replace(tmp, destination)
+        return {"sha256": digest.hexdigest(), "size_bytes": written}
+    except PackageError:
+        tmp.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        tmp.unlink(missing_ok=True)
+        logger.warning("Artifact download failed for %s: %s", url, exc)
+        raise PackageError(f"Failed to fetch {url}: {exc}", 502) from None

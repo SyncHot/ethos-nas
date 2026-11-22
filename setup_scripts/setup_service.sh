@@ -135,6 +135,7 @@ if [ "${UNINSTALL}" = 1 ]; then
     rm -f "${UPDATE_HELPER_BIN}" "${UPDATE_CONF}" "${UPDATE_PUBKEY_PEM}"
     rm -f "${OS_UPDATE_HELPER_BIN}" "${OS_UPDATE_CONF}"
     rm -f "${PROVISION_HELPER_BIN}" "${PROVISION_SUDOERS_FILE}"
+    rm -f /usr/local/bin/ethos-os-image
     rm -rf /var/lib/ethos-provision
     echo "✓ removed: ${UNIT_DST}, ${SUDOERS_FILE}, ${WRAPPER_BIN}, ${DOCKER_HELPER_BIN}, ${SYSTEM_DEPS_HELPER_BIN}, ${SAMBA_ACCOUNTS_HELPER_BIN}, ${USER_ACCOUNTS_HELPER_BIN}, ${SET_PASSWORD_HELPER_BIN}, ${UPDATE_HELPER_BIN}, ${OS_UPDATE_HELPER_BIN}, ${PROVISION_HELPER_BIN}"
     echo "  user '${TARGET_USER}' kept (remove manually with: userdel ${TARGET_USER})"

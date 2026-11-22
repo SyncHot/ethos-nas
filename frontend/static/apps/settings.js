@@ -432,13 +432,17 @@ const OS_TABLE_ROWS = 40;
 
 async function renderSystem(isCurrent) {
     const isAdmin = _isAdmin();
-    const [data, applyState] = await Promise.all([
+    const [data, applyState, imageData] = await Promise.all([
         apiRequest('/api/system/os-update').catch((err) => {
             logError('Settings: OS update status unavailable', err?.detail || err?.message);
             return null;
         }),
         apiRequest('/api/system/os-update/status').catch((err) => {
             logError('Settings: OS update job unavailable', err?.detail || err?.message);
+            return null;
+        }),
+        apiRequest('/api/system/os-image').catch((err) => {
+            logError('Settings: OS image status unavailable', err?.detail || err?.message);
             return null;
         }),
     ]);
@@ -481,6 +485,47 @@ async function renderSystem(isCurrent) {
     const keptBack = Number(data?.kept_back) || 0;
     const canApply = isAdmin && data?.helper === true && data?.enabled !== false && count > 0;
 
+    const imageIdentity = imageData?.identity || {};
+    const imageLatest = imageData?.latest || null;
+    const imageDownload = imageData?.download || {};
+    const imageInstall = imageData?.install || {};
+    const imageRootfs = imageLatest?.rootfs || {};
+    const imageAb = imageData?.ab_supported === true;
+    const imageReady = imageData?.downloaded?.ready === true;
+    const imageAvailable = imageData?.update_available === true;
+    const imageSlot = imageData?.slots?.active || '';
+    const imageSlotInfo = (imageData?.slots?.slots || {})[imageSlot] || {};
+    const imageStaged = imageInstall.result?.status === 'ok';
+    const imageBusy = imageDownload.status === 'downloading' || imageInstall.running === true;
+    const imageSize = Number(imageRootfs.size_bytes) || 0;
+    let imageStatus = 'Loading EthOS OS status…';
+    let imageTone = '';
+    if (!imageData) {
+        imageStatus = 'EthOS OS image status is unavailable — check the Logs app.';
+        imageTone = 'error';
+    } else if (imageData.enabled === false) {
+        imageStatus = 'OS image checks are disabled (ETHOS_OS_IMAGE_ENABLED=0).';
+    } else if (!imageAb) {
+        imageStatus = 'This server uses the single-slot layout. Reflash with an A/B image to update the OS in place.';
+        imageTone = 'warn';
+    } else if (imageData.error) {
+        imageStatus = `Image check failed — ${imageData.error}`;
+        imageTone = 'error';
+    } else if (!imageData.helper) {
+        imageStatus = 'The privileged image helper is not installed — run "sudo bash setup_scripts/setup_service.sh" once.';
+        imageTone = 'warn';
+    } else if (imageStaged) {
+        imageStatus = `EthOS OS ${escapeHtml(imageInstall.result.version || '')} is staged in slot ${(imageInstall.result.slot || '').toUpperCase()} — reboot to apply.`;
+        imageTone = 'warn';
+    } else if (imageAvailable && imageLatest) {
+        imageStatus = `EthOS OS ${imageLatest.version} is available${imageReady ? ' · downloaded' : ''} — ${imageData.checked_at_iso ? _relTime(imageData.checked_at_iso) : 'not checked'}`;
+        imageTone = 'warn';
+    } else if (imageData.checked_at) {
+        imageStatus = `EthOS OS is up to date — ${_relTime(imageData.checked_at_iso)}`;
+    } else {
+        imageStatus = 'Not checked yet.';
+    }
+
     const tableRows = packages.slice(0, OS_TABLE_ROWS).map((pkg) => `<tr>
             <td>${escapeHtml(pkg.name)}${pkg.security ? ' <span class="ui-tag is-warn">security</span>' : ''}</td>
             <td class="path">${escapeHtml(pkg.from || '—')}</td>
@@ -491,6 +536,34 @@ async function renderSystem(isCurrent) {
         ? `<p class="ui-muted">and ${packages.length - OS_TABLE_ROWS} more package(s)…</p>` : '';
 
     shell.view.innerHTML = `
+        <section class="ui-panel" data-testid="settings-os-image-card">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('disk', 13)} EthOS OS <span class="ui-tag" data-testid="settings-os-image-version">${escapeHtml(imageIdentity.version || 'unknown')}</span></h2>
+                    <p class="ui-muted${imageTone ? ` ${imageTone}` : ''}" data-testid="settings-os-image-status">${escapeHtml(imageStatus)}</p>
+                </div>
+                <div class="ui-row">
+                    ${isAdmin
+                        ? `<button class="ui-btn small" data-action="os-image-check" data-testid="settings-os-image-check">${uiIcon('refresh', 12)} Check</button>
+                           <button class="ui-btn small" data-action="os-image-download" data-testid="settings-os-image-download" ${imageAb && imageAvailable && !imageReady && !imageBusy ? '' : 'hidden'}>${uiIcon('download', 12)} Download</button>
+                           <button class="ui-btn small primary" data-action="os-image-install" data-testid="settings-os-image-install" ${imageAb && imageReady && !imageBusy && !imageStaged ? '' : 'hidden'}>${uiIcon('disk', 12)} Install to standby</button>
+                           <button class="ui-btn small danger" data-action="os-image-reboot" data-testid="settings-os-image-reboot" ${imageStaged ? '' : 'hidden'}>${uiIcon('refresh', 12)} Reboot to apply</button>`
+                        : '<span class="ui-tag">Admin required</span>'}
+                </div>
+            </div>
+            <div class="ui-panel-body ui-list">
+                <div class="ui-list-row"><span class="ui-tag is-info">slot</span><span class="ui-list-row-main">${imageAb
+                    ? `running from slot ${escapeHtml((imageSlot || '?').toUpperCase())}${imageSlotInfo.status ? ` · ${escapeHtml(imageSlotInfo.status)}` : ''}`
+                    : 'single-slot layout (no standby partition)'}</span></div>
+                ${imageLatest
+                    ? `<div class="ui-list-row"><span class="ui-tag is-info">image</span><span class="ui-list-row-main">${escapeHtml(imageLatest.version)}${imageSize ? ` · ${formatBytes(imageSize)} compressed` : ''}${imageLatest.notes ? ` — ${escapeHtml(imageLatest.notes)}` : ''}</span></div>`
+                    : ''}
+                ${imageData?.slots?.last_result?.status
+                    ? `<div class="ui-list-row"><span class="ui-tag ${imageData.slots.last_result.status === 'rolled_back' ? 'is-warn' : 'is-ok'}">last</span><span class="ui-list-row-main">${escapeHtml(imageData.slots.last_result.status)}${imageData.slots.last_result.at ? ` · ${_relTime(imageData.slots.last_result.at)}` : ''}</span></div>`
+                    : ''}
+            </div>
+        </section>
+
         <section class="ui-panel" data-testid="settings-system-card">
             <div class="ui-toolbar">
                 <div>
@@ -561,6 +634,33 @@ async function renderSystem(isCurrent) {
     shell.view.querySelector('[data-action="os-apply"]')?.addEventListener('click', () => { _applyOsUpdate(count, security); });
     shell.view.querySelector('[data-action="os-reboot"]')?.addEventListener('click', () => { _rebootServer(); });
 
+    shell.view.querySelector('[data-action="os-image-check"]')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+            await apiRequest('/api/system/os-image/check', { method: 'POST' });
+        } catch (err) {
+            logError('Settings: OS image check failed', err?.detail || err?.message);
+            notify({ kind: 'error', title: 'Image check failed', message: err?.detail || err?.message || 'Unknown error' });
+        }
+        renderSection('system');
+    });
+    shell.view.querySelector('[data-action="os-image-download"]')?.addEventListener('click', async () => {
+        try {
+            await apiRequest('/api/system/os-image/download', { method: 'POST' });
+        } catch (err) {
+            logError('Settings: OS image download failed to start', err?.detail || err?.message);
+            showAlert('Download failed', err?.detail || err?.message || 'Unknown error');
+            return;
+        }
+        _watchOsImageDownload();
+    });
+    shell.view.querySelector('[data-action="os-image-install"]')?.addEventListener('click', () => { _installOsImage(); });
+    shell.view.querySelector('[data-action="os-image-reboot"]')?.addEventListener('click', () => { _rebootServer(); });
+
+    if (imageDownload.status === 'downloading') _watchOsImageDownload();
+    if (imageInstall.running) _watchOsImageInstall();
+
     if (applyState?.running) {
         logInfo('Settings: reattaching to a running OS update', applyState?.job?.step || 'running');
         _watchOsUpdate();
@@ -568,6 +668,105 @@ async function renderSystem(isCurrent) {
 
     shell.setStatus(data ? `${count} package update(s) · ${auto} auto updates` : 'OS update status unavailable',
         data && !data.error && data.helper ? 'ok' : 'warn');
+}
+
+async function _installOsImage() {
+    const ok = await showConfirm(
+        'Install EthOS OS image',
+        'Write the downloaded image into the standby slot now?\n\n'
+        + 'The current system keeps running; nothing is removed and the data partition is never touched. '
+        + 'The switch happens only after a reboot, and the previous slot stays available for automatic rollback.',
+    );
+    if (!ok) return;
+    try {
+        await apiRequest('/api/system/os-image/install', { method: 'POST' });
+    } catch (err) {
+        logError('Settings: OS image install failed to start', err?.detail || err?.message);
+        showAlert('Install failed', err?.detail || err?.message || 'Unknown error');
+        return;
+    }
+    _watchOsImageInstall();
+}
+
+async function _watchOsImageDownload() {
+    const task = startTask({
+        appId: 'system', title: 'Downloading EthOS OS', detail: 'starting the download…',
+        percent: null, testIdPrefix: 'os-image-download',
+    });
+    const token = navToken;
+    const tick = async () => {
+        if (token !== navToken) return;
+        let state;
+        try {
+            state = await apiRequest('/api/system/os-image');
+        } catch (err) {
+            logError('Settings: OS image download status lost', err?.detail || err?.message);
+            setTimeout(tick, 3000);
+            return;
+        }
+        const download = state?.download || {};
+        if (download.status === 'downloading') {
+            const total = Number(download.bytes_total) || 0;
+            const done = Number(download.bytes_done) || 0;
+            task.update({
+                percent: Number.isFinite(Number(download.percent)) ? Number(download.percent) : null,
+                detail: total ? `${formatBytes(done)} of ${formatBytes(total)}` : 'downloading…',
+            });
+            setTimeout(tick, 1500);
+            return;
+        }
+        if (download.status === 'downloaded') {
+            task.finish('done', { percent: 100, detail: 'image verified and ready' });
+            renderSection('system');
+        } else if (download.status === 'failed') {
+            task.finish('failed', { percent: 100, detail: download.detail || 'download failed' });
+            showAlert('Download failed', download.detail || 'The image could not be downloaded.');
+            renderSection('system');
+        } else {
+            setTimeout(tick, 2000);
+        }
+    };
+    setTimeout(tick, 1000);
+}
+
+async function _watchOsImageInstall() {
+    const task = startTask({
+        appId: 'system', title: 'Installing EthOS OS to standby',
+        detail: 'writing the standby slot…', percent: null, testIdPrefix: 'os-image-install',
+    });
+    const token = navToken;
+    const tick = async () => {
+        if (token !== navToken) return;
+        let state;
+        try {
+            state = await apiRequest('/api/system/os-image/status');
+        } catch (err) {
+            logError('Settings: OS image install status lost', err?.detail || err?.message);
+            setTimeout(tick, 3000);
+            return;
+        }
+        const install = state?.install || {};
+        if (install.running) {
+            const job = install.job || {};
+            task.update({ percent: Number.isFinite(Number(job.percent)) ? Number(job.percent) : null,
+                          detail: `${job.step || 'writing'}${job.detail ? ` — ${job.detail}` : ''}` });
+            setTimeout(tick, 2000);
+            return;
+        }
+        const result = install.result || {};
+        if (result.status === 'ok') {
+            task.finish('done', { percent: 100, detail: result.detail || 'staged' });
+            notify({ kind: 'warning', title: 'Reboot to apply', message: result.detail || 'Reboot to boot the new slot.' });
+            renderSection('system');
+        } else if (result.status === 'failed') {
+            task.finish('failed', { percent: 100, detail: result.detail || 'install failed' });
+            showAlert('OS image install failed', result.detail || 'The helper reported a failure.');
+            renderSection('system');
+        } else {
+            setTimeout(tick, 2000);
+        }
+    };
+    setTimeout(tick, 1000);
 }
 
 async function _applyOsUpdate(count, security) {

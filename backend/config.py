@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.10.0"
+APP_VERSION = "2.11.0"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -187,6 +187,22 @@ class Settings:
     OS_UPDATE_TTL_SECONDS: int = int(os.getenv("ETHOS_OS_UPDATE_TTL_SECONDS", "3600"))
     OS_UPDATE_CHECK_HOURS: float = float(os.getenv("ETHOS_OS_UPDATE_CHECK_HOURS", "24"))
     OS_UPDATE_CHECK_TIMEOUT: int = int(os.getenv("ETHOS_OS_UPDATE_CHECK_TIMEOUT", "180"))
+
+    # ── OS image (A/B) updates (services/os_image_service.py) ───────────────
+    # Signed ethos-os-release index with a slot-agnostic rootfs artifact. The
+    # backend downloads; the root helper ethos-os-image writes the standby slot.
+    OS_IMAGE_ENABLED: bool = os.getenv("ETHOS_OS_IMAGE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    OS_IMAGE_INDEX_URL: str = os.getenv(
+        "ETHOS_OS_IMAGE_INDEX_URL",
+        "https://raw.githubusercontent.com/SyncHot/ethos-os-release/main/releases/index.json",
+    )
+    OS_IMAGE_PUBKEY: str = os.getenv("ETHOS_OS_IMAGE_PUBKEY", RELEASE_PUBKEY_B64)
+    OS_IMAGE_HELPER: str = os.getenv("ETHOS_OS_IMAGE_HELPER", "/usr/local/bin/ethos-os-image")
+    # Tests point OS_IMAGE_HELPER at a fixture script and run it directly.
+    OS_IMAGE_VIA_SUDO: bool = not os.getenv("ETHOS_OS_IMAGE_HELPER")
+    OS_IMAGE_TTL_SECONDS: int = int(os.getenv("ETHOS_OS_IMAGE_TTL_SECONDS", "3600"))
+    OS_IMAGE_CHECK_HOURS: float = float(os.getenv("ETHOS_OS_IMAGE_CHECK_HOURS", "24"))
+    OS_IMAGE_MAX_BYTES: int = int(os.getenv("ETHOS_OS_IMAGE_MAX_BYTES", str(4 * 1024 * 1024 * 1024)))
 
     # ── System Health Monitor (services/health_monitor_service.py) ───────────
     # How often the background checker runs (seconds).

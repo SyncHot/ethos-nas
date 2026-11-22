@@ -73,10 +73,10 @@ Validation rules:
 | manifest | `schema: 1`, unknown top-level keys rejected |
 
 The manifest lists every helper the installer ships as a `deploy/` file
-(`ethos-update`, `ethos-os-update`, `ethos-set-password`, `ethos-user-accounts`,
-`ethos-samba-accounts`, `ethos-system-deps`, `ethos-provision`). Helpers that
-`setup_service.sh` generates itself (`ethos-docker-install`,
-`ethos-usb-partition`) stay installer-owned.
+(`ethos-update`, `ethos-os-update`, `ethos-os-image`, `ethos-set-password`,
+`ethos-user-accounts`, `ethos-samba-accounts`, `ethos-system-deps`,
+`ethos-provision`). Helpers that `setup_service.sh` generates itself
+(`ethos-docker-install`, `ethos-usb-partition`) stay installer-owned.
 
 ## Flow
 

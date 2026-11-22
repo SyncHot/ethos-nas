@@ -27,6 +27,7 @@ EXPECTED_RULES = [
     "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-update",
     "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-os-update check",
     "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-os-update apply",
+    "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-os-image apply",
     "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-set-password",
     "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-user-accounts",
     "ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-samba-accounts",
@@ -37,8 +38,9 @@ EXPECTED_RULES = [
 ]
 
 EXPECTED_HELPERS = {
-    "ethos-provision", "ethos-update", "ethos-os-update", "ethos-set-password",
-    "ethos-user-accounts", "ethos-samba-accounts", "ethos-system-deps",
+    "ethos-provision", "ethos-update", "ethos-os-update", "ethos-os-image",
+    "ethos-set-password", "ethos-user-accounts", "ethos-samba-accounts",
+    "ethos-system-deps",
 }
 
 

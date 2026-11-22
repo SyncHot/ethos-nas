@@ -143,6 +143,10 @@ def main() -> int:
             page.wait_for_selector('[data-testid="core-update-card"]')
             check("admin sees the update check button",
                   page.locator('[data-testid="core-update-check"]').count() == 1)
+            page.click('[data-testid="settings-nav-system"]')
+            page.wait_for_selector('[data-testid="settings-os-image-card"]')
+            check("admin sees the OS image check button",
+                  page.locator('[data-testid="settings-os-image-check"]').count() == 1)
 
             # Both themes are part of the shell.
             page.evaluate("document.documentElement.classList.remove('light'); document.documentElement.classList.add('dark')")
@@ -181,6 +185,8 @@ def main() -> int:
             user_page.wait_for_selector('[data-testid="settings-system-card"]')
             check("non-admin has no OS update check button",
                   user_page.locator('[data-testid="settings-os-check"]').count() == 0)
+            check("non-admin has no OS image check button",
+                  user_page.locator('[data-testid="settings-os-image-check"]').count() == 0)
             check("no page errors for non-admin", not user_errors, "; ".join(user_errors[:3]))
 
             browser.close()

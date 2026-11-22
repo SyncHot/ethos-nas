@@ -1,0 +1,317 @@
+#!/bin/bash
+# ethos-os-image — write a signed rootfs image into the standby A/B slot.
+#
+# Installed by deploy/provision.json as /usr/local/bin/ethos-os-image and
+# reachable through exactly one sudoers rule:
+#
+#   ethos-nas ALL=(root) NOPASSWD: /usr/local/bin/ethos-os-image apply
+#
+# `apply` takes no arguments. The web tier can only drop a request file; this
+# helper fetches and verifies the signed ethos-os index itself, verifies the
+# image sha256, and writes the *inactive* slot. It never reboots; the UI asks
+# the operator. The boot counter + health gate in the image handle rollback.
+#
+# Spec: docs/os-image-updates.md. Exit codes: 0 ok, 2 usage, 3 busy, 4 bad
+# request/manifest, 5 index/signature, 6 write/verify failure.
+set -euo pipefail
+
+CONF="/etc/ethos-nas/update.conf"
+LOCK="/run/ethos-os-image.lock"
+SLOT_TOOL="/usr/local/sbin/ethos-slot"
+
+log() { printf 'ethos-os-image: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit "${2:-1}"; }
+
+[ "$(id -u)" -eq 0 ] || die "must run as root (via sudo)" 1
+[ "$#" -eq 1 ] && [ "$1" = "apply" ] || die "usage: ethos-os-image apply" 2
+[ -x "${SLOT_TOOL}" ] || die "not an A/B system (${SLOT_TOOL} missing)" 4
+[ -r "${CONF}" ] || die "missing ${CONF} — re-run setup_scripts/setup_service.sh" 4
+# shellcheck disable=SC1090
+. "${CONF}"
+for var in INSTALL_DIR SERVICE_USER DATA_DIR INDEX_URL PUBKEY_PEM; do
+    [ -n "${!var:-}" ] || die "${CONF} does not define ${var}" 4
+done
+
+# Writing a 2–4 GiB image can outlive the service; use a transient scope.
+if [ -z "${ETHOS_OS_IMAGE_SCOPED:-}" ] && [ -d /run/systemd/system ] \
+        && command -v systemd-run >/dev/null 2>&1; then
+    exec systemd-run --scope --collect --quiet --unit="ethos-os-image-$$" \
+        --setenv=ETHOS_OS_IMAGE_SCOPED=1 -- "$0" apply
+fi
+
+exec 9>"${LOCK}" || die "cannot open ${LOCK}" 5
+flock -n 9 || die "another OS image operation is already running" 3
+
+exec python3 - "${INSTALL_DIR}" "${SERVICE_USER}" "${DATA_DIR}" \
+    "${INDEX_URL}" "${PUBKEY_PEM}" "${SLOT_TOOL}" <<'PY'
+import datetime
+import hashlib
+import json
+import os
+import platform
+import pwd
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+
+INSTALL_DIR, SERVICE_USER, DATA_DIR, INDEX_URL, PUBKEY_PEM, SLOT_TOOL = sys.argv[1:7]
+IMAGE_DIR = os.path.join(DATA_DIR, "os-image")
+REQUEST = os.path.join(IMAGE_DIR, "request.json")
+JOB = os.path.join(IMAGE_DIR, "job.json")
+RESULT = os.path.join(IMAGE_DIR, "result.json")
+SLOTS = os.path.join(DATA_DIR, "system", "slots.json")
+LAYOUT_FILE = "/etc/ethos-os/layout"
+MAX_INDEX = 256 * 1024
+MAX_IMAGE = 4 * 1024 * 1024 * 1024
+MIN_SLOT = 3 * 1024 * 1024 * 1024
+FILE_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def log(message: str) -> None:
+    print(f"ethos-os-image: {message}", file=sys.stderr, flush=True)
+
+
+def now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def write_json(path: str, payload: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    os.chmod(path, 0o644)
+    try:
+        pw = pwd.getpwnam(SERVICE_USER)
+        os.chown(path, pw.pw_uid, pw.pw_gid)
+    except KeyError:
+        pass
+
+
+def job(status: str, step: str, percent: int, detail: str = "") -> None:
+    write_json(JOB, {"status": status, "step": step, "percent": max(0, min(100, percent)),
+                     "detail": str(detail)[:300], "pid": os.getpid(), "at": now_iso()})
+
+
+def result(status: str, detail: str, **extra) -> None:
+    payload = {"status": status, "detail": str(detail)[:500], "at": now_iso(), **extra}
+    write_json(RESULT, payload)
+    write_json(JOB, {**payload, "step": "done", "percent": 100, "pid": os.getpid()})
+
+
+def read_json(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def run(argv, timeout=None) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+
+
+def os_identity() -> dict:
+    info = read_json("/etc/ethos-os/build-info.json")
+    arch = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(
+        platform.machine(), platform.machine())
+    return {"version": str(info.get("os_version") or ""), "arch": arch,
+            "variant": str(info.get("variant") or "nas")}
+
+
+def sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def fetch_signed_index() -> dict:
+    with tempfile.TemporaryDirectory(prefix="ethos-os-index-") as tmp:
+        index_path = os.path.join(tmp, "index.json")
+        sig_path = os.path.join(tmp, "index.json.sig")
+        sig_bin = os.path.join(tmp, "index.sig.bin")
+        fetch = run(["curl", "-fsSL", "--proto", "=https", "--tlsv1.2",
+                     "--max-time", "30", "--max-filesize", str(MAX_INDEX),
+                     INDEX_URL, "-o", index_path], timeout=40)
+        if fetch.returncode != 0:
+            raise RuntimeError(f"could not fetch {INDEX_URL}")
+        fetch = run(["curl", "-fsSL", "--proto", "=https", "--tlsv1.2",
+                     "--max-time", "30", "--max-filesize", "4096",
+                     INDEX_URL + ".sig", "-o", sig_path], timeout=40)
+        if fetch.returncode != 0:
+            raise RuntimeError("could not fetch the index signature")
+        import base64
+        try:
+            with open(sig_path, "rb") as fh:
+                signature = base64.b64decode(fh.read(), validate=True)
+        except ValueError:
+            raise RuntimeError("signature is not base64") from None
+        with open(sig_bin, "wb") as fh:
+            fh.write(signature)
+        verify = run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", PUBKEY_PEM,
+                      "-rawin", "-in", index_path, "-sigfile", sig_bin], timeout=20)
+        if verify.returncode != 0:
+            raise RuntimeError("release index signature is invalid")
+        with open(index_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    if not isinstance(data, dict) or data.get("schema") != 2:
+        raise RuntimeError("unsupported OS index schema")
+    return data
+
+
+def target_slot() -> tuple:
+    active = run([SLOT_TOOL, "active"], timeout=10)
+    if active.returncode != 0:
+        raise RuntimeError("could not read the active slot")
+    active_slot = active.stdout.strip()
+    if active_slot not in ("a", "b"):
+        raise RuntimeError(f"invalid active slot: {active_slot!r}")
+    slots = read_json(SLOTS)
+    if str((slots.get("slots") or {}).get(active_slot, {}).get("status") or "") == "candidate":
+        raise RuntimeError("a candidate slot is already pending — reboot or roll back first")
+    slot = "b" if active_slot == "a" else "a"
+    label = f"ETHOS-ROOT-{slot.upper()}"
+    link = f"/dev/disk/by-label/{label}"
+    if not os.path.islink(link) or not os.path.exists(link):
+        raise RuntimeError(f"missing partition label {label}")
+    device = os.path.realpath(link)
+    try:
+        mode = os.stat(device).st_mode
+    except OSError as exc:
+        raise RuntimeError(f"cannot stat {device}: {exc}") from None
+    if not stat.S_ISBLK(mode):
+        raise RuntimeError(f"{device} is not a block device")
+    return active_slot, slot, label, device
+
+
+def xz_uncompressed(path: str) -> int:
+    listing = run(["xz", "--robot", "--list", path], timeout=30)
+    if listing.returncode != 0:
+        raise RuntimeError("image is not a valid xz file")
+    for line in listing.stdout.splitlines():
+        if line.startswith("totals"):
+            parts = line.split()
+            if len(parts) >= 5:
+                return int(parts[4])
+    raise RuntimeError("could not read the uncompressed image size")
+
+
+def main() -> int:
+    try:
+        with open(LAYOUT_FILE, encoding="utf-8") as fh:
+            layout = fh.read().strip()
+    except OSError:
+        layout = ""
+    if layout != "ab1":
+        result("failed", "This system does not use the A/B layout — reflash with an A/B image.")
+        return 4
+    request = read_json(REQUEST)
+    if request.get("action") != "apply":
+        result("failed", "request.json does not ask for apply")
+        return 4
+    name = str(request.get("file") or "")
+    if not FILE_RE.match(name):
+        result("failed", "request file name is invalid")
+        return 4
+    source = os.path.realpath(os.path.join(IMAGE_DIR, name))
+    if os.path.dirname(source) != os.path.realpath(IMAGE_DIR) or not os.path.isfile(source):
+        result("failed", "requested image is missing or outside the image directory")
+        return 4
+    if os.path.getsize(source) > MAX_IMAGE:
+        result("failed", "image exceeds the 4 GiB limit")
+        return 4
+
+    job("running", "verify", 5, "verifying the signed index")
+    try:
+        index = fetch_signed_index()
+        identity = os_identity()
+        entry = (index.get("latest") or {}).get(f"{identity['arch']}/{identity['variant']}")
+        if not isinstance(entry, dict):
+            raise RuntimeError("no image for this architecture/variant")
+        if entry.get("layout") != "ab1":
+            raise RuntimeError("published image is not an A/B image")
+        rootfs = entry.get("rootfs") or {}
+        if not isinstance(rootfs, dict) or not SHA_RE.match(str(rootfs.get("sha256") or "")):
+            raise RuntimeError("index has no usable rootfs artifact")
+        version = str(entry.get("version") or "")
+        if version and version == identity["version"]:
+            raise RuntimeError(f"already running EthOS OS {version}")
+        if int(rootfs.get("size_bytes") or -1) != os.path.getsize(source):
+            raise RuntimeError("downloaded image size does not match the signed index")
+        job("running", "verify", 10, "hashing the image")
+        if sha256_file(source) != rootfs["sha256"]:
+            raise RuntimeError("image checksum does not match the signed index")
+        active, slot, label, device = target_slot()
+        job("running", "verify", 15, f"target slot {slot} ({label})")
+        uncompressed = xz_uncompressed(source)
+        partition = run(["blockdev", "--getsize64", device], timeout=10)
+        if partition.returncode != 0:
+            raise RuntimeError(f"cannot read the size of {device}")
+        partition_bytes = int(partition.stdout.strip())
+        if partition_bytes < max(MIN_SLOT, uncompressed):
+            raise RuntimeError(f"slot {slot} is too small ({partition_bytes} bytes)")
+    except Exception as exc:
+        result("failed", str(exc))
+        return 5
+
+    job("running", "write", 30, f"writing slot {slot} — do not power off")
+    try:
+        xz = subprocess.Popen(["xz", "-dc", source], stdout=subprocess.PIPE)
+        dd = subprocess.Popen(["dd", f"of={device}", "bs=4M", "conv=fsync", "status=none"],
+                              stdin=xz.stdout)
+        assert xz.stdout is not None
+        xz.stdout.close()
+        dd_rc = dd.wait()
+        xz_rc = xz.wait()
+        if xz_rc != 0 or dd_rc != 0:
+            raise RuntimeError(f"write failed (xz={xz_rc}, dd={dd_rc})")
+        job("running", "fsck", 80, "checking the filesystem")
+        label_rc = run(["e2label", device, label], timeout=30)
+        if label_rc.returncode != 0:
+            raise RuntimeError("could not label the new slot")
+        fsck = run(["e2fsck", "-fy", device], timeout=600)
+        if fsck.returncode > 1:
+            raise RuntimeError(f"e2fsck failed: {fsck.stdout[-200:]}")
+        grow = run(["resize2fs", device], timeout=300)
+        if grow.returncode != 0:
+            raise RuntimeError(f"resize2fs failed: {grow.stderr[-200:]}")
+        job("running", "verify", 90, "verifying the written slot")
+        mountpoint = tempfile.mkdtemp(prefix="ethos-os-verify-")
+        try:
+            mount = run(["mount", "-o", "ro", device, mountpoint], timeout=30)
+            if mount.returncode != 0:
+                raise RuntimeError(f"could not mount the new slot: {mount.stderr[-200:]}")
+            info = read_json(os.path.join(mountpoint, "etc/ethos-os/build-info.json"))
+            if str(info.get("os_version") or "") != version:
+                raise RuntimeError("written slot reports a different OS version")
+            if not os.path.isfile(os.path.join(mountpoint, "boot/vmlinuz")):
+                raise RuntimeError("written slot has no /boot/vmlinuz")
+        finally:
+            run(["umount", mountpoint], timeout=30)
+            os.rmdir(mountpoint)
+        job("running", "finalize", 96, f"marking slot {slot} as candidate")
+        for action in (["candidate", slot, version], ["activate", slot]):
+            call = run([SLOT_TOOL, *action], timeout=30)
+            if call.returncode != 0:
+                raise RuntimeError(f"ethos-slot {action[0]} failed")
+    except Exception as exc:
+        result("failed", str(exc))
+        return 6
+
+    result("ok", f"EthOS OS {version} written to slot {slot}; reboot to apply",
+           version=version, slot=slot)
+    log(f"slot {slot} staged with {version}")
+    return 0
+
+
+raise SystemExit(main())
+PY
