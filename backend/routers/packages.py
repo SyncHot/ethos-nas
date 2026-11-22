@@ -20,8 +20,8 @@ from pydantic import BaseModel
 from backend.config import settings
 from backend.routers.auth import require_admin
 from backend.services import (
-    json_store, package_cleanup, package_installer, package_jobs, package_repo, packages_store,
-    system_deps,
+    json_store, package_cleanup, package_installer, package_jobs, package_repo, package_state,
+    packages_store, system_deps,
 )
 from backend.services.notifications_service import emit_event
 from backend.services.package_schema import PackageError, check_pkg_id, safe_relative_path
@@ -236,10 +236,28 @@ async def list_updates() -> dict:
 
 
 def _data_inventory(pkg_id: str) -> dict:
-    """Size of the state a package keeps in `<DATA_DIR>/packages/data/<id>`."""
+    """Size of the state a package keeps under `<DATA_DIR>`.
+
+    That is `<DATA_DIR>/packages/data/<id>` for every runtime, plus the core
+    state owned by a UI-only package (Cameras stores its cameras and settings in
+    the core — see `services/package_state.py`). `remove_data=1` deletes both.
+    """
     path = packages_store.data_dir(pkg_id)
-    return {"path": str(path), "exists": path.exists(),
-            "size_bytes": packages_store.dir_size(path)}
+    package_exists = path.exists()
+    inventory = {"path": str(path), "paths": [str(path)], "exists": package_exists,
+                 "size_bytes": packages_store.dir_size(path),
+                 "has_package_data": package_exists}
+    core = package_state.describe(pkg_id)
+    if core:
+        inventory["label"] = core["label"]
+        inventory["core"] = core
+        inventory["exists"] = package_exists or core["exists"]
+        inventory["size_bytes"] += core["size_bytes"]
+        if core["exists"]:
+            inventory["paths"].extend(core["paths"])
+        if not package_exists:
+            inventory["path"] = core["path"]
+    return inventory
 
 
 @router.get("/orphans", dependencies=[Depends(require_admin)])
@@ -269,6 +287,26 @@ async def list_orphan_data() -> dict:
             modified = 0
         orphans.append({"id": entry.name, "path": str(entry),
                         "size_bytes": packages_store.dir_size(entry), "modified": modified})
+    # UI-only packages keep their state in the core, not in packages/data/<id>.
+    by_id = {item["id"]: item for item in orphans}
+    for pkg_id in package_state.known_packages():
+        if pkg_id in installed:
+            continue
+        core = package_state.describe(pkg_id)
+        if not core or not core["exists"]:
+            continue
+        item = by_id.get(pkg_id)
+        if item:
+            # Both roots exist: one row, one Delete button, the full total.
+            item["size_bytes"] += core["size_bytes"]
+            item["path"] = f"{item['path']}, {core['path']}"
+            item["core"] = True
+            item["label"] = core["label"]
+            item["modified"] = max(int(item.get("modified") or 0), int(core["modified"]))
+            continue
+        orphans.append({"id": pkg_id, "path": core["path"], "core": True,
+                        "size_bytes": core["size_bytes"], "modified": core["modified"],
+                        "label": core["label"]})
     return {"orphans": orphans, "total_bytes": sum(item["size_bytes"] for item in orphans)}
 
 
@@ -286,6 +324,11 @@ async def delete_orphan_data(pkg_id: str) -> dict:
     shutil.rmtree(path, ignore_errors=True)
     if path.exists():
         raise HTTPException(500, "Could not delete every file in the package data directory")
+    core = package_state.purge(pkg_id)
+    if core:
+        freed += core["size_bytes"]
+        if core["errors"]:
+            raise HTTPException(500, "Could not delete every file in the core state")
     logger.info("Deleted orphan package data for %s (%d bytes)", pkg_id, freed)
     emit_event("info", "Package data deleted",
                f"{pkg_id}: removed {freed // 1024} KiB left behind by an uninstalled package",

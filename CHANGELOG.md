@@ -11,6 +11,21 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.29.3] - 2026-11-22
+
+### Fixed
+
+- **Uninstalling a window-only package can now delete its configuration.** The Cameras
+  package (`ethos-surveillance`) is only the UI: cameras, settings, motion events and
+  the live window live in the core, so removing the package left them behind and the
+  recording engine kept restarting ffmpeg for cameras nobody could edit any more
+  (`Camera … live failed: Connection refused` in the log, forever). Uninstall now offers
+  "Delete package data and configuration" (pre-ticked when the package has no data root
+  of its own), stops the pipelines and deletes the camera state; recordings are kept.
+- **Leftover core state appears in Packages → Unused package data**, so a package that
+  was already removed can still be cleaned up (`DELETE /api/packages/orphans/{id}` now
+  purges the core state as well).
+
 ## [2.29.2] - 2026-11-22
 
 ### Fixed

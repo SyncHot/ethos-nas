@@ -189,6 +189,14 @@ but are admin-only; the desktop app records through `record.mode`.
 - Feedback only through `ctx.notifications`, dialogs through `ctx.modal`, logs
   through `ctx.log`, status through `ctx.ws.connect('/ws/surveillance')`.
 
+## Uninstalling the window
+
+The package is only the UI; the engine and its stores stay in EthOS. Uninstalling
+`ethos-surveillance` with **Delete package data and configuration** (or purging the leftover entry
+under Packages → **Unused package data**) stops every pipeline and deletes the camera/settings/event
+stores plus the live window — otherwise the core kept restarting ffmpeg and logging
+`live failed: Connection refused` for cameras nobody could edit any more. Recordings are kept.
+
 ## Verification Log
 
 - 2026-07-11 — original MVP (phases 1–5 in the previous revision of this file).

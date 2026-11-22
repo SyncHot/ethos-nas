@@ -562,6 +562,7 @@ async function _renderOrphanData(content) {
             <div class="ui-row" style="justify-content:space-between;gap:10px;">
                 <div style="min-width:0;">
                     <strong>${escapeHtml(item.id)}</strong> <span class="ui-muted">· ${escapeHtml(_formatBytes(item.size_bytes))}</span>
+                    ${item.label ? `<div class="ui-muted" style="font-size:11px;">${escapeHtml(item.label)}</div>` : ''}
                     <div class="path" style="font-size:11px;word-break:break-all;">${escapeHtml(item.path)}</div>
                 </div>
                 <button class="ui-btn small danger" data-purge-orphan="${escapeAttr(item.id)}" data-testid="pkg-purge-orphan-${escapeAttr(item.id)}">Delete</button>
@@ -962,6 +963,13 @@ async function _uninstall(pkgId) {
     const appData = inventory.data || {};
     const appDataSize = _formatBytes(appData.size_bytes || 0);
     const appDataExists = appData.exists !== false && (appData.size_bytes || !appData.path);
+    // A package that is only a window over a core engine (Cameras) keeps its
+    // configuration in the core, not under packages/data/<id> — the checkbox
+    // is then pre-ticked: without the window that state cannot be edited, and
+    // the engine would keep restarting pipelines for a removed package.
+    const coreOnly = Boolean(appData.core && appData.core.exists && !appData.has_package_data);
+    const appDataPaths = (Array.isArray(appData.paths) && appData.paths.length)
+        ? appData.paths : [appData.path || 'no app data'];
     const sharedOwners = [...new Set(shared.flatMap((img) => (img.in_use_by || [])
         .map((owner) => owner.project || owner.container || '')))].filter(Boolean);
     const bodyHtml = `
@@ -987,9 +995,10 @@ async function _uninstall(pkgId) {
         </label>
         <label style="display:flex;gap:9px;align-items:flex-start;font-size:13px;line-height:1.45;margin-top:12px;cursor:${appDataExists ? 'pointer' : 'not-allowed'};">
             <input type="checkbox" name="remove_data" data-testid="pkg-uninstall-remove-data"
-                   style="margin-top:2px;"${appDataExists ? '' : ' disabled'}>
-            <div>Delete package app data${appDataExists ? ` — ${appDataSize}` : ''}
-                <div style="font-size:11px;color:var(--text-3);font-family:monospace;margin-top:3px;word-break:break-all;">${escapeHtml(appData.path || 'no app data')}</div>
+                   style="margin-top:2px;"${appDataExists ? '' : ' disabled'}${appDataExists && coreOnly ? ' checked' : ''}>
+            <div>${appData.label ? 'Delete package data and configuration' : 'Delete package app data'}${appDataExists ? ` — ${appDataSize}` : ''}
+                <div style="font-size:11px;color:var(--text-3);font-family:monospace;margin-top:3px;word-break:break-all;">${appDataPaths.map((p) => escapeHtml(p)).join('<br>')}</div>
+                ${appData.label ? `<div style="font-size:11px;color:var(--text-3);margin-top:2px;">${escapeHtml(appData.label)}.</div>` : ''}
                 <div style="font-size:11px;color:var(--text-3);margin-top:2px;">Keep this to resume where you stopped if you ever reinstall. Cannot be recovered once deleted.</div>
             </div>
         </label>`;

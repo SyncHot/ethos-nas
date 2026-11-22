@@ -416,13 +416,23 @@ package's state (scan logs, certificates, settings):
 |---|---|
 | `remove_volumes=1` | `docker compose down --volumes` — deletes the named volumes declared by *this* package's compose file |
 | `remove_images=1` | `docker rmi` for the images the compose file references, but only while no container uses them |
-| `remove_data=1` | deletes `<DATA_DIR>/packages/data/<id>` — the state every runtime keeps across a reinstall (job step `data`) |
+| `remove_data=1` | deletes `<DATA_DIR>/packages/data/<id>` — the state every runtime keeps across a reinstall (job step `data`) — **and** the core state a UI-only package owns |
 
-`GET /api/packages/{id}/uninstall-preview` includes `data: {path, exists, size_bytes}`, and the
-uninstall dialog offers a third checkbox with that size. A package that was already removed leaves
-its data directory behind by design; `GET /api/packages/orphans` lists those directories (with
-total size) and `DELETE /api/packages/orphans/{id}` purges one — Packages shows them under
-**Installed → Unused package data**.
+A UI-only package keeps its configuration in the core instead of the package data root:
+`ethos-surveillance` is only the Cameras window, while `camera_service` / `camera_runner` and the
+stores (`surveillance.json`, `surveillance_settings.json`, `surveillance_events.json`,
+`surveillance_exports.json`, `surveillance/{snaps,events,clips,exports,live}`) live in EthOS. That
+state is allowlisted in `services/package_state.py` — never read from a manifest or a request — and
+`remove_data=1` deletes it after stopping the pipelines. Recordings are **kept** (they may sit on an
+external volume); without the purge the engine kept restarting ffmpeg for a package that was gone.
+
+`GET /api/packages/{id}/uninstall-preview` includes
+`data: {path, paths[], exists, size_bytes, has_package_data, core?, label?}`, and the uninstall dialog
+offers a third checkbox with that size (pre-ticked when the package has no data root of its own, so
+the state would otherwise be unreachable). A package that was already removed leaves its data
+directory behind by design; `GET /api/packages/orphans` lists those directories (with total size) and
+the leftover core state (`core: true`, with `label`), and `DELETE /api/packages/orphans/{id}` purges
+both — Packages shows them under **Installed → Unused package data**.
 
 Removal is deliberately scoped: there is no `docker image prune` / `docker volume prune` anywhere in
 the flow, because those act on the whole host and would delete unrelated stacks. Images still used by
@@ -434,8 +444,8 @@ the UI greys them out with the owning package name.
 show exactly what would go. It is read-only and degrades to empty lists with `docker: false` when the
 Docker CLI is unavailable.
 
-Job steps for an uninstall are `stop → images (only when requested) → cleanup → done`; image results and
-skipped shared images are written to the job log.
+Job steps for an uninstall are `stop → images (only when requested) → cleanup → data → done`; image
+results and skipped shared images are written to the job log.
 
 ## Compose policy
 

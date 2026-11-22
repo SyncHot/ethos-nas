@@ -21,7 +21,7 @@ import yaml
 from backend.config import APP_VERSION, settings
 from backend.services import (
     package_cleanup, package_jobs, package_ports, package_repo, package_runtime,
-    package_wheels, packages_store, system_deps,
+    package_state, package_wheels, packages_store, system_deps,
 )
 from backend.services.compose_policy import enforce_compose
 from backend.services.notifications_service import emit_event
@@ -822,8 +822,9 @@ async def uninstall(pkg_id: str, job_id: str, remove_volumes: bool = False,
     compose file; ``remove_images`` deletes the images it referenced, but only
     those no container uses any more; ``remove_data`` deletes
     ``<DATA_DIR>/packages/data/<id>``, the state every runtime keeps across a
-    reinstall. All three default to off: package state (scan logs, certificates,
-    settings) is normally worth keeping.
+    reinstall, plus the core state a UI-only package owns (Cameras keeps its
+    cameras in `surveillance.json`). All three default to off: package state
+    (scan logs, certificates, settings) is normally worth keeping.
     """
     check_pkg_id(pkg_id)
     record = packages_store.get_package(pkg_id)
@@ -872,6 +873,19 @@ async def uninstall(pkg_id: str, job_id: str, remove_volumes: bool = False,
             logger.warning("Package data for %s was only partly deleted: %s", pkg_id, state_dir)
         else:
             package_jobs.log(job_id, f"deleted {freed} bytes of package data")
+        # A UI-only package (Cameras) keeps its configuration in the core, not
+        # under packages/data/<id>; without this the engine kept restarting
+        # pipelines for a package that no longer exists.
+        core = package_state.purge(pkg_id)
+        if core:
+            if core["errors"]:
+                package_jobs.log(job_id, f"warning: could not delete {len(core['errors'])} "
+                                 f"core state path(s) for {pkg_id}")
+                logger.warning("Core state for %s was only partly deleted: %s",
+                               pkg_id, core["errors"])
+            else:
+                package_jobs.log(job_id,
+                                 f"deleted {core['size_bytes']} bytes of {core['label']}")
     package_jobs.set_step(job_id, "done", "done")
     kept = [] if remove_data else ["app data"]
     if not remove_volumes:
