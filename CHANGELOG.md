@@ -11,6 +11,44 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.29.0] - 2026-11-22
+
+### Added
+
+- **Ctrl+K command palette** covering every app and every Settings section — 18 windows
+  and nine settings panes are too many for a desktop grid.
+- **Service Manager absorbs System Services**: four tabs (All · Containers · Systemd ·
+  EthOS NAS), a **Logs** button on every row that opens the one Logs viewer on that unit or
+  container, and the EthOS unit card with its restart/stopping/boot controls. Old
+  `openApp('systemd')` links and pinned icons migrate to the merged window.
+- **SMART disk details**: the full attribute table with changes since the previous sample,
+  a 24 h temperature chart, drive self-tests (short / long / abort) and the drive's own
+  self-test log. History is recorded by the health monitor (`smart_history.json` v2) and
+  read through `GET /api/smart/history` — the request path never probes a disk.
+- **Cron schedules are validated and previewed**: real 5-field/`@macro` parsing, a human
+  description and the next run per job, and a live “next three runs” preview while typing
+  (`GET /api/cron/preview`). A typo can no longer be saved as a job that never fires.
+- **Process Manager details**: full command line, PPID, container and start time, an
+  explicit SIGKILL next to SIGTERM, and a jump to a container's logs.
+- **Network per-interface rates**: live RX/TX every 5 s, error/drop totals, copy buttons for
+  IP and MAC, and a Firewall link for admins.
+- **Universal Search** keeps recent queries, sorts by newest/name/size and opens the
+  containing folder in Files.
+- **Overview health alerts**: failed systemd units, near-full disks, SMART failures and high
+  temperatures appear on the dashboard with a jump to the app that fixes them; memory now
+  shows swap, and every card drills into its app.
+
+### Changed
+
+- Core apps hand paths and sections to each other through `core/app-links.js` instead of
+  parking them on `window.*`; package apps keep their documented `__fm*Ctx` contract.
+
+### Fixed
+
+- SMART no longer replaces a healthy disk list with “Could not read SMART data” (a
+  block-scoped variable was read outside its scope).
+- Storage and Shared Links stop printing “GB GB” on sizes; both use the shared formatter.
+
 ## [2.28.8] - 2026-11-22
 
 ### Fixed
