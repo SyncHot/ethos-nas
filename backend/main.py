@@ -72,6 +72,7 @@ from backend.routers.notifications_ws import (
 )
 from backend.routers.health import router as health_router
 from backend.routers.surveillance import router as surveillance_router
+from backend.routers.surveillance_ws import router as surveillance_ws_router
 from backend.routers.share_links import router as share_links_router
 from backend.routers.sharing import router as sharing_router
 from backend.routers.editor import router as editor_router
@@ -262,11 +263,11 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.error("OS image result reconcile failed", exc_info=True)
 
-    # Cameras: resume motion-detection threads for enabled cameras
+    # Cameras: resume live/recording pipelines for enabled cameras
     from backend.services.camera_service import start_all_motion_threads, stop_all_motion_threads
     _motion_cams = start_all_motion_threads()
     if _motion_cams:
-        logger.info("Surveillance: %d motion-detection thread(s) started", _motion_cams)
+        logger.info("Cameras: %d pipeline(s) started", _motion_cams)
 
     # Resume queued downloads left over from a previous run (re-queued as `waiting` on load)
     await start_download_engine()
@@ -582,6 +583,7 @@ app.include_router(logs_ws_router,    tags=["Logs"])
 app.include_router(docker_logs_router,tags=["Docker"])
 app.include_router(file_events_router, tags=["File Events"])
 app.include_router(notifications_ws_router, tags=["Notifications"])
+app.include_router(surveillance_ws_router, tags=["Cameras"])
 app.include_router(stats_ws_router,    tags=["System"])
 
 

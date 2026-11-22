@@ -46,7 +46,7 @@ API keys (for the Android apps) live in the same store.
 | `downloads` | `qb_compat`, `debrid`, `download_config`, `download_tasks`, `download_transfer`, `bencode`, `rss_service` | `downloads_tasks.json`, `downloads_config.json`, `downloads_rss_seen.json` |
 | `music` | — | `music_library.json`, `music_config.json`, `backend/radio_stations.json` (150 stacji, generator), `backend/podcast_catalog.json` (130 podcastów, generator), `radio/state` w `music_library.json` |
 | `video_station` | `video_metadata`, `tmdb_service` | `video_station_*.json`, `tmdb_matches.json`, `video_info_cache.json` |
-| `surveillance` | `camera_service`, `camera_discovery` | `surveillance.json`, `surveillance_events.json`, `surveillance/` |
+| `surveillance` | `camera_service`, `camera_runner`, `camera_recordings`, `camera_storage`, `camera_secrets`, `camera_settings`, `camera_discovery` | `surveillance.json` (v2), `surveillance_events.json` (v2), `surveillance_settings.json`, `surveillance_exports.json`, `surveillance/` (snaps, events, live, recordings) |
 | `backup` | — (runner inside router) | `backup_schedules.json`, `backup_history.json` |
 | `docker` | `docker_host` (engine status/provisioning) | `compose_projects.json` |
 | `auth`, `auth_pam` | `users_store` | `users.json` |
@@ -83,7 +83,10 @@ for the modules still on hand-rolled writers.
 | `health_state.json`, `smart_history.json` | 1 | alerts pruned; devices pruned after 14 d |
 | `net_stats.json` | — | ring buffer |
 | `share_links.json` | 1 | — |
-| `surveillance*.json` | 1 | 200 events |
+| `surveillance.json` | 2 | per camera: streams, encrypted credentials, record policy, motion zones, viewers |
+| `surveillance_events.json` | 2 | 2000 motion events |
+| `surveillance_settings.json` | 1 | one record (storage root, quota, retention defaults) |
+| `surveillance_exports.json` | 1 | last 30 export jobs |
 | `sticky_notes.json` (legacy, imported by the `ethos-sticky-notes` package), `appearance`, `editor.json` | — | per user |
 | `tmdb_matches.json`, `video_info_cache.json` | — | unbounded (P0-14) |
 | `albums.json`, `favorites.json`, `deletion_log.json` | — | deletion log keeps 50 |
@@ -132,7 +135,7 @@ _CONFIG_STORE = json_store.get(CONFIG_FILE, dict, version=2,
 | stats WS (`/ws/stats`) | `routers/system.py` | per-connection 2 s push; ends on disconnect |
 | backup cron scheduler | `routers/backup.py` | `start_backup_scheduler` / `stop_backup_scheduler` |
 | download watch folder + engine pump + RSS scanner | `routers/downloads.py`, `services/debrid.py` | thread + task registry |
-| surveillance motion threads | `camera_service` | start/stop all |
+| camera pipelines (live HLS + archive) and the retention janitor | `camera_runner` | `start_all` / `stop_all` |
 | Sticky Notes reminder scheduler | `ethos-sticky-notes` package service | threads inside the venv service; 30 s tick |
 | detached tasks (transcodes, thumbnails, broadcasts, backup runs) | `task_registry` | drained on shutdown |
 

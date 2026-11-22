@@ -272,6 +272,32 @@ def main() -> int:
         cams = requests.get(f"{BASE}/api/surveillance/cameras", headers={"Authorization": f"Bearer {tok}"}, timeout=10).json()["cameras"]
         check("camera list empty after delete", len(cams) == 0, json.dumps(cams))
 
+        # ── Part A2: settings / storage / playback surface ─────────────────
+        print("\nPart A2 — settings, storage, playback")
+        r = requests.get(f"{BASE}/api/surveillance/settings", headers=H, timeout=10)
+        check("GET /settings (200)", r.status_code == 200 and "quota_pct" in r.json().get("settings", {}),
+              str(r.status_code))
+        r = requests.put(f"{BASE}/api/surveillance/settings", headers=H,
+                         json={"quota_pct": 70, "default_retention_days": 3}, timeout=10)
+        check("PUT /settings validates and saves", r.status_code == 200
+              and r.json()["settings"]["quota_pct"] == 70, r.text[:120])
+        r = requests.put(f"{BASE}/api/surveillance/settings", headers=H,
+                         json={"quota_pct": 999}, timeout=10)
+        check("PUT /settings clamps the quota", r.status_code == 200
+              and r.json()["settings"]["quota_pct"] == 95, r.text[:120])
+        r = requests.get(f"{BASE}/api/surveillance/storage", headers=H, timeout=15)
+        check("GET /storage (200)", r.status_code == 200
+              and "storage_dir" in r.json().get("storage", {}), str(r.status_code))
+        r = requests.post(f"{BASE}/api/surveillance/storage/purge", headers=H, timeout=30)
+        check("POST /storage/purge (200)", r.status_code == 200 and r.json().get("ok") is True,
+              str(r.status_code))
+
+        # Admin-only surface: unauthenticated requests are rejected.
+        r = requests.get(f"{BASE}/api/surveillance/settings", timeout=10)
+        check("settings require a token (401)", r.status_code == 401, str(r.status_code))
+        r = requests.post(f"{BASE}/api/surveillance/cameras", json={"name": "x", "url": "rtsp://h/x"}, timeout=10)
+        check("camera create requires a token (401)", r.status_code == 401, str(r.status_code))
+
         # ── Part C: Network discovery ───────────────────────────────────────
         print("\nPart C — Discovery")
         sys.path.insert(0, str(ROOT))
@@ -367,50 +393,65 @@ def main() -> int:
             check("PAM login (UI)", bool(page.evaluate("localStorage.getItem('token') || ''")))
 
             page.evaluate("window.openApp('surveillance')")
-            page.wait_for_selector('[data-testid="surv-tab-live"]', timeout=15_000)
-            check("app window renders tabs", True)
+            page.wait_for_selector('[data-testid="sv-tab-live"]', timeout=15_000)
+            check("package shell renders its rail", True)
 
-            # add a camera through the modal
-            page.click('[data-testid="surv-tab-cameras"]')
-            page.click('[data-testid="surv-add-camera"]')
-            page.wait_for_selector('.ethos-modal-input[name="name"]', timeout=10_000)
-            page.fill('.ethos-modal-input[name="name"]', "UI Cam")
-            page.fill('.ethos-modal-input[name="url"]', src.url())
-            page.click('[data-testid="modal-form-ok"]')
-            page.wait_for_function(
-                "() => document.querySelector('table tbody tr[data-cam]') !== null", timeout=15_000)
-            check("camera row appears after modal add", True)
+            # Add a camera through the inline editor (admin).
+            page.click('[data-testid="sv-tab-cameras"]')
+            page.click('[data-testid="sv-add-camera"]')
+            page.wait_for_selector('[data-testid="sv-camera-editor"]', timeout=10_000)
+            page.fill('#sv-edit-name', "UI Cam")
+            page.fill('#sv-edit-main', src.url())
+            page.select_option('[data-testid="sv-edit-mode"]', "continuous")
+            page.click('[data-testid="sv-edit-save"]')
+            page.wait_for_selector('[data-testid^="sv-camera-cam_"]', timeout=15_000)
+            check("camera row appears after inline add", True)
+            row_text = page.locator('[data-testid^="sv-camera-cam_"]').first.inner_text()
+            check("record mode shown as continuous", "continuous" in row_text, row_text[:80])
 
-            rec_btns = page.locator('button[data-testid^="surv-record-"]').count()
-            check("record button present on camera row", rec_btns >= 1, f"{rec_btns} buttons")
+            # Motion zones editor opens and saves.
+            page.locator('button[data-mask]').first.click()
+            page.wait_for_selector('[data-testid="sv-mask-editor"]', timeout=10_000)
+            page.click('[data-testid="sv-mask-save"]')
+            page.wait_for_selector('[data-testid="sv-mask-editor"]', state="detached", timeout=10_000)
+            check("motion zones saved from the grid editor", True)
 
-            # network discovery: click → panel fills (results or empty message) → button re-enables
-            page.click('[data-testid="surv-discover"]')
+            # Network discovery fills the results panel.
+            page.click('[data-testid="sv-discover"]')
             try:
                 page.wait_for_function(
-                    "() => { const el = document.querySelector('#surv-discover');"
-                    " const t = el ? el.textContent : ''; return t.includes('Found ') || t.includes('No cameras found'); }",
-                    timeout=60_000)
-                check("discovery panel shows results/empty message", True)
+                    "() => { const el = document.querySelector('#sv-discover-result');"
+                    " return el && /device\\(s\\)|failed/i.test(el.textContent || ''); }",
+                    timeout=90_000)
+                check("discovery panel shows a result summary", True)
             except Exception as e:
-                check("discovery panel shows results/empty message", False, str(e)[:120])
-            page.wait_for_function(
-                "() => { const b = document.querySelector('[data-testid=\"surv-discover\"]'); return b && !b.disabled; }",
-                timeout=30_000)
-            check("discover button re-enabled after scan", True)
+                check("discovery panel shows a result summary", False, str(e)[:120])
 
-            # live tab shows an MJPEG tile for the camera
-            page.click('[data-testid="surv-tab-live"]')
-            img = page.wait_for_selector('img[data-testid^="surv-live-"]', timeout=15_000)
-            src_attr = img.get_attribute("src") or ""
-            check("live tile <img> targets /live?token=", "/live?token=" in src_attr, src_attr[:80])
+            # Live tab: a camera tile with a media element (HLS video or MJPEG fallback).
+            page.click('[data-testid="sv-tab-live"]')
+            page.wait_for_selector('[data-testid^="sv-live-tile-cam_"]', timeout=15_000)
+            media = page.locator('[data-testid^="sv-live-tile-cam_"] video, [data-testid^="sv-live-tile-cam_"] img')
+            check("live tile has a media element", media.count() >= 1)
 
-            # events + clips tabs render (empty state ok)
-            page.click('[data-testid="surv-tab-events"]')
-            check("events tab renders", True)
-            page.click('[data-testid="surv-tab-clips"]')
-            page.wait_for_timeout(500)  # let the async clip load settle
-            check("clips tab renders", True)
+            # Playback tab renders the timeline and loads a day.
+            page.click('[data-testid="sv-tab-playback"]')
+            page.wait_for_selector('[data-testid="sv-timeline"]', timeout=10_000)
+            page.click('[data-testid="sv-pb-load"]')
+            page.wait_for_timeout(1500)
+            check("playback timeline renders", True)
+
+            # Events tab renders (empty state is fine).
+            page.click('[data-testid="sv-tab-events"]')
+            page.wait_for_timeout(500)
+            check("events section renders", True)
+
+            # Storage + settings are admin-only views and must not error.
+            page.click('[data-testid="sv-tab-storage"]')
+            page.wait_for_timeout(800)
+            check("storage section renders", True)
+            page.click('[data-testid="sv-tab-settings"]')
+            page.wait_for_selector('[data-testid="sv-settings-panel"]', timeout=10_000)
+            check("settings section renders", True)
 
             check("no JS errors on page", not js_errors, "; ".join(js_errors)[:300])
             browser.close()

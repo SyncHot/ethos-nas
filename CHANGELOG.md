@@ -11,6 +11,24 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.25.0] - 2026-11-22
+
+### Added
+
+- **Cameras 2.0 (Surveillance Station).** Continuous or scheduled recording with
+  retention and a disk quota, timeline playback with MP4 range export, motion
+  zones with per-camera schedules and event snapshots, per-camera viewer access,
+  and a `/ws/surveillance` status/event socket. One long-lived ffmpeg per stream
+  (`-c:v copy` for H.264) replaces the old "start a process every few seconds"
+  motion loop; live view is HLS with an MJPEG fallback.
+- Camera stream credentials are now stored AES-256-GCM encrypted and never
+  returned by the API; management endpoints are admin-only.
+
+### Changed
+
+- The Cameras window was rebuilt on the shared package shell (rail, summary
+  tiles, tables, light/dark tokens) with the `ethos-surveillance` 2.0.0 package.
+
 ## [2.24.1] - 2026-11-22
 
 ### Fixed
