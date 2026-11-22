@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T14:26:35+00:00",
+  "generated_at": "2026-11-22T14:38:50+00:00",
   "latest": {
-    "version": "2.23.1",
-    "git_sha": "68eff94",
-    "git_sha_full": "68eff9467e0178364a2a6d708a2668f39daa41ee",
-    "build": 162,
-    "released_at": "2026-11-22T14:26:35+00:00",
-    "notes": "Radarr/Sonarr now use the download folder configured in Download Station instead of a phantom /home/qb-admin/Downloads, so imports land in the media library."
+    "version": "2.24.0",
+    "git_sha": "883aa9e",
+    "git_sha_full": "883aa9eb97c2933b90ccdec623f8243ae3b267d6",
+    "build": 164,
+    "released_at": "2026-11-22T14:38:50+00:00",
+    "notes": "Host: an optional setup script adds zram swap and stops systemd-oomd from killing sessions at 50 % pressure"
   },
   "releases": [
+    {
+      "version": "2.24.0",
+      "git_sha": "883aa9e",
+      "git_sha_full": "883aa9eb97c2933b90ccdec623f8243ae3b267d6",
+      "build": 164,
+      "released_at": "2026-11-22T14:38:50+00:00",
+      "notes": "Host: an optional setup script adds zram swap and stops systemd-oomd from killing sessions at 50 % pressure"
+    },
     {
       "version": "2.23.1",
       "git_sha": "68eff94",
@@ -201,14 +209,6 @@
       "build": 101,
       "released_at": "2026-11-22T08:58:03+00:00",
       "notes": "Tasks: OS updates keep a single progress row that finishes even when you leave Settings."
-    },
-    {
-      "version": "2.12.3",
-      "git_sha": "1adb67c",
-      "git_sha_full": "1adb67ce8bfc1563f6af5a637fb1fc5f05665825",
-      "build": 99,
-      "released_at": "2026-11-22T08:51:06+00:00",
-      "notes": "Files: Enter now confirms New Folder, New File and other dialogs instead of dismissing them."
     }
   ]
 }
