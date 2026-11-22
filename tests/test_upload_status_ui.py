@@ -17,6 +17,8 @@ ENGINE = "frontend/static/core/upload-engine.js"
 PROGRESS = "frontend/static/core/progress.js"
 FILES_JS = "frontend/static/apps/files.js"
 INDEX_HTML = "frontend/index.html"
+# Panel styles live in the shared stylesheet since the CSS extraction.
+STYLES = "frontend/static/css/progress.css"
 
 
 def _read(rel: str) -> str:
@@ -52,6 +54,7 @@ def main() -> int:
     progress = _read(PROGRESS)
     files_js = _read(FILES_JS)
     index_html = _read(INDEX_HTML)
+    styles = _read(STYLES)
 
     # ── 1. Delegation to the shared task center ────────────────────────────
     check("engine imports the shared task helpers",
@@ -126,9 +129,10 @@ def main() -> int:
 
     # ── 7. Styles + placeholder ────────────────────────────────────────────
     for cls in (".fm-status-upload", ".task-progress-retry", ".task-progress-head", ".task-progress-summary"):
-        check(f"CSS defines {cls}", cls in index_html)
+        check(f"CSS defines {cls}", cls in styles or cls in index_html)
     check("index.html ships the shared panel placeholder", 'id="taskProgressPanel"' in index_html)
-    check("no upload-specific panel CSS remains", ".upload-progress-" not in index_html)
+    check("no upload-specific panel CSS remains",
+          ".upload-progress-" not in index_html and ".upload-progress-" not in styles)
 
     print(f"\n{len(failures)} failure(s)")
     return 1 if failures else 0

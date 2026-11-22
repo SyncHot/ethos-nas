@@ -19,6 +19,9 @@ STATIC = ROOT / "frontend/static"
 
 PROGRESS = "frontend/static/core/progress.js"
 INDEX_HTML = "frontend/index.html"
+# Panel styles live in the shared stylesheet since the CSS extraction; index.html
+# only ships the #taskProgressPanel placeholder and the <link>.
+STYLES = "frontend/static/css/progress.css"
 INSTRUCTIONS = ".github/instructions/frontend.instructions.md"
 AGENTS = "AGENTS.md"
 DOC = "docs/progress-ui.md"
@@ -26,6 +29,40 @@ DOC = "docs/progress-ui.md"
 
 def _read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8")
+
+
+def _function_body(src: str, name: str) -> str:
+    """Best-effort body extraction for a top-level function (brace counting).
+
+    Skips the parameter list first: `function startTask(opts = {}) {` would
+    otherwise "close" on the default object literal and return `{}`.
+    """
+    match = re.search(rf"function {name}\s*\(", src)
+    if not match:
+        return ""
+    idx = match.end() - 1
+    depth = 0
+    while idx < len(src):
+        if src[idx] == "(":
+            depth += 1
+        elif src[idx] == ")":
+            depth -= 1
+            if depth == 0:
+                idx += 1
+                break
+        idx += 1
+    start = src.find("{", idx)
+    if start < 0:
+        return ""
+    depth = 0
+    for pos in range(start, len(src)):
+        if src[pos] == "{":
+            depth += 1
+        elif src[pos] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start:pos + 1]
+    return src[start:]
 
 
 def main() -> int:
@@ -38,6 +75,7 @@ def main() -> int:
 
     progress = _read(PROGRESS)
     index_html = _read(INDEX_HTML)
+    styles = _read(STYLES)
     instructions = _read(INSTRUCTIONS)
     agents = _read(AGENTS)
 
@@ -96,9 +134,19 @@ def main() -> int:
     # ── 5. Styles and placeholder ──────────────────────────────────────────
     for cls in (".task-progress-panel", ".task-progress-item", ".task-progress-bar",
                 ".task-progress-retry", ".task-progress-summary", "taskIndeterminate"):
-        check(f"CSS defines {cls}", cls in index_html)
+        check(f"CSS defines {cls}", cls in styles)
     check("index.html ships #taskProgressPanel", 'id="taskProgressPanel"' in index_html)
-    check("old upload panel CSS is gone", ".upload-progress-" not in index_html)
+    check("index.html links the progress stylesheet", "/static/css/progress.css" in index_html)
+    # Panel visibility: × sticks (progress ticks must not resurrect the panel),
+    # a brand-new task re-opens it, and an empty queue never shows a blank box.
+    check("close button keeps the panel closed",
+          "_panelDismissed = true" in _function_body(progress, "_hidePanel")
+          and "if (!_panelDismissed)" in _function_body(progress, "_ensurePanel"))
+    check("a new task re-opens the panel",
+          "_panelDismissed = false" in _function_body(progress, "startTask"))
+    check("empty queue does not open a blank panel",
+          "if (!_tasks.size)" in _function_body(progress, "showTaskPanel")
+          and "_panelDismissed = false" in _function_body(progress, "showTaskPanel"))
 
     # ── 6. Rules are documented (the user-facing part of this change) ──────
     check("frontend instructions document the progress rule",

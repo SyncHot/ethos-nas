@@ -28,6 +28,10 @@ const _tasks = new Map();
 let _seq = 0;
 let _lastEventAt = 0;
 let _eventTimer = null;
+// The user pressed × on the floating panel: keep it closed while the same
+// tasks keep streaming updates (a 4 GB download used to un-hide it on every
+// progress tick). Any new task or an explicit chip click re-opens it.
+let _panelDismissed = false;
 
 /**
  * Start a task and render its first state.
@@ -59,6 +63,7 @@ export function startTask(opts = {}) {
         el: null, dismissed: false,
     };
     _tasks.set(task.id, task);
+    _panelDismissed = false;   // new work is worth showing again
     _render(task);
     _emit(true);
     return _handle(task);
@@ -91,6 +96,15 @@ export function clearFinishedTasks(appId = null, { globalOnly = false } = {}) {
 
 /** Re-open the floating panel (also used by the File Manager upload chip). */
 export function showTaskPanel() {
+    // Nothing running and no finished row left to show — an empty "Tasks" box in
+    // the corner reads as a bug (the File Manager chip stays clickable when the
+    // queue is empty), so keep the panel hidden instead of unhiding it blank.
+    if (!_tasks.size) {
+        const panel = document.getElementById('taskProgressPanel');
+        if (panel) panel.style.display = 'none';
+        return;
+    }
+    _panelDismissed = false;
     _ensurePanel();
 }
 
@@ -315,8 +329,10 @@ function _ensurePanel() {
         });
     }
 
-    // The placeholder in index.html ships display:none — always unhide here.
-    panel.style.display = '';
+    // The placeholder in index.html ships display:none — always unhide here,
+    // unless the user explicitly closed the panel: progress ticks must not pop
+    // it back while the same job is still running.
+    if (!_panelDismissed) panel.style.display = '';
     panel.setAttribute('data-testid', 'task-progress-panel');
     return panel;
 }
@@ -333,6 +349,7 @@ function _renderPanelRow(task) {
 }
 
 function _hidePanel() {
+    _panelDismissed = true;
     const panel = document.getElementById('taskProgressPanel');
     if (panel) panel.style.display = 'none';
     clearFinishedTasks(null, { globalOnly: true });
