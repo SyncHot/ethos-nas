@@ -46,6 +46,9 @@ let _batchDone = 0;
 let _batchTotal = 0;
 let _quotaNotified = false;
 let _lastProgress = new Map();
+const _cancelled = new Set();
+const _controllers = new Map();
+const _runIds = new Map();
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────
 
@@ -264,7 +267,11 @@ export function syncPlaylists(playlists) {
     if (!desired.size) return;
 
     for (const row of _rows.slice()) {
-        if (row.kind === 'track' && !desired.has(row.key)) removeRow(row.key, { silent: true });
+        // Manually pinned downloads (a single track pulled from search) are not
+        // playlists' business: the mirror must never delete them.
+        if (row.kind === 'track' && !row.pinned && !desired.has(row.key)) {
+            removeRow(row.key, { silent: true });
+        }
     }
     desired.forEach((track, key) => {
         const row = _index.get(key);
@@ -274,11 +281,11 @@ export function syncPlaylists(playlists) {
     pump();
 }
 
-/** Explicit download of one track (row menu). */
+/** Explicit download of one track (row menu). Kept even outside a playlist. */
 export function downloadTrack(track) {
     const key = tkey(track);
     if (!key.trim() || !(track.id || track.file_url)) return false;
-    enqueue({ key, track, kind: 'track' });
+    enqueue({ key, track, kind: 'track' }, { pinned: true });
     pump();
     return true;
 }
@@ -287,19 +294,22 @@ export function downloadTrack(track) {
 export function downloadEpisode(track) {
     const key = tkey(track);
     if (!key.trim() || !(track.file_url || track.id)) return false;
-    enqueue({ key, track: { ...track, is_episode: true }, kind: 'episode' });
+    enqueue({ key, track: { ...track, is_episode: true }, kind: 'episode' }, { pinned: true });
     pump();
     return true;
 }
 
-function enqueue(item) {
+function enqueue(item, { pinned = false } = {}) {
     const existing = _index.get(item.key);
+    // A fresh request overrides a pending cancellation of the same key.
+    _cancelled.delete(item.key);
     const row = {
         key: item.key,
         kind: item.kind,
         track: item.track,
         status: 'queued',
         bytes: existing?.bytes || 0,
+        pinned: pinned || !!existing?.pinned,
         error: '',
         added_at: existing?.added_at || Date.now(),
     };
@@ -330,7 +340,7 @@ async function quotaExceeded() {
 
 async function runDownload({ key, track, kind }) {
     const row = _index.get(key);
-    if (!row) return;
+    if (!row || _cancelled.has(key)) return;
     const src = downloadSrc(track);
     if (!src) {
         markFailed(key, 'Brak adresu utworu');
@@ -357,18 +367,25 @@ async function runDownload({ key, track, kind }) {
     dbPut(ROWS, _index.get(key)).catch(() => {});
     ensureTask();
     _lastProgress.delete(key);
+    const controller = new AbortController();
+    const runId = Symbol(key);
+    _controllers.set(key, controller);
+    _runIds.set(key, runId);
     try {
         const { blob, type } = await fetchBlob(src, (done, total) => {
+            if (_cancelled.has(key)) return;
             // A 4 MB track yields ~64 chunks; painting the badges on every one
             // of them keeps the main thread busy for no benefit.
             const now = Date.now();
             if (now - (_lastProgress.get(key) || 0) < PROGRESS_MS) return;
             _lastProgress.set(key, now);
             upsert({ ..._index.get(key), bytes: done, bytes_total: total || row.bytes_total || 0 });
-        });
+        }, controller.signal);
+        if (_cancelled.has(key)) return;          // deleted while the bytes streamed in
         // Audio first, cover later: the slot must be free for the next track
         // as soon as the bytes are stored, not after a thumbnail round-trip.
         await dbPut(BLOBS, { key, audio: blob, thumb: null, type });
+        if (_cancelled.has(key)) return;          // deleted during the IDB write
         const done = upsert({
             ..._index.get(key),
             status: 'done',
@@ -384,6 +401,10 @@ async function runDownload({ key, track, kind }) {
         storeCover(key, track).catch(() => {});
         await refreshStorage();
     } catch (error) {
+        if (error?.name === 'AbortError' || _cancelled.has(key)) {
+            logInfo('Music download cancelled', key);
+            return;
+        }
         const quota = error?.name === 'QuotaExceededError';
         if (quota) {
             _paused = true;
@@ -399,6 +420,11 @@ async function runDownload({ key, track, kind }) {
         }
         dbPut(ROWS, _index.get(key)).catch(() => {});
         logError('Music download failed', `${key}: ${error?.detail || error?.message || error}`);
+    } finally {
+        if (_runIds.get(key) === runId) {
+            _runIds.delete(key);
+            _controllers.delete(key);
+        }
     }
     notifyChange();
 }
@@ -427,8 +453,8 @@ async function storeCover(key, track) {
     } catch { /* covers are optional */ }
 }
 
-async function fetchBlob(src, onProgress) {
-    const res = await apiFetch(src);
+async function fetchBlob(src, onProgress, signal) {
+    const res = await apiFetch(src, { signal });
     if (!res.ok) {
         let detail = '';
         try {
@@ -495,6 +521,13 @@ export async function deleteDownload(trackOrKey) {
 }
 
 async function removeRow(key, { silent = false } = {}) {
+    // Stop a transfer that is still running; without this the finished fetch
+    // would re-insert the row a moment later.
+    _cancelled.add(key);
+    const controller = _controllers.get(key);
+    if (controller) {
+        try { controller.abort(); } catch { /* already finished */ }
+    }
     _queue = _queue.filter((item) => item.key !== key);
     const index = _rows.findIndex((row) => row.key === key);
     if (index < 0) return;

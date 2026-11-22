@@ -96,6 +96,8 @@ const ui = {
     trackIndex: new Map(),
     searchSeq: 0,
     suggestSeq: 0,
+    searchState: null,
+    queueContext: { tracks: [], key: '' },
     stations: null,
     stationCategories: [],
     searchStations: [],
@@ -148,6 +150,23 @@ function indexTracks(tracks) {
 
 function trackByKey(key) {
     return ui.trackIndex.get(key) || null;
+}
+
+/** The list a tapped row belongs to, so "next" keeps playing the album/list. */
+function setQueueContext(tracks, currentKey = '') {
+    ui.queueContext = {
+        tracks: (tracks || []).filter((track) => track && !track.is_live),
+        key: currentKey || '',
+    };
+}
+
+/** Replace remote artwork with the offline copy once it exists. */
+async function hydrateCovers(root = document) {
+    const images = [...root.querySelectorAll('img[data-cover-key]')];
+    await Promise.all(images.map(async (img) => {
+        const url = await offline.localThumb(img.dataset.coverKey).catch(() => null);
+        if (url && img.isConnected) img.src = url;
+    }));
 }
 
 function searchHistory() {
@@ -389,8 +408,19 @@ async function startApp() {
     wirePublicUi();
     const params = new URLSearchParams(location.search);
     const initial = params.get('view');
-    ui.view = ['search', 'downloads', 'library', 'radio', 'podcasts', 'settings'].includes(initial) ? initial : 'home';
-    renderView();
+    const detailId = params.get('id') || '';
+    if (initial === 'playlist' && detailId) {
+        ui.view = 'home';
+        renderView();
+        openPlaylistById(detailId, { push: false });
+    } else if (initial === 'podcast' && detailId) {
+        ui.view = 'home';
+        renderView();
+        openPodcast(detailId, { push: false });
+    } else {
+        ui.view = ['search', 'downloads', 'library', 'radio', 'podcasts', 'settings'].includes(initial) ? initial : 'home';
+        renderView();
+    }
     updateMini();
     updatePlayer();
 }
@@ -433,6 +463,7 @@ function renderView() {
     }
     updatePlaylistBadges();
     updateDownloadsMenu();
+    hydrateCovers();
 }
 
 function loadingHtml(text = 'Ładowanie…') {
@@ -453,7 +484,7 @@ function rowHtml(track, { sub = '', badge = '', ctx = 'search', duration = true 
     const badgeCls = badge?.cls ? ` ${esc(badge.cls)}` : '';
     return `
     <div class="mu-row idle-hidden" data-act="play-track" data-key="${esc(key)}" data-ctx="${esc(ctx)}" role="button" tabindex="0">
-        ${art ? `<img class="mu-row-art" src="${esc(art)}" alt="" loading="lazy" decoding="async">`
+        ${art ? `<img class="mu-row-art" src="${esc(art)}" data-cover-key="${esc(key)}" alt="" loading="lazy" decoding="async">`
         : '<span class="mu-row-art" aria-hidden="true"></span>'}
         <div class="mu-row-main">
             <div class="mu-row-title">${esc(track.title || track.name || '')}</div>
@@ -466,10 +497,10 @@ function rowHtml(track, { sub = '', badge = '', ctx = 'search', duration = true 
     </div>`;
 }
 
-function cardHtml({ image, label, sub, act, id, playlistId = '' }) {
+function cardHtml({ image, label, sub, act, id, playlistId = '', coverKey = '' }) {
     return `
     <div class="mu-card" data-act="${esc(act)}" data-id="${esc(id || '')}" role="button" tabindex="0">
-        ${image ? `<img class="mu-card-cover" src="${esc(image)}" alt="" loading="lazy" decoding="async">`
+        ${image ? `<img class="mu-card-cover" src="${esc(image)}" ${coverKey ? `data-cover-key="${esc(coverKey)}"` : ''} alt="" loading="lazy" decoding="async">`
         : '<span class="mu-card-cover" aria-hidden="true"></span>'}
         <div class="mu-card-label">${esc(label || '')}</div>
         <div class="mu-card-sub">${esc(sub || '')}</div>
@@ -482,6 +513,7 @@ function cardHtml({ image, label, sub, act, id, playlistId = '' }) {
 function renderHome() {
     const recent = store.history.slice(0, 8);
     indexTracks(recent);
+    setQueueContext(recent);
     const playlistCards = store.playlists.slice(0, 6).map((playlist) => cardHtml({
         image: artUrl(playlist.tracks?.[0] || {}),
         label: playlist.name,
@@ -489,6 +521,7 @@ function renderHome() {
         act: 'open-playlist',
         id: playlist.id,
         playlistId: playlist.id,
+        coverKey: playlist.tracks?.[0] ? tkey(playlist.tracks[0]) : '',
     })).join('');
 
     els.content.innerHTML = `
@@ -507,34 +540,102 @@ function renderHome() {
 
 // ── search ─────────────────────────────────────────────────────────────────
 
+function emptySearchState(query) {
+    return {
+        query: query || '',
+        tracks: [],
+        tracksTotal: 0,
+        hasMore: false,
+        nextOffset: 0,
+        podcasts: [],
+        radio: [],
+        library: [],
+        playlists: [],
+    };
+}
+
+function paintSearchIntro() {
+    const results = $('mu-results');
+    if (!results) return;
+    const history = searchHistory();
+    results.innerHTML = history.length
+        ? `<h2 class="mu-section-title">Ostatnie wyszukiwania</h2>${history.map((q) => `
+            <div class="mu-row" data-act="history" data-query="${esc(q)}" role="button" tabindex="0">
+                <span class="mu-row-art" aria-hidden="true"></span>
+                <div class="mu-row-main"><div class="mu-row-title">${esc(q)}</div></div>
+            </div>`).join('')}`
+        : emptyHtml('Wpisz tytuł, wykonawcę, podcast albo stację radiową.');
+}
+
+/** Render the accumulated search state — appending a page only extends it. */
+function paintSearchResults() {
+    const state = ui.searchState;
+    const results = $('mu-results');
+    if (!state || !results) return;
+    const suggest = $('mu-suggest');
+    if (suggest) suggest.hidden = true;
+    const empty = !state.tracks.length && !state.podcasts.length && !state.radio.length
+        && !state.library.length && !state.playlists.length;
+    results.innerHTML = `
+        ${state.tracks.length ? `<h2 class="mu-section-title">Utwory</h2>${state.tracks.map((track) => rowHtml(track, { ctx: 'search' })).join('')}` : ''}
+        ${state.hasMore ? `<button type="button" class="mu-more" data-act="more-tracks" data-offset="${state.nextOffset}">Więcej wyników</button>` : ''}
+        ${state.podcasts.length ? `<h2 class="mu-section-title">Podcasty</h2><div class="mu-grid">${state.podcasts.slice(0, 6).map((podcast) => cardHtml({
+        image: podcast.cover_url || podcast.image,
+        label: podcast.name,
+        sub: podcast.author || '',
+        act: 'open-podcast',
+        id: podcast.id,
+    })).join('')}</div>` : ''}
+        ${state.radio.length ? `<h2 class="mu-section-title">Stacje radiowe</h2>${state.radio.slice(0, 8).map((station) => stationRowHtml(station)).join('')}` : ''}
+        ${state.library.length ? `<h2 class="mu-section-title">Biblioteka NAS</h2>${state.library.map((track) => rowHtml(track, { ctx: 'library' })).join('')}` : ''}
+        ${state.playlists.length ? `<h2 class="mu-section-title">Playlisty</h2>${state.playlists.map((playlist) => `
+            <div class="mu-row" data-act="open-playlist" data-id="${esc(playlist.id || '')}" role="button" tabindex="0">
+                <span class="mu-row-art" aria-hidden="true"></span>
+                <div class="mu-row-main">
+                    <div class="mu-row-title">${esc(playlist.name || '')}</div>
+                    <div class="mu-row-sub">${esc(String(playlist.tracks_count || 0))} utworów</div>
+                </div>
+            </div>`).join('')}` : ''}
+        ${empty ? emptyHtml('Brak wyników.') : ''}
+    `;
+    setQueueContext(state.tracks);
+    hydrateCovers(results);
+}
+
 function renderSearch() {
+    const state = ui.searchState;
     els.content.innerHTML = `
         <input class="mu-searchfield" id="mu-search-input" type="search" placeholder="Czego chcesz posłuchać?"
-               autocomplete="off" aria-label="Szukaj muzyki" value="">
+               autocomplete="off" aria-label="Szukaj muzyki" value="${esc(state?.query || '')}">
         <div class="mu-chips" id="mu-search-chips">
             ${CATEGORIES.map((category, index) => `<button type="button" class="mu-chip" data-act="category" data-index="${index}">${esc(category.name)}</button>`).join('')}
         </div>
         <div class="mu-suggest" id="mu-suggest" hidden></div>
-        <div id="mu-results">${searchHistory().length
-        ? `<h2 class="mu-section-title">Ostatnie wyszukiwania</h2>${searchHistory().map((q) => `<div class="mu-row" data-act="history" data-query="${esc(q)}" role="button" tabindex="0"><span class="mu-row-art" aria-hidden="true"></span><div class="mu-row-main"><div class="mu-row-title">${esc(q)}</div></div></div>`).join('')}`
-        : emptyHtml('Wpisz tytuł, wykonawcę, podcast albo stację radiową.')}</div>
+        <div id="mu-results"></div>
     `;
+    if (state) paintSearchResults();
+    else paintSearchIntro();
     const input = $('mu-search-input');
     if (!input) return;
-    let timer = null;
+    let suggestTimer = null;
+    let searchTimer = null;
     input.addEventListener('input', () => {
         const value = input.value.trim();
-        clearTimeout(timer);
+        clearTimeout(suggestTimer);
+        clearTimeout(searchTimer);
         if (value.length < 2) {
             const suggest = $('mu-suggest');
             if (suggest) suggest.hidden = true;
             return;
         }
-        timer = setTimeout(() => loadSuggestions(value), 140);
+        suggestTimer = setTimeout(() => loadSuggestions(value), 140);
+        // Android searches while you type; Enter still submits immediately.
+        searchTimer = setTimeout(() => runSearch(value, { record: false }), 350);
     });
     input.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
             event.preventDefault();
+            clearTimeout(searchTimer);
             const value = input.value.trim();
             if (value) runSearch(value);
         }
@@ -568,47 +669,52 @@ async function loadSuggestions(query) {
     }
 }
 
-async function runSearch(query, { offset = 0, append = false } = {}) {
+async function runSearch(query, { append = false, record = true } = {}) {
+    const q = String(query || '').trim();
+    if (!q) return;
     const seq = ++ui.searchSeq;
-    const results = $('mu-results');
-    if (!results) return;
-    if (!append) results.innerHTML = loadingHtml();
-    pushSearchHistory(query);
+    if (!append) {
+        ui.searchState = emptySearchState(q);
+        ui.searchStations = [];
+        if (record) pushSearchHistory(q);
+        const box = $('mu-results');
+        if (box) box.innerHTML = loadingHtml();
+    }
+    const state = ui.searchState;
+    if (!state) return;
+    const offset = append ? state.nextOffset : 0;
     try {
-        const data = await json(`/api/music/search?type=all&q=${encodeURIComponent(query)}&limit=20&offset=${offset}`);
-        if (seq !== ui.searchSeq) return;
-        const tracks = data.tracks?.items || [];
-        const podcasts = data.podcasts?.items || [];
-        const radio = data.radio?.items || [];
-        const library = data.library?.items || [];
-        const playlists = data.playlists?.items || [];
-        indexTracks(tracks);
-        indexTracks(library);
-        const html = `
-            ${tracks.length ? `<h2 class="mu-section-title">Utwory</h2>${tracks.map((track) => rowHtml(track, { ctx: 'search' })).join('')}` : ''}
-            ${data.tracks?.has_more ? `<button type="button" class="mu-more" data-act="more-tracks" data-query="${esc(query)}" data-offset="${offset + 20}">Więcej wyników</button>` : ''}
-            ${podcasts.length ? `<h2 class="mu-section-title">Podcasty</h2><div class="mu-grid">${podcasts.slice(0, 6).map((podcast) => cardHtml({
-            image: podcast.cover_url || podcast.image,
-            label: podcast.name,
-            sub: podcast.author || '',
-            act: 'open-podcast',
-            id: podcast.id,
-        })).join('')}</div>` : ''}
-            ${radio.length ? `<h2 class="mu-section-title">Stacje radiowe</h2>${radio.slice(0, 8).map((station) => stationRowHtml(station)).join('')}` : ''}
-            ${library.length ? `<h2 class="mu-section-title">Biblioteka NAS</h2>${library.map((track) => rowHtml(track, { ctx: 'library' })).join('')}` : ''}
-            ${playlists.length ? `<h2 class="mu-section-title">Playlisty</h2>${playlists.map((playlist) => `<div class="mu-row" data-act="open-playlist" data-id="${esc(playlist.id || '')}" role="button" tabindex="0"><span class="mu-row-art" aria-hidden="true"></span><div class="mu-row-main"><div class="mu-row-title">${esc(playlist.name || '')}</div><div class="mu-row-sub">${esc(String(playlist.tracks_count || 0))} utworów</div></div></div>`).join('')}` : ''}
-            ${!tracks.length && !podcasts.length && !radio.length && !library.length && !playlists.length ? emptyHtml('Brak wyników.') : ''}
-        `;
-        const suggest = $('mu-suggest');
-        if (suggest) suggest.hidden = true;
-        if (append) results.insertAdjacentHTML('beforeend', html);
-        else results.innerHTML = html;
-        // Radio rows in results need the station objects for playback.
-        ui.searchStations = radio;
+        const data = await json(`/api/music/search?type=all&q=${encodeURIComponent(q)}&limit=20&offset=${offset}`);
+        if (seq !== ui.searchSeq || ui.searchState !== state) return;
+        const page = data.tracks?.items || [];
+        const seen = new Set(state.tracks.map((track) => tkey(track)));
+        page.forEach((track) => {
+            if (!track || seen.has(tkey(track))) return;
+            seen.add(tkey(track));
+            state.tracks.push(track);
+        });
+        state.tracksTotal = Number(data.tracks?.total) || state.tracks.length;
+        state.hasMore = !!data.tracks?.has_more;
+        state.nextOffset = offset + page.length;
+        if (!append) {
+            state.podcasts = data.podcasts?.items || [];
+            state.radio = data.radio?.items || [];
+            state.library = data.library?.items || [];
+            state.playlists = data.playlists?.items || [];
+            ui.searchStations = state.radio;
+        }
+        indexTracks(state.tracks);
+        indexTracks(state.library);
+        paintSearchResults();
     } catch (error) {
         if (seq !== ui.searchSeq) return;
-        results.innerHTML = emptyHtml(`Wyszukiwanie nie powiodło się: ${errorText(error)}`);
-        logError('Music search failed', `${query}: ${errorText(error)}`);
+        if (append) {
+            toast(`Nie udało się wczytać kolejnych wyników: ${errorText(error)}`, 'warning');
+            return;
+        }
+        const box = $('mu-results');
+        if (box) box.innerHTML = emptyHtml(`Wyszukiwanie nie powiodło się: ${errorText(error)}`);
+        logError('Music search failed', `${q}: ${errorText(error)}`);
     }
 }
 
@@ -683,7 +789,7 @@ function podcastFromCatalog(id) {
     return items.find((item) => item.id === id) || null;
 }
 
-async function openPodcast(id) {
+async function openPodcast(id, { push = true } = {}) {
     const subscribed = (store.podcasts.subscribed || []).find((pod) => pod.id === id);
     const item = podcastFromCatalog(id);
     const catalog = subscribed || (item ? {
@@ -697,6 +803,7 @@ async function openPodcast(id) {
     ui.activePodcast = catalog;
     ui.view = 'podcast';
     setNavActive('podcast');
+    if (push) { try { history.pushState({ musicView: 'podcast', id }, ''); } catch { /* ignore */ } }
     renderPodcastDetail();
     els.content.scrollTop = 0;
 }
@@ -707,7 +814,9 @@ async function renderPodcastDetail() {
     const subscribed = (store.podcasts.subscribed || []).find((item) => item.id === pod.id);
     const episodes = (subscribed && store.podcasts.episodes?.[subscribed.id]) || [];
     indexTracks(episodes);
+    setQueueContext(episodes);
     els.content.innerHTML = `
+        <button type="button" class="mu-icon-btn mu-back" data-act="back" aria-label="Wstecz">←</button>
         <div class="mu-detail-head">
             ${pod.cover ? `<img class="mu-detail-cover" src="${esc(pod.cover)}" alt="" loading="lazy">` : ''}
             <div>
@@ -806,7 +915,7 @@ async function ensureStations() {
     return ui.stations;
 }
 
-function stationRowHtml(station, { favourite = false } = {}) {
+function stationRowHtml(station, { favourite = store.radioFavorites.includes(station.id) } = {}) {
     return `
     <div class="mu-row idle-hidden" data-act="play-station" data-station="${esc(station.id)}" role="button" tabindex="0">
         ${station.logo ? `<img class="mu-row-art logo" src="${esc(station.logo)}" alt="" loading="lazy">`
@@ -825,6 +934,7 @@ async function renderRadio() {
         <h1 class="mu-h1">Radio</h1>
         <input class="mu-searchfield" id="mu-radio-filter" type="search" placeholder="Szukaj stacji…" aria-label="Szukaj stacji">
         <div class="mu-chips" id="mu-radio-chips"></div>
+        <div id="mu-radio-recent"></div>
         <div id="mu-radio-fav"></div>
         <div id="mu-radio-list">${loadingHtml()}</div>
     `;
@@ -859,6 +969,7 @@ async function renderRadio() {
         paint();
         const input = $('mu-radio-filter');
         if (input) input.addEventListener('input', () => { filter = input.value.trim(); paint(); });
+        paintRadioRecents();
         paintFavourites();
     } catch (error) {
         const box = $('mu-radio-list');
@@ -873,6 +984,18 @@ function paintFavourites() {
     const favourites = ui.stations.filter((station) => store.radioFavorites.includes(station.id));
     if (!favourites.length) { box.innerHTML = ''; return; }
     box.innerHTML = `<h2 class="mu-section-title">Ulubione</h2>${favourites.map((station) => stationRowHtml(station, { favourite: true })).join('')}`;
+}
+
+function paintRadioRecents() {
+    const box = $('mu-radio-recent');
+    if (!box || !ui.stations) return;
+    const recent = store.radioRecents
+        .map((id) => ui.stations.find((station) => station.id === id))
+        .filter(Boolean)
+        .slice(0, 5);
+    box.innerHTML = recent.length
+        ? `<h2 class="mu-section-title">Ostatnio słuchane</h2>${recent.map((station) => stationRowHtml(station)).join('')}`
+        : '';
 }
 
 function stationById(id) {
@@ -934,6 +1057,7 @@ function renderLibrary() {
         act: 'open-playlist',
         id: playlist.id,
         playlistId: playlist.id,
+        coverKey: playlist.tracks?.[0] ? tkey(playlist.tracks[0]) : '',
     })).join('')}</div>` : emptyHtml('Nie masz jeszcze playlist.')}
         ${store.sharedPlaylists.length ? `<h2 class="mu-section-title">Udostępnione Tobie</h2>${store.sharedPlaylists.map((grant) => `
             <div class="mu-row" data-act="open-shared" data-id="${esc(grant.id || '')}" role="button" tabindex="0">
@@ -951,11 +1075,13 @@ async function renderPlaylistDetail() {
     if (!playlist) { go('library'); return; }
     const tracks = playlist.tracks || [];
     indexTracks(tracks);
+    setQueueContext(tracks);
     const downloaded = tracks.filter((track) => offline.hasLocal(track)).length;
     const readOnly = !!playlist.read_only;
     els.content.innerHTML = `
+        <button type="button" class="mu-icon-btn mu-back" data-act="back" aria-label="Wstecz">←</button>
         <div class="mu-detail-head">
-            ${artUrl(tracks[0] || {}) ? `<img class="mu-detail-cover" src="${esc(artUrl(tracks[0]))}" alt="" loading="lazy">` : ''}
+            ${artUrl(tracks[0] || {}) ? `<img class="mu-detail-cover" src="${esc(artUrl(tracks[0]))}" data-cover-key="${esc(tkey(tracks[0]))}" alt="" loading="lazy">` : ''}
             <div>
                 <div class="mu-detail-label">${readOnly ? 'Udostępniona playlista' : 'Playlista'}</div>
                 <div class="mu-detail-title">${esc(playlist.name || 'Playlista')}</div>
@@ -989,6 +1115,7 @@ function renderDownloads() {
     const storage = offline.storageInfo();
     const percent = storage?.quota ? Math.min(100, (storage.usage / storage.quota) * 100) : 0;
     const paused = offline.isPaused();
+    setQueueContext(rows.filter((row) => row.status === 'done' && row.track).map((row) => row.track));
     els.content.innerHTML = `
         <h1 class="mu-h1">Pobrane</h1>
         <div class="mu-settings-card">
@@ -1001,10 +1128,10 @@ function renderDownloads() {
         </div>
         ${rows.length ? `<div class="mu-dl-list">${rows.map((row) => `
             <div class="mu-row idle-hidden" data-act="play-download" data-key="${esc(row.key)}" role="button" tabindex="0">
-                ${artUrl(row.track) ? `<img class="mu-row-art" src="${esc(artUrl(row.track))}" alt="" loading="lazy">` : '<span class="mu-row-art" aria-hidden="true"></span>'}
+                ${artUrl(row.track) ? `<img class="mu-row-art" src="${esc(artUrl(row.track))}" data-cover-key="${esc(row.key)}" alt="" loading="lazy">` : '<span class="mu-row-art" aria-hidden="true"></span>'}
                 <div class="mu-row-main">
                     <div class="mu-row-title">${esc(row.track?.title || row.key)}</div>
-                    <div class="mu-row-sub">${esc(row.track?.artist || '')}${row.error ? ` · ${esc(row.error)}` : ''}</div>
+                    <div class="mu-row-sub">${esc(row.track?.artist || '')}${row.pinned ? ' · przypięte' : ''}${row.error ? ` · ${esc(row.error)}` : ''}</div>
                 </div>
                 ${badgeFor(row) ? `<span class="mu-row-badge ${esc(badgeFor(row).cls)}">${esc(badgeFor(row).text)}</span>` : ''}
                 <button type="button" class="mu-row-more" data-act="download-menu" data-key="${esc(row.key)}" aria-label="Opcje pobrania">⋮</button>
@@ -1287,8 +1414,15 @@ function updateMini() {
     const track = engine.current;
     if (!track) { els.mini.hidden = true; return; }
     els.mini.hidden = false;
+    const key = tkey(track);
     const art = artUrl(track) || FALLBACK_ART;
-    if (els.miniArt.getAttribute('src') !== art) els.miniArt.src = art;
+    if (els.miniArt.dataset.coverKey !== key) {
+        els.miniArt.dataset.coverKey = key;
+        els.miniArt.src = art;
+        offline.localThumb(key).then((url) => {
+            if (url && engine.current && tkey(engine.current) === key) els.miniArt.src = url;
+        }).catch(() => {});
+    }
     els.miniTitle.textContent = track.title || '';
     els.miniSub.textContent = track.artist || (isEpisode(track) ? 'Odcinek' : '');
     els.miniPlay.textContent = engine.isPlaying ? '❚❚' : '▶';
@@ -1297,10 +1431,17 @@ function updateMini() {
 function updatePlayer() {
     const track = engine.current;
     if (!track) return;
+    const key = tkey(track);
     const art = artUrl(track) || FALLBACK_ART;
-    if (els.playerArt.getAttribute('src') !== art) {
+    if (els.playerArt.dataset.coverKey !== key) {
+        els.playerArt.dataset.coverKey = key;
         els.playerArt.src = art;
         els.playerBg.style.backgroundImage = `url("${art}")`;
+        offline.localThumb(key).then((url) => {
+            if (!url || !engine.current || tkey(engine.current) !== key) return;
+            els.playerArt.src = url;
+            els.playerBg.style.backgroundImage = `url("${url}")`;
+        }).catch(() => {});
     }
     els.playerTitle.textContent = track.title || '';
     els.playerSub.textContent = track.artist || (isEpisode(track) ? 'Odcinek podcastu' : '');
@@ -1353,6 +1494,7 @@ function renderQueue() {
                 <div class="mu-row-title">${esc(track.title || '')}</div>
                 <div class="mu-row-sub">${esc(track.artist || '')}</div>
             </div>
+            <button type="button" class="mu-row-more" data-act="queue-remove" data-index="${index}" aria-label="Usuń z kolejki">✕</button>
         </div>`).join('');
     els.queueList.innerHTML = rows || emptyHtml('Kolejka jest pusta.');
 }
@@ -1386,6 +1528,13 @@ function wireEngine() {
     engine.on('queue', () => renderQueue());
     engine.on('mode', () => updatePlayer());
     engine.on('sleep', () => { updateSleepHint(); updatePlayer(); });
+    engine.on('error', ({ track } = {}) => {
+        notify({
+            kind: 'error',
+            title: 'Odtwarzanie',
+            message: `Nie udało się odtworzyć „${track?.title || 'utworu'}”. Sprawdź połączenie i spróbuj ponownie.`,
+        });
+    });
     engine.on('track', () => { if (ui.view === 'downloads') renderDownloads(); });
 }
 
@@ -1447,7 +1596,19 @@ function wirePublicUi() {
         if (!els.queue.hidden) renderQueue();
     });
     $('mu-queue-close').addEventListener('click', () => { els.queue.hidden = true; });
+    $('mu-queue-clear')?.addEventListener('click', () => {
+        engine.clearQueue();
+        renderQueue();
+        closePlayer();
+    });
     els.queueList.addEventListener('click', (event) => {
+        const remove = event.target.closest('[data-act="queue-remove"]');
+        if (remove) {
+            event.stopPropagation();
+            engine.removeAt(Number(remove.dataset.index));
+            renderQueue();
+            return;
+        }
         const row = event.target.closest('[data-index]');
         if (row) { engine.jumpTo(Number(row.dataset.index)); renderQueue(); }
     });
@@ -1459,6 +1620,10 @@ function wirePublicUi() {
     els.loginForm.addEventListener('submit', login);
     window.addEventListener('online', () => { setNet(false); loadState().then(renderView); });
     window.addEventListener('offline', () => setNet(true));
+    window.addEventListener('popstate', () => {
+        if (ui.view === 'playlist') go('library');
+        else if (ui.view === 'podcast') go('podcasts');
+    });
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') refreshLibrary();
     });
@@ -1503,7 +1668,7 @@ async function onContentClick(event) {
         return;
     }
     if (act === 'history') { runSearch(target.dataset.query); return; }
-    if (act === 'more-tracks') { runSearch(target.dataset.query, { offset: Number(target.dataset.offset) || 0, append: true }); return; }
+    if (act === 'more-tracks') { if (ui.searchState) runSearch(ui.searchState.query, { append: true }); return; }
     if (act === 'suggest') {
         const type = target.dataset.type;
         if (type === 'playlist') { openPlaylistById(target.dataset.id); return; }
@@ -1590,23 +1755,36 @@ async function onContentClick(event) {
         return;
     }
     if (act === 'logout') { logout(); return; }
+    if (act === 'back') {
+        if (ui.view === 'playlist') go('library');
+        else if (ui.view === 'podcast') go('podcasts');
+        else go('home');
+        return;
+    }
     if (act === 'queue-jump') { engine.jumpTo(Number(target.dataset.index)); renderQueue(); }
 }
 
 function playTrackByKey(key) {
     const track = trackByKey(key);
-    if (!track) return;
-    if (track.is_live) return;
-    engine.playQueue([track]);
+    if (!track || track.is_live) return;
+    const context = ui.queueContext;
+    const index = context.tracks.findIndex((item) => tkey(item) === key);
+    if (index >= 0) {
+        // Play the list the row belongs to, so “next” keeps going.
+        engine.playQueue(context.tracks, index);
+    } else {
+        engine.playQueue([track]);
+    }
     openPlayer();
 }
 
-function openPlaylistById(id) {
+function openPlaylistById(id, { push = true } = {}) {
     const playlist = store.playlists.find((item) => item.id === id);
     if (playlist) {
         ui.activePlaylist = playlist;
         ui.view = 'playlist';
         setNavActive('playlist');
+        if (push) { try { history.pushState({ musicView: 'playlist', id }, ''); } catch { /* ignore */ } }
         renderPlaylistDetail();
         els.content.scrollTop = 0;
     }
@@ -1620,6 +1798,7 @@ async function openSharedPlaylist(grantId) {
         ui.activePlaylist = { ...shared, read_only: true, name: shared.name || grant.label };
         ui.view = 'playlist';
         setNavActive('playlist');
+        try { history.pushState({ musicView: 'playlist', id: shared.id }, ''); } catch { /* ignore */ }
         renderPlaylistDetail();
         els.content.scrollTop = 0;
     } catch (error) {

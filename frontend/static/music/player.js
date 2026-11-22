@@ -35,6 +35,7 @@ export class Engine {
             const pos = this.audio.currentTime || 0;
             const dur = this.audio.duration || 0;
             this._emit('time', { pos, dur });
+            this._updatePositionState();
             if (Date.now() - this._lastSessionSave > 5000) {
                 this._lastSessionSave = Date.now();
                 this.saveSession();
@@ -99,6 +100,23 @@ export class Engine {
             }) : null;
             navigator.mediaSession.playbackState = this.isPlaying ? 'playing' : 'paused';
         } catch { /* MediaMetadata unavailable */ }
+        this._updatePositionState();
+    }
+
+    /** Lock-screen scrubber (duration + position); silently skipped for live streams. */
+    _updatePositionState() {
+        if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+        const ms = navigator.mediaSession;
+        if (typeof ms.setPositionState !== 'function') return;
+        const duration = Number(this.audio.duration);
+        if (!Number.isFinite(duration) || duration <= 0) return;
+        try {
+            ms.setPositionState({
+                duration,
+                playbackRate: this.audio.playbackRate || 1,
+                position: Math.min(Math.max(0, this.audio.currentTime || 0), duration),
+            });
+        } catch { /* live or unsupported */ }
     }
 
     // ── session (survives a reload) ────────────────────────────────────────
@@ -261,7 +279,10 @@ export class Engine {
                 return;
             }
         } catch { /* fall through */ }
-        if (this._retried) return;
+        if (this._retried) {
+            this._emit('error', { track });
+            return;
+        }
         this._retried = true;
         const wasPlaying = !this.audio.paused;
         setTimeout(() => {
@@ -323,6 +344,37 @@ export class Engine {
         if (index < 0 || index >= this.queue.length) return;
         this.index = index;
         this._playCurrent();
+    }
+
+    /** Drop one queue entry (the player keeps playing the current track). */
+    removeAt(index) {
+        if (index < 0 || index >= this.queue.length) return;
+        const removingCurrent = index === this.index;
+        this.queue.splice(index, 1);
+        if (!this.queue.length) {
+            this.audio.pause();
+            this.index = -1;
+            this._emit('track');
+            this._emit('queue');
+            return;
+        }
+        if (index < this.index) this.index -= 1;
+        else if (removingCurrent) {
+            this.index = Math.min(this.index, this.queue.length - 1);
+            this._playCurrent();
+        }
+        this._emit('queue');
+    }
+
+    clearQueue() {
+        this.queue = [];
+        this.index = -1;
+        this.audio.pause();
+        try { this.audio.removeAttribute('src'); this.audio.load(); } catch { /* ignore */ }
+        // saveSession() ignores an empty queue, so drop the stored one explicitly.
+        try { localStorage.removeItem('ethos.music.session'); } catch { /* ignore */ }
+        this._emit('track');
+        this._emit('queue');
     }
 
     toggleShuffle() {
