@@ -92,6 +92,16 @@ Path validation refuses anything outside `/home`, `/mnt`, `/media` and any non-a
 - Notifications go through `ctx.notifications.toast`; diagnostics through `ctx.log`; long scans use
   one `ctx.progress.startTask`.
 
+## Phone PWA (`/books`)
+
+The mobile client is a core-hosted PWA, not part of the package: `/books` must load before sign-in
+and a service worker's scope is its own directory, so a page under `/api/packages/…` could never be
+installed. It reads the same per-account API through the package proxy and streams bytes from
+`/api/files/raw`, so `path_scope` stays the only filesystem gate. Audiobooks play in the background
+(Media Session), downloaded titles live in Cache Storage (`/__books/…`), progress uses the same
+`locator`/`position_s` contract, and the EPUB/PDF readers reuse the same pinned libraries. Full
+spec: [`docs/books-pwa.md`](books-pwa.md). Folder management and scanning stay in this window.
+
 ## Decisions & constraints
 
 - **Metadata-only service.** Chosen over "service owns the files" so `path_scope` and the service
@@ -114,6 +124,8 @@ Path validation refuses anything outside `/home`, `/mnt`, `/media` and any non-a
 - [x] Signed catalog entry + package README
 - [x] `tests/test_books_ui.py` (Playwright, skips without the packages checkout)
 - [x] Docs: this file, `docs/app-store.md`, `docs/apps.md`
+- [x] Phone PWA `/books`: background playback, offline downloads, EPUB/PDF readers
+  ([`docs/books-pwa.md`](books-pwa.md))
 
 ## Known gaps / next steps
 

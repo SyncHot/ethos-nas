@@ -194,7 +194,8 @@ def main() -> int:
           "'/videos'," in sw and "/static/videos/videos.js" in sw
           and "/static/css/videos.css" in sw)
     check("worker keeps the offline media cache on activate",
-          "MEDIA_CACHE" in sw and "new Set([CACHE_VERSION, MEDIA_CACHE])" in sw)
+          "MEDIA_CACHE" in sw
+          and "new Set([CACHE_VERSION, MEDIA_CACHE, BOOKS_CACHE])" in sw)
     check("worker serves offline media with Range",
           "'/__media/'" in sw and "Partial Content" in sw and "Content-Range" in sw)
     shell_versions = [int(n) for n in re.findall(r"ethos-shell-v(\d+)", sw)]
@@ -258,6 +259,85 @@ def main() -> int:
     check("worker falls back to the music shell when offline",
           "(path === '/music' || path === '/music/')" in sw)
     check("music shell cache version was bumped", max(shell_versions or [0]) >= 7, str(shell_versions))
+
+    # ── Books PWA (`/books`) — audiobooks, EPUB/PDF, offline downloads ────────
+    books_manifest_path = FRONTEND / "manifest-books.webmanifest"
+    check("books manifest exists", books_manifest_path.is_file())
+    try:
+        books_manifest = json.loads(books_manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        check("books manifest is valid JSON", False, str(exc))
+        books_manifest = {}
+    for key in ("name", "short_name", "id", "start_url", "scope", "display",
+                "theme_color", "background_color"):
+        check(f"books manifest has {key}", bool(books_manifest.get(key)),
+              str(books_manifest.get(key)))
+    check("books manifest is scoped to /books",
+          books_manifest.get("id") == "/books"
+          and books_manifest.get("start_url") == "/books"
+          and books_manifest.get("scope") == "/books", str(books_manifest.get("scope")))
+    check("books manifest ships Continue / Downloads shortcuts",
+          {s.get("url") for s in books_manifest.get("shortcuts") or []}
+          >= {"/books?view=continue", "/books?view=downloads"})
+    books_icons = books_manifest.get("icons") or []
+    check("books manifest ships 192 and 512 icons",
+          {"192x192", "512x512"} <= {i.get("sizes") for i in books_icons},
+          str({i.get("sizes") for i in books_icons}))
+    check("books manifest ships a maskable icon",
+          any(i.get("purpose") == "maskable" for i in books_icons), str(books_icons))
+    for icon in books_icons:
+        src = icon.get("src") or ""
+        dims = png_size(FRONTEND / src.lstrip("/"))
+        check(f"books icon {src} is a PNG of the declared size",
+              dims is not None and f"{dims[0]}x{dims[1]}" == icon.get("sizes"),
+              f"{dims} vs {icon.get('sizes')}")
+    books_touch = FRONTEND / "static" / "icons" / "books-apple-touch-icon.png"
+    check("books apple-touch-icon is 180×180", png_size(books_touch) == (180, 180),
+          str(png_size(books_touch)))
+
+    books_html = (FRONTEND / "books.html").read_text()
+    check("books page links its manifest",
+          'rel="manifest" href="/manifest-books.webmanifest"' in books_html)
+    check("books page loads the shared tokens + books styles",
+          "/static/css/tokens.css" in books_html and "/static/css/books.css" in books_html)
+    check("books page loads its module", "/static/books/books.js" in books_html)
+    check("books page has a toast host, mini player and full player",
+          'id="toastContainer"' in books_html and 'id="bk-mini"' in books_html
+          and 'id="bk-player"' in books_html and 'id="bk-reader"' in books_html)
+
+    check("core serves the books shell", "serve_books" in main_py and "books.html" in main_py)
+    check("books shell + manifest are public paths",
+          '"/books",' in main_py and '"/books/",' in main_py
+          and '"/manifest-books.webmanifest",' in main_py)
+    check("worker precaches the books shell",
+          "'/books'," in sw and "/static/books/books.js" in sw
+          and "/static/css/books.css" in sw and "/static/books/offline.js" in sw)
+    check("worker precaches the vendored readers",
+          "/static/vendor/epub.min.js" in sw and "/static/vendor/pdf.min.js" in sw
+          and "/static/vendor/pdf.worker.min.js" in sw)
+    check("worker falls back to the books shell when offline",
+          "(path === '/books' || path === '/books/')" in sw)
+    check("worker serves /__books from its own cache with Range",
+          "BOOKS_CACHE" in sw and "'/__books/'" in sw
+          and "serveMedia(request, url, BOOKS_CACHE" in sw and "Content-Range" in sw)
+    check("books shell cache version was bumped", max(shell_versions or [0]) >= 8, str(shell_versions))
+
+    books_offline = (FRONTEND / "static" / "books" / "offline.js").read_text()
+    check("books downloads stream into Cache Storage (no whole-file Blob in RAM)",
+          "pipeThrough" in books_offline and "cache.put" in books_offline
+          and "arrayBuffer()" not in books_offline.replace("await res.arrayBuffer()", ""))
+    check("books offline uses the shared progress + notification modules",
+          "core/progress.js" in books_offline and "core/notification-center.js" in books_offline)
+    books_player = (FRONTEND / "static" / "books" / "player.js").read_text()
+    check("books player drives the Media Session for background playback",
+          "mediaSession" in books_player and "MediaMetadata" in books_player
+          and "setPositionState" in books_player)
+    books_js = (FRONTEND / "static" / "books" / "books.js").read_text()
+    check("books app never builds its own toast/panel",
+          "core/notification-center.js" in books_js and "toastContainer" not in books_js)
+    settings_js = (FRONTEND / "static" / "apps" / "settings.js").read_text()
+    check("Settings links the /books phone app",
+          "books-pwa-link" in settings_js and 'href="/books"' in settings_js)
 
     updates_py = (ROOT / "backend" / "routers" / "updates.py").read_text()
     check("the Music APK channel is retired",

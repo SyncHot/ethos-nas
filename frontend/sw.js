@@ -16,16 +16,19 @@
  *
  * Offline downloads are the one deliberate exception: `/__media/<id>` is served
  * from the dedicated `ethos-media-v1` cache (written by /videos), including
- * synthesised 206 responses for Range requests. That cache is never pruned by a
- * shell update.
+ * synthesised 206 responses for Range requests. `/__books/<id>` does the same
+ * for the Books PWA (audiobooks, EPUB, PDF) from `ethos-books-v1`. Those caches
+ * are never pruned by a shell update.
  *
  * Bump CACHE_VERSION when the shell URLs change; old caches are pruned on
  * activate.
  */
 
-const CACHE_VERSION = 'ethos-shell-v7';
+const CACHE_VERSION = 'ethos-shell-v8';
 const MEDIA_CACHE = 'ethos-media-v1';
 const MEDIA_PREFIX = '/__media/';
+const BOOKS_CACHE = 'ethos-books-v1';
+const BOOKS_PREFIX = '/__books/';
 const SHELL_URLS = [
     '/',
     '/manifest.webmanifest',
@@ -86,6 +89,27 @@ const SHELL_URLS = [
     '/static/icons/music-512.png',
     '/static/icons/music-maskable-512.png',
     '/static/icons/music-apple-touch-icon.png',
+    // Books PWA (audiobooks in the background, EPUB/PDF, offline downloads).
+    // The readers are vendored in the core so an installed app can open a
+    // downloaded book with no network at all.
+    '/books',
+    '/books/',
+    '/manifest-books.webmanifest',
+    '/static/css/books.css',
+    '/static/books/api.js',
+    '/static/books/offline.js',
+    '/static/books/player.js',
+    '/static/books/epub.js',
+    '/static/books/pdf.js',
+    '/static/books/books.js',
+    '/static/vendor/jszip.min.js',
+    '/static/vendor/epub.min.js',
+    '/static/vendor/pdf.min.js',
+    '/static/vendor/pdf.worker.min.js',
+    '/static/icons/books-192.png',
+    '/static/icons/books-512.png',
+    '/static/icons/books-maskable-512.png',
+    '/static/icons/books-apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -103,9 +127,9 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
     event.waitUntil((async () => {
         const names = await caches.keys();
-        // Keep the offline-download bucket: wiping it on every shell update
-        // would silently delete the user's downloaded movies.
-        const keep = new Set([CACHE_VERSION, MEDIA_CACHE]);
+        // Keep the offline-download buckets: wiping them on every shell update
+        // would silently delete the user's downloaded films and books.
+        const keep = new Set([CACHE_VERSION, MEDIA_CACHE, BOOKS_CACHE]);
         await Promise.all(names.filter((n) => !keep.has(n)).map((n) => caches.delete(n)));
         await self.clients.claim();
     })());
@@ -125,7 +149,12 @@ self.addEventListener('fetch', (event) => {
     const url = new URL(request.url);
     if (url.origin === self.location.origin && url.pathname.startsWith(MEDIA_PREFIX)
             && (request.method === 'GET' || request.method === 'HEAD')) {
-        event.respondWith(serveMedia(request, url));
+        event.respondWith(serveMedia(request, url, MEDIA_CACHE, 'video/mp4'));
+        return;
+    }
+    if (url.origin === self.location.origin && url.pathname.startsWith(BOOKS_PREFIX)
+            && (request.method === 'GET' || request.method === 'HEAD')) {
+        event.respondWith(serveMedia(request, url, BOOKS_CACHE, 'application/octet-stream'));
         return;
     }
     if (!isCacheable(request, url)) return;             // let the browser handle it
@@ -149,7 +178,8 @@ self.addEventListener('fetch', (event) => {
                 const fallback = (path === '/notes' || path === '/notes/') ? path
                     : (path === '/videos' || path === '/videos/') ? path
                         : (path === '/music' || path === '/music/') ? path
-                            : '/';
+                            : (path === '/books' || path === '/books/') ? path
+                                : '/';
                 const shell = await caches.match(fallback, { ignoreSearch: true });
                 if (shell) return shell;
             }
@@ -158,14 +188,16 @@ self.addEventListener('fetch', (event) => {
     })());
 });
 
-// ── Offline media (/__media/<exportId>) ─────────────────────────────────────
-// Written by /static/videos/offline.js. <video> always asks with `Range`, and a
-// plain 200 makes some browsers refuse to seek, so the worker synthesises 206
-// slices from the cached Blob. A missing entry answers 404 (download again).
-async function serveMedia(request, url) {
-    const cache = await caches.open(MEDIA_CACHE);
+// ── Offline media (/__media/<exportId>, /__books/<bookId>[/t<n>]) ──────────
+// Written by /static/videos/offline.js and /static/books/offline.js. <video>
+// and <audio> ask with `Range`, and a plain 200 makes some browsers refuse to
+// seek, so the worker synthesises 206 slices from the cached Blob. A missing
+// entry answers 404 (download again).
+async function serveMedia(request, url, cacheName, fallbackType) {
+    const cache = await caches.open(cacheName);
     const cached = await cache.match(url.pathname);
     if (!cached) return new Response('Not found', { status: 404 });
+    const type = (cached.headers.get('content-type') || fallbackType).split(';')[0];
     if (request.method === 'HEAD') {
         const headers = new Headers(cached.headers);
         headers.set('Accept-Ranges', 'bytes');
@@ -196,7 +228,7 @@ async function serveMedia(request, url) {
         status: 206,
         statusText: 'Partial Content',
         headers: {
-            'Content-Type': 'video/mp4',
+            'Content-Type': type,
             'Content-Range': `bytes ${start}-${end}/${size}`,
             'Content-Length': String(slice.size),
             'Accept-Ranges': 'bytes',

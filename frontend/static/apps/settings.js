@@ -277,6 +277,23 @@ async function renderUpdates(isCurrent) {
                 <span class="ui-muted">Install it from the browser menu (“Add to Home screen”).
                     Every track in a playlist downloads to the device (needs HTTPS).</span>
             </div>
+        </section>
+
+        <section class="ui-panel">
+            <div class="ui-toolbar">
+                <div>
+                    <h2>${uiIcon('book', 13)} Books on your phone</h2>
+                    <p class="ui-muted">Audiobooks play with the screen off and downloaded EPUB/PDF titles open
+                        without a network — same library, progress and reader settings as the desktop window.</p>
+                </div>
+                <span class="ui-tag is-ok">PWA</span>
+            </div>
+            <div class="ui-panel-body ui-row">
+                <a class="ui-btn small primary" data-testid="books-pwa-link" href="/books"
+                   target="_blank" rel="noopener">${uiIcon('book', 12)} Open /books</a>
+                <span class="ui-muted">Add books and folders in the Books window first; the phone app reads the
+                    same per-account library. Downloads need HTTPS.</span>
+            </div>
         </section>`;
 
     await Promise.all([_fillCoreUpdate(isCurrent), _fillApkRows(isCurrent)]);

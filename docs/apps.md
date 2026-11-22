@@ -13,7 +13,9 @@ Status: written 2026-11-11 (TODO.md P6-04).
 > part of `frontend/index.html` until TODO.md P3-10 lands.
 >
 > The Music **phone** client is the core `/music` PWA (`docs/music-pwa.md`); the EthOS Music Android
-> APK is retired and `/api/app/version?app=music` answers 404.
+> APK is retired and `/api/app/version?app=music` answers 404. Books has the same split: the desktop
+> window lives in the package, the phone client is the core `/books` PWA (`docs/books-pwa.md`), and
+> only the desktop window scans folders.
 
 The core windows share one shell (`docs/app-ui.md`) — 218 px rail, panels, summary tiles, 11 px tables
 and one status line — matching the native package windows.
@@ -29,7 +31,7 @@ and one status line — matching the native package windows.
 | Services | `apps/services.js` | `/api/systemd`, `/api/ethos-nas-service` |
 | SMART | `apps/smart.js` | `/api/smart` |
 | Samba shares | `ethos-packages/ethos-shares/frontend/app-shell.js` (package) | `/api/shares` |
-| Books | `ethos-packages/ethos-books/frontend/app.js` (package) | `/api/files`, `/api/files/raw` + the package's own venv service (`docs/books.md`) |
+| Books | `ethos-packages/ethos-books/frontend/app.js` (package) + `/books` PWA | `/api/files`, `/api/files/raw` + the package's own venv service (`docs/books.md`, `docs/books-pwa.md`) |
 | Network | `apps/network.js` | `/api/network` |
 | Logs | `apps/logs.js` | `/api/logs`, `/ws/logs/*` |
 | Search | `apps/search.js` | `/api/files/universal-search` |

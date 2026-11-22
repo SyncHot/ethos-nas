@@ -11,6 +11,26 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.20.0] - 2026-11-22
+
+### Added
+
+- **Books on your phone (`/books` PWA).** The Books package now has an installable phone client with
+  the same library, progress and reader settings: audiobooks keep playing with the screen off
+  (lock-screen controls, speed, ±skip, sleep timer), EPUB titles open in a paginated reader with
+  themes and a table of contents, and PDFs render page by page with zoom. The continuations list,
+  search and shared titles come from the package, so desktop and phone stay in sync.
+- **Offline downloads of whole titles.** A title downloads into the phone's cache (audiobook tracks,
+  EPUB or PDF) with per-file progress, a quota guard and retry; playback and reading then work in
+  airplane mode, including seeking inside a chapter. Downloads need HTTPS.
+- **Settings → Books on your phone** card that links `/books` next to the Music one.
+
+### Changed
+
+- The EPUB/PDF readers used by the phone app are vendored in the core (`frontend/static/vendor/`,
+  same pinned versions as the package), so an installed app can open a downloaded book with no
+  network. `THIRD-PARTY.md` lists hls.js, epub.js, JSZip and pdf.js.
+
 ## [2.19.1] - 2026-11-22
 
 ### Added

@@ -43,6 +43,13 @@ MUSIC_TOP = (20, 61, 46)      # deep green
 MUSIC_BOTTOM = (8, 13, 11)    # near-black
 MUSIC_NOTE = (29, 185, 84)    # the player's green accent
 
+# Books PWA palette (matches frontend/manifest-books.webmanifest).
+BOOKS_TOP = (58, 36, 22)      # warm leather brown
+BOOKS_BOTTOM = (18, 16, 14)   # near-black
+BOOKS_COVER = (214, 168, 96)  # page cream / gold
+BOOKS_PAGE = (247, 238, 219)  # page cream
+BOOKS_RIBBON = (200, 112, 62)  # bookmark / spine accent
+
 
 def _blend(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
     return (round(a[0] + (b[0] - a[0]) * t),
@@ -249,6 +256,49 @@ def render_music(size: int, *, rounded_ratio: float = 0.22,
     return bytes(rows)
 
 
+def render_book(size: int, *, rounded_ratio: float = 0.22,
+                padding_ratio: float = 0.0) -> bytes:
+    """Return RGBA pixel rows for the Books PWA icon (open book on leather)."""
+    radius = size * rounded_ratio
+    inset = size * padding_ratio
+    inner = size - 2 * inset
+    # The cover: a portrait rectangle with a spine, three text rules and a ribbon.
+    x0 = inset + inner * 0.26
+    x1 = inset + inner * 0.74
+    y0 = inset + inner * 0.19
+    y1 = inset + inner * 0.81
+    spine = inner * 0.045
+    line_h = inner * 0.026
+    ribbon_w = inner * 0.052
+    rows = bytearray()
+    for y in range(size):
+        rows.append(0)  # PNG filter type 0
+        for x in range(size):
+            px, py = x + 0.5, y + 0.5
+            if not _rounded(px, py, size, radius):
+                rows.extend((0, 0, 0, 0))
+                continue
+            t = y / max(1, size - 1)
+            r, g, b = _blend(BOOKS_TOP, BOOKS_BOTTOM, t)
+            if _rounded_rect(px, py, x0, y0, x1, y1, inner * 0.035):
+                r, g, b = BOOKS_PAGE
+                if px < x0 + spine:
+                    r, g, b = BOOKS_RIBBON
+                elif px > x0 + spine + inner * 0.02:
+                    # text rules
+                    for index in range(3):
+                        ly = y0 + inner * 0.17 + index * inner * 0.115
+                        if (ly <= py < ly + line_h and
+                                x0 + inner * 0.10 <= px < x1 - inner * 0.075):
+                            r, g, b = BOOKS_COVER
+                            break
+                if (y0 <= py < y0 + inner * 0.16 and
+                        x1 - ribbon_w - inner * 0.055 <= px < x1 - inner * 0.055):
+                    r, g, b = BOOKS_RIBBON
+            rows.extend((r, g, b, 255))
+    return bytes(rows)
+
+
 def write_png(path: Path, size: int, pixels: bytes) -> None:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (struct.pack(">I", len(data)) + kind + data
@@ -304,6 +354,16 @@ def main() -> None:
     # Maskable: keep the note inside the 80 % safe zone.
     write_png(OUT / "music-maskable-512.png", 512,
               render_music(512, rounded_ratio=0.0, padding_ratio=0.10))
+
+    print("Writing Books PWA icons to", OUT)
+    for size in (192, 512):
+        write_png(OUT / f"books-{size}.png", size, render_book(size))
+    # iOS home screen: no transparency, corners are added by the OS.
+    write_png(OUT / "books-apple-touch-icon.png", 180,
+              render_book(180, rounded_ratio=0.0))
+    # Maskable: keep the book inside the 80 % safe zone.
+    write_png(OUT / "books-maskable-512.png", 512,
+              render_book(512, rounded_ratio=0.0, padding_ratio=0.10))
 
 
 if __name__ == "__main__":

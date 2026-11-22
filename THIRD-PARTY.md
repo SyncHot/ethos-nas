@@ -1,19 +1,22 @@
 # Third-party notices
 
-EthOS NAS bundles exactly **one** third-party JavaScript file (hls.js, see
-below); everything else — wallpapers and icons — is generated (CSS gradients,
-`scripts/make_icons.py`, hand-authored SVG in `frontend/static/core/*`). Other
-libraries are loaded from CDNs at runtime and remain under their own licenses.
+EthOS NAS bundles third-party JavaScript **only** for the offline-capable standalone PWAs (the
+readers below and hls.js); everything else — wallpapers and icons — is generated (CSS gradients,
+`scripts/make_icons.py`, hand-authored SVG in `frontend/static/core/*`). Other libraries are loaded
+from CDNs at runtime and remain under their own licenses.
 
 ## Vendored libraries
 
 | Library | Version | License | Used in |
 |---|---|---|---|
 | [hls.js](https://github.com/video-dev/hls.js) | 1.7.4 | Apache-2.0 | `frontend/static/vendor/hls.min.js` — `/videos` PWA and the Video package player |
+| [epub.js](https://github.com/futurepress/epub.js) | 0.3.93 | BSD-2-Clause | `frontend/static/vendor/epub.min.js` — `/books` PWA reader |
+| [JSZip](https://stuk.github.io/jszip/) | 3.10.1 | MIT / GPL-3.0 (dual) | `frontend/static/vendor/jszip.min.js` — EPUB container parsing |
+| [pdf.js](https://mozilla.github.io/pdf.js/) | 3.11.174 | Apache-2.0 | `frontend/static/vendor/pdf.min.js` + `pdf.worker.min.js` — `/books` PWA reader |
 
-hls.js is served from the same origin so the PWA can play HLS in browsers
-without native support and still work offline. License text:
-<https://github.com/video-dev/hls.js/blob/master/LICENSE>.
+They are served from the same origin so the PWAs work offline. License texts ship next to the files
+in `frontend/static/vendor/licenses/`; the same versions are pinned by sha256 in the Books package
+manifest, and the package ships its own copies with its own license files.
 
 ## Runtime libraries (CDN, not vendored)
 

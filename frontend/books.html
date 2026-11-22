@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pl" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Books — EthOS</title>
+    <meta name="description" content="Audiobooki, EPUB i PDF z NAS-a na telefonie: słuchanie w tle i pobieranie offline.">
+    <meta name="theme-color" content="#12100e">
+    <link rel="manifest" href="/manifest-books.webmanifest">
+    <link rel="apple-touch-icon" href="/static/icons/books-apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Books">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <link rel="stylesheet" href="/static/css/tokens.css">
+    <link rel="stylesheet" href="/static/css/books.css">
+    <script>
+        (function () {
+            try {
+                var theme = localStorage.getItem('ethos-theme');
+                document.documentElement.className = theme === 'light' ? 'light' : 'dark';
+            } catch (_) {
+                document.documentElement.className = 'dark';
+            }
+        })();
+    </script>
+</head>
+<body>
+    <div id="toastContainer" class="toast-container" aria-live="polite" role="status"></div>
+
+    <!-- Sign-in (the NAS credentials, same JWT as the desktop) -->
+    <section id="bk-login" class="bk-login" hidden data-testid="books-login">
+        <form id="bk-login-form" class="bk-login-card" autocomplete="on">
+            <div class="bk-login-icon" aria-hidden="true">📚</div>
+            <h1>EthOS Books</h1>
+            <p>Zaloguj się kontem NAS.</p>
+            <label>
+                <span>Użytkownik</span>
+                <input id="bk-username" name="username" autocapitalize="none" autocorrect="off"
+                       autocomplete="username" required>
+            </label>
+            <label>
+                <span>Hasło</span>
+                <input id="bk-password" name="password" type="password" autocomplete="current-password" required>
+            </label>
+            <button type="submit" class="bk-btn primary" id="bk-login-submit">Zaloguj</button>
+            <p id="bk-login-error" class="bk-login-error" role="alert"></p>
+            <p class="bk-login-offline" hidden id="bk-login-offline">
+                Bez sieci możesz czytać i słuchać pozycji już pobranych na telefon.
+            </p>
+        </form>
+    </section>
+
+    <!-- Main app -->
+    <div id="bk-app" class="bk-app" hidden data-testid="books-app">
+        <header class="bk-top">
+            <div class="bk-brand">
+                <img class="bk-brand-icon" src="/static/icons/books-192.png" alt="" width="22" height="22" decoding="async">
+                <strong>Books</strong>
+            </div>
+            <span id="bk-net" class="bk-pill" role="status" hidden>Offline</span>
+            <div class="bk-top-actions">
+                <button type="button" class="bk-icon-btn" id="bk-install" title="Zainstaluj aplikację" hidden>⤓</button>
+                <button type="button" class="bk-icon-btn" id="bk-menu-btn" title="Menu"
+                        aria-label="Menu" aria-expanded="false">⋯</button>
+            </div>
+            <div id="bk-menu" class="bk-menu" hidden>
+                <button type="button" data-action="downloads">Pobrane</button>
+                <button type="button" data-action="theme">Motyw jasny / ciemny</button>
+                <button type="button" data-action="logout">Wyloguj</button>
+            </div>
+        </header>
+
+        <main id="bk-content" class="bk-content" aria-live="polite"></main>
+
+        <div id="bk-mini" class="bk-mini" hidden data-testid="books-mini">
+            <img id="bk-mini-art" class="bk-mini-art" alt="" decoding="async">
+            <div class="bk-mini-main">
+                <div id="bk-mini-title" class="bk-mini-title"></div>
+                <div id="bk-mini-sub" class="bk-mini-sub"></div>
+            </div>
+            <button type="button" class="bk-mini-toggle" id="bk-mini-play" aria-label="Odtwórz / pauza">▶</button>
+            <i class="bk-mini-progress" id="bk-mini-progress" aria-hidden="true"></i>
+        </div>
+
+        <nav class="bk-nav" id="bk-nav" aria-label="Nawigacja">
+            <button type="button" class="bk-navitem active" data-view="library" data-testid="books-nav-library">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M5 4h4v16H5zM11 4h3.2v16H11zM15.6 4.6l3 15.4-2 .4L13.6 5z"/></svg>
+                <span>Biblioteka</span>
+            </button>
+            <button type="button" class="bk-navitem" data-view="continue" data-testid="books-nav-continue">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                <span>Słucham</span>
+            </button>
+            <button type="button" class="bk-navitem" data-view="downloads" data-testid="books-nav-downloads">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 4v10m0 0l-4-4m4 4l4-4" stroke-linecap="round"/><path d="M5 18h14" stroke-linecap="round"/></svg>
+                <span>Pobrane</span>
+            </button>
+            <button type="button" class="bk-navitem" data-view="settings" data-testid="books-nav-settings">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="3.4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4" stroke-linecap="round"/></svg>
+                <span>Ustawienia</span>
+            </button>
+        </nav>
+    </div>
+
+    <!-- Full-screen audiobook player -->
+    <div id="bk-player" class="bk-player" hidden data-testid="books-player">
+        <div class="bk-player-bg" id="bk-player-bg" aria-hidden="true"></div>
+        <div class="bk-player-inner">
+            <div class="bk-player-head">
+                <button type="button" class="bk-icon-btn" id="bk-player-close" aria-label="Zamknij odtwarzacz">⌄</button>
+                <span class="bk-player-label" id="bk-player-label">Słuchanie</span>
+                <div class="bk-player-head-actions">
+                    <button type="button" class="bk-icon-btn" id="bk-sleep" aria-label="Wyłącznik czasowy">⏱</button>
+                    <button type="button" class="bk-icon-btn" id="bk-tracks-btn" aria-label="Rozdziały">☰</button>
+                </div>
+            </div>
+            <div class="bk-player-art-wrap">
+                <img id="bk-player-art" class="bk-player-art" alt="" decoding="async">
+            </div>
+            <div class="bk-player-book">
+                <div id="bk-player-title" class="bk-player-title"></div>
+                <div id="bk-player-sub" class="bk-player-sub"></div>
+                <div id="bk-player-track" class="bk-player-track"></div>
+            </div>
+            <div class="bk-player-slider">
+                <span id="bk-pos" class="bk-time">0:00</span>
+                <input id="bk-seek" class="bk-range" type="range" min="0" max="1000" step="1" value="0" aria-label="Przewiń">
+                <span id="bk-dur" class="bk-time right">0:00</span>
+            </div>
+            <div class="bk-player-controls">
+                <button type="button" class="bk-ctl" id="bk-back" aria-label="Do tyłu">⟲</button>
+                <button type="button" class="bk-ctl" id="bk-prev" aria-label="Poprzedni rozdział">
+                    <svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+                </button>
+                <button type="button" class="bk-playbig" id="bk-play" aria-label="Odtwórz / pauza">▶</button>
+                <button type="button" class="bk-ctl" id="bk-next" aria-label="Następny rozdział">
+                    <svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor" aria-hidden="true"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+                </button>
+                <button type="button" class="bk-ctl" id="bk-fwd" aria-label="Do przodu">⟳</button>
+            </div>
+            <div class="bk-speed-row">
+                <button type="button" class="bk-speed" id="bk-speed" data-testid="books-audio-speed">1×</button>
+                <span class="bk-muted" id="bk-sleep-hint" hidden></span>
+            </div>
+        </div>
+        <aside id="bk-tracks" class="bk-tracks" hidden aria-label="Rozdziały">
+            <div class="bk-tracks-head">
+                <b>Rozdziały</b>
+                <button type="button" class="bk-icon-btn" id="bk-tracks-close" aria-label="Zamknij">✕</button>
+            </div>
+            <div id="bk-tracks-list" class="bk-tracks-list"></div>
+        </aside>
+    </div>
+
+    <!-- Reader overlay (EPUB / PDF) -->
+    <div id="bk-reader" class="bk-reader" hidden data-testid="books-reader">
+        <div class="bk-reader-bar">
+            <button class="bk-btn small" type="button" id="bk-reader-back" data-testid="books-reader-back">← Biblioteka</button>
+            <strong id="bk-reader-title" data-testid="books-reader-title"></strong>
+            <div class="bk-row" id="bk-reader-actions"></div>
+        </div>
+        <div class="bk-reader-body" id="bk-reader-body"></div>
+        <div class="bk-reader-foot" id="bk-reader-foot"></div>
+    </div>
+
+    <!-- Generic sheet (details, downloads, settings) -->
+    <div id="bk-sheet" class="bk-sheet" hidden>
+        <div class="bk-sheet-backdrop" data-close="sheet"></div>
+        <article class="bk-sheet-card" role="dialog" aria-modal="true" aria-labelledby="bk-sheet-title">
+            <button type="button" class="bk-sheet-close" data-close="sheet" aria-label="Zamknij">✕</button>
+            <h2 class="bk-sheet-title" id="bk-sheet-title"></h2>
+            <div id="bk-sheet-body" class="bk-sheet-body"></div>
+        </article>
+    </div>
+
+    <script type="module" src="/static/books/books.js"></script>
+</body>
+</html>

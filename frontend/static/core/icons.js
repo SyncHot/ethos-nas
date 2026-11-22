@@ -50,6 +50,7 @@ const PATHS = {
     network: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5C14.5 5.9 14.5 18.1 12 20.5 9.5 18.1 9.5 5.9 12 3.5Z"/>',
     phone: '<rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 18h2"/>',
     music: '<path d="M9 17.5V6l9-2v11"/><circle cx="6.8" cy="17.6" r="2.2"/><circle cx="15.8" cy="15" r="2.2"/>',
+    book: '<path d="M12 6.5C10.5 5.2 8 4.5 5 4.5v14c3 0 5.5.7 7 2 1.5-1.3 4-2 7-2v-14c-3 0-5.5.7-7 2Z"/><path d="M12 6.5v14"/>',
     video: '<rect x="3" y="6" width="12" height="12" rx="2"/><path d="m15 10.5 6-3.5v10l-6-3.5"/>',
     palette: '<path d="M12 3.5a8.5 8.5 0 0 0 0 17c1.6 0 2-1 1.4-2.2-.7-1.3 0-2.3 1.4-2.3h1.5a3.7 3.7 0 0 0 3.7-3.7A8.5 8.5 0 0 0 12 3.5Z"/><circle cx="8.6" cy="9.6" r=".9"/><circle cx="12" cy="7.7" r=".9"/><circle cx="15.4" cy="9.6" r=".9"/>',
 };

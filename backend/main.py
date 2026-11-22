@@ -411,6 +411,12 @@ async def auth_middleware(request: Request, call_next):
         "/music",
         "/music/",
         "/manifest-music.webmanifest",
+        # Books PWA (the phone reader/player for the Books package). Same
+        # rules: the page and manifest load before sign-in; the package proxy
+        # and /api/files/raw still require the JWT.
+        "/books",
+        "/books/",
+        "/manifest-books.webmanifest",
     }
     if path in public_paths:
         return await call_next(request)
@@ -643,6 +649,26 @@ async def serve_music_slash() -> FileResponse:
 @app.get("/manifest-music.webmanifest", include_in_schema=False)
 async def music_manifest() -> FileResponse:
     return FileResponse(str(FRONTEND_DIR / "manifest-music.webmanifest"),
+                        media_type="application/manifest+json")
+
+
+# Books PWA: the phone counterpart of the Books package (audiobooks in the
+# background, EPUB/PDF reading, offline downloads). A separate HTML entry like
+# /notes, /videos and /music — the desktop shell is unusable on a phone and the
+# page has to load before the user has a token.
+@app.get("/books", include_in_schema=False)
+async def serve_books() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "books.html"), media_type="text/html")
+
+
+@app.get("/books/", include_in_schema=False)
+async def serve_books_slash() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "books.html"), media_type="text/html")
+
+
+@app.get("/manifest-books.webmanifest", include_in_schema=False)
+async def books_manifest() -> FileResponse:
+    return FileResponse(str(FRONTEND_DIR / "manifest-books.webmanifest"),
                         media_type="application/manifest+json")
 
 
