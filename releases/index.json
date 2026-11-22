@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T11:08:49+00:00",
+  "generated_at": "2026-11-22T11:09:47+00:00",
   "latest": {
-    "version": "2.15.0",
-    "git_sha": "92d07e3",
-    "git_sha_full": "92d07e3aab606d4e38d1f123da0d1dab0ae74b2f",
-    "build": 127,
-    "released_at": "2026-11-22T11:08:49+00:00",
-    "notes": "Videos: install the /videos web app on your phone — full library, fullscreen player and offline downloads that work without the NAS"
+    "version": "2.15.1",
+    "git_sha": "48f958d",
+    "git_sha_full": "48f958d767b7555bb7c7e79ea29470a4036f2100",
+    "build": 129,
+    "released_at": "2026-11-22T11:09:47+00:00",
+    "notes": "Videos: a clear HTTPS notice when a phone tries to download over a plain-http address"
   },
   "releases": [
+    {
+      "version": "2.15.1",
+      "git_sha": "48f958d",
+      "git_sha_full": "48f958d767b7555bb7c7e79ea29470a4036f2100",
+      "build": 129,
+      "released_at": "2026-11-22T11:09:47+00:00",
+      "notes": "Videos: a clear HTTPS notice when a phone tries to download over a plain-http address"
+    },
     {
       "version": "2.15.0",
       "git_sha": "92d07e3",
@@ -201,14 +209,6 @@
       "build": 69,
       "released_at": "2026-11-20T15:21:34+00:00",
       "notes": "Update card: no more phantom update on appliances built from an OS image"
-    },
-    {
-      "version": "2.6.2",
-      "git_sha": "2d45dff",
-      "git_sha_full": "2d45dffe5165b115f6fad73b697bdae008a38eba",
-      "build": 67,
-      "released_at": "2026-11-20T14:57:16+00:00",
-      "notes": "Updater: appliances installed from an OS image can update again (shallow clone fetch)"
     }
   ]
 }
