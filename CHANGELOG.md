@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.29.8] - 2026-11-22
+
+### Fixed
+
+- **Updates: *Update now* no longer does nothing.** The 2.29.4 helper rewrite
+  dropped its state paths, so the helper exited before writing any result and the
+  card kept offering the same version; the paths are restored and a guard now
+  fails the build when a helper variable is undefined (4d450a2).
+
 ## [2.29.7] - 2026-11-22
 
 ### Added
@@ -27,10 +36,6 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ### Fixed
 
-- **Updates: *Update now* no longer does nothing.** The 2.29.4 helper rewrite
-  dropped its state paths, so the helper exited before writing any result and the
-  card kept offering the same version; the paths are restored and a guard now
-  fails the build when a helper variable is undefined.
 - **Progress panel: × stays dismissed.** A progress tick re-opened the panel every
   250 ms and an empty queue showed a blank panel — both are fixed (b350d62).
 - **Videos: offline downloads resume** after a reload, a locked screen or a dropped
