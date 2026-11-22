@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Sticky Notes — EthOS</title>
+    <meta name="description" content="Quick notes and checklist tasks from your EthOS NAS.">
+    <meta name="theme-color" content="#b45309" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0a0f1e" media="(prefers-color-scheme: dark)">
+    <link rel="manifest" href="/manifest-notes.webmanifest">
+    <link rel="apple-touch-icon" href="/static/icons/notes-apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Notes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="mobile-web-app-capable" content="yes">
+    <link rel="stylesheet" href="/static/css/tokens.css">
+    <link rel="stylesheet" href="/static/css/notes.css">
+    <script>
+        (function () {
+            try {
+                var theme = localStorage.getItem('ethos-theme');
+                document.documentElement.className = theme === 'dark' ? 'dark' : 'light';
+            } catch (_) {
+                document.documentElement.className = 'light';
+            }
+        })();
+    </script>
+</head>
+<body>
+    <div id="toastContainer" class="toast-container" aria-live="polite" role="status"></div>
+
+    <div class="notes-app">
+        <header class="notes-top">
+            <div class="notes-brand">
+                <span class="notes-brand-icon" aria-hidden="true">🗒️</span>
+                <div><strong>Sticky Notes</strong><small>EthOS NAS</small></div>
+            </div>
+            <div class="notes-top-actions">
+                <span class="notes-pill" id="notes-pill" role="status">Connecting…</span>
+                <button class="notes-icon-btn" id="notes-menu-btn" type="button"
+                        aria-expanded="false" aria-controls="notes-menu" title="Menu">⋯</button>
+            </div>
+        </header>
+
+        <div class="notes-menu" id="notes-menu" hidden>
+            <button type="button" id="notes-install" hidden>Install app</button>
+            <button type="button" id="notes-push">Enable notifications</button>
+            <button type="button" id="notes-theme">Toggle theme</button>
+            <a href="/" target="_blank" rel="noopener">Open desktop</a>
+            <button type="button" id="notes-logout">Sign out</button>
+        </div>
+
+        <main class="notes-main">
+            <section id="notes-login" class="notes-card notes-login" hidden>
+                <h1>Sign in</h1>
+                <p class="notes-muted">Use your EthOS account to load your notes. The session is shared with the desktop on this browser.</p>
+                <form id="notes-login-form" autocomplete="on">
+                    <label>Username
+                        <input name="username" autocomplete="username" required autocapitalize="none" spellcheck="false">
+                    </label>
+                    <label>Password
+                        <input name="password" type="password" autocomplete="current-password" required>
+                    </label>
+                    <button type="submit" class="notes-primary">Sign in</button>
+                    <p class="notes-error" id="notes-login-error" role="alert"></p>
+                </form>
+                <p class="notes-hint">First run? Finish the setup wizard on the desktop first.</p>
+            </section>
+
+            <section id="notes-main" hidden>
+                <div class="notes-offline" id="notes-offline" hidden role="status">
+                    Offline — new changes are queued and will sync automatically.
+                </div>
+
+                <section class="notes-card notes-composer">
+                    <div class="notes-modes" role="group" aria-label="Quick add type">
+                        <button type="button" data-mode="note" class="is-active">Note</button>
+                        <button type="button" data-mode="checklist">Task</button>
+                    </div>
+                    <div class="notes-add-row">
+                        <input id="notes-quick-input" type="text" maxlength="2000"
+                               placeholder="Write a note…" autocomplete="off" enterkeyhint="done">
+                        <button type="button" id="notes-add" class="notes-primary">Add</button>
+                    </div>
+                    <p class="notes-hint" id="notes-status" role="status" aria-live="polite"></p>
+                </section>
+
+                <section class="notes-toolbar">
+                    <input id="notes-search" type="search" placeholder="Search notes and tasks…"
+                           aria-label="Search notes and tasks" autocomplete="off">
+                    <div class="notes-chips" role="group" aria-label="Filter">
+                        <button type="button" data-filter="all" class="is-active">All</button>
+                        <button type="button" data-filter="notes">Notes</button>
+                        <button type="button" data-filter="tasks">Tasks</button>
+                        <button type="button" data-filter="archive">Archive</button>
+                    </div>
+                </section>
+
+                <section id="notes-list" class="notes-list" aria-live="polite"></section>
+            </section>
+        </main>
+    </div>
+
+    <noscript>Sticky Notes needs JavaScript. Open the desktop at / to manage your notes.</noscript>
+    <script type="module" src="/static/notes/notes.js"></script>
+</body>
+</html>

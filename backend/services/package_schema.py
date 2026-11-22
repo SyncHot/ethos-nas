@@ -204,11 +204,25 @@ def _validate_ui(value: Any) -> Optional[dict]:
     if scheme not in ("http", "https"):
         raise PackageError("ui.scheme must be http or https", 400)
     entry = None
+    ribbon = None
     if mode == "native":
         entry = safe_relative_path(value.get("entry"), "ui.entry")
         if not entry.endswith((".js", ".mjs")):
             raise PackageError("ui.entry must be a .js or .mjs file", 400)
-    return {"mode": mode, "entry": entry, "port": port or None, "path": path, "scheme": scheme}
+        if value.get("ribbon") is not None:
+            if not isinstance(value.get("ribbon"), dict):
+                raise PackageError("ui.ribbon must be an object", 400)
+            ribbon_entry = safe_relative_path(value["ribbon"].get("entry"), "ui.ribbon.entry")
+            if not ribbon_entry.endswith((".js", ".mjs")):
+                raise PackageError("ui.ribbon.entry must be a .js or .mjs file", 400)
+            title = str(value["ribbon"].get("title") or "").strip()
+            if len(title) > 80:
+                raise PackageError("ui.ribbon.title is limited to 80 characters", 400)
+            ribbon = {"entry": ribbon_entry, "title": title or None}
+    elif value.get("ribbon") is not None:
+        raise PackageError("ui.ribbon requires ui.mode 'native'", 400)
+    return {"mode": mode, "entry": entry, "port": port or None, "path": path, "scheme": scheme,
+            "ribbon": ribbon}
 
 
 def _validate_requirement(value: Any, field: str) -> str:
@@ -414,6 +428,8 @@ def validate_manifest(manifest: Any, *, allow_legacy: bool = False) -> dict:
         shipped = {item["path"] for item in normalized["files"]}
         if ui.get("entry") not in shipped:
             raise PackageError("ui.entry must be listed in files[]", 400)
+        if ui.get("ribbon") and ui["ribbon"].get("entry") not in shipped:
+            raise PackageError("ui.ribbon.entry must be listed in files[]", 400)
     if runtime == "venv":
         # The core process reaches a venv package over loopback only. The port is
         # declared under `python` (an engine package has no UI at all); `ui` is

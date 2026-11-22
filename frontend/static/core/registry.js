@@ -263,14 +263,18 @@ function _gridGeometry() {
     const el = document.getElementById('desktopIcons');
     const cs = getComputedStyle(document.documentElement);
     const barH = parseFloat(cs.getPropertyValue('--topbar-h')) || 42;
+    // A package ribbon on the right edge reserves a gutter so the rightmost
+    // icon column moves inward instead of being covered.
+    const gutter = Math.max(0, parseFloat(cs.getPropertyValue('--desktop-right-gutter')) || 0);
     // While the desktop is hidden (login overlay) clientWidth is 0 — fall back
     // to the viewport so the very first render still gets a sane grid.
     const vw = (el && el.clientWidth) || window.innerWidth;
     const vh = (el && el.clientHeight) || window.innerHeight;
     const leftPad = PAD_LEFT, topPad = barH + PAD_TOP_EXTRA;
-    const cols = Math.max(1, Math.floor((vw - leftPad - PAD_RIGHT + CELL_GAP) / STEP_X));
+    const rightPad = PAD_RIGHT + gutter;
+    const cols = Math.max(1, Math.floor((vw - leftPad - rightPad + CELL_GAP) / STEP_X));
     const rows = Math.max(1, Math.floor((vh - topPad - PAD_BOTTOM + CELL_GAP) / STEP_Y));
-    return { leftPad, topPad, cols, rows };
+    return { leftPad, topPad, rightPad, cols, rows };
 }
 
 /** Resolve a rendered icon's data-testid to its layout id. */

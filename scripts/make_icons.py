@@ -2,8 +2,13 @@
 """Generate the PWA icons for EthOS (TODO.md P3-14).
 
 No Pillow in the venv, so this writes PNGs by hand: a rounded square with the
-theme gradient and a simple "NAS monitor" glyph, exported at the sizes a
-manifest / iOS home screen wants. Run after changing the design:
+theme gradient and a simple glyph, exported at the sizes a manifest / iOS home
+screen wants. Two sets share the generator:
+
+* the desktop shell (`icon-*.png`, `apple-touch-icon.png`) — NAS monitor;
+* the Sticky Notes PWA (`notes-*.png`) — note sheet with a green check.
+
+Run after changing the design:
 
     .venv/bin/python scripts/make_icons.py
 """
@@ -18,6 +23,14 @@ OUT = Path(__file__).resolve().parent.parent / "frontend" / "static" / "icons"
 TOP = (37, 99, 235)     # blue-600
 BOTTOM = (15, 23, 42)   # slate-900
 GLYPH = (219, 234, 254)  # blue-100
+
+# Sticky Notes palette (matches frontend/manifest-notes.webmanifest).
+NOTE_TOP = (245, 158, 11)     # amber-500
+NOTE_BOTTOM = (180, 83, 9)    # amber-700
+NOTE_PAPER = (255, 247, 237)  # orange-50
+NOTE_FOLD = (254, 215, 170)   # orange-200
+NOTE_LINE = (146, 64, 14)     # amber-800
+NOTE_CHECK = (22, 163, 74)    # green-600
 
 
 def _blend(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
@@ -73,6 +86,78 @@ def render(size: int, *, rounded_ratio: float = 0.22, padding_ratio: float = 0.0
     return bytes(rows)
 
 
+def _rounded_rect(x: float, y: float, x0: float, y0: float,
+                  x1: float, y1: float, radius: float) -> bool:
+    """Inside an axis-aligned rounded rectangle."""
+    if not (x0 <= x <= x1 and y0 <= y <= y1):
+        return False
+    cx = min(max(x, x0 + radius), x1 - radius)
+    cy = min(max(y, y0 + radius), y1 - radius)
+    return (x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2
+
+
+def _segment_distance(px: float, py: float, x1: float, y1: float,
+                      x2: float, y2: float) -> float:
+    """Shortest distance from a point to a line segment."""
+    dx, dy = x2 - x1, y2 - y1
+    length = dx * dx + dy * dy
+    if length <= 0:
+        return ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
+    t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / length))
+    return ((px - (x1 + t * dx)) ** 2 + (py - (y1 + t * dy)) ** 2) ** 0.5
+
+
+def render_note(size: int, *, rounded_ratio: float = 0.22, padding_ratio: float = 0.0) -> bytes:
+    """Return RGBA pixel rows for the Sticky Notes icon."""
+    radius = size * rounded_ratio
+    inset = size * padding_ratio
+    inner = size - 2 * inset
+    paper_x0 = inset + inner * 0.24
+    paper_x1 = inset + inner * 0.76
+    paper_y0 = inset + inner * 0.15
+    paper_y1 = inset + inner * 0.85
+    paper_w = paper_x1 - paper_x0
+    paper_h = paper_y1 - paper_y0
+    paper_radius = inner * 0.035
+    fold = inner * 0.16
+    line_h = inner * 0.052
+    line_x0 = paper_x0 + paper_w * 0.16
+    line_x1 = paper_x1 - paper_w * 0.16
+    line1_y = paper_y0 + paper_h * 0.27
+    line2_y = paper_y0 + paper_h * 0.40
+    check_w = inner * 0.075
+    check_a = (paper_x0 + paper_w * 0.22, paper_y0 + paper_h * 0.70)
+    check_b = (paper_x0 + paper_w * 0.42, paper_y0 + paper_h * 0.84)
+    check_c = (paper_x0 + paper_w * 0.80, paper_y0 + paper_h * 0.58)
+    rows = bytearray()
+    for y in range(size):
+        rows.append(0)  # PNG filter type 0
+        for x in range(size):
+            px, py = x + 0.5, y + 0.5
+            if not _rounded(px, py, size, radius):
+                rows.extend((0, 0, 0, 0))
+                continue
+            t = y / max(1, size - 1)
+            r, g, b = _blend(NOTE_TOP, NOTE_BOTTOM, t)
+            if _rounded_rect(px, py, paper_x0, paper_y0, paper_x1, paper_y1, paper_radius):
+                r, g, b = NOTE_PAPER
+                # Folded top-right corner.
+                if px >= paper_x1 - fold and py <= paper_y0 + fold:
+                    if (px - (paper_x1 - fold)) + (py - paper_y0) <= fold:
+                        r, g, b = NOTE_FOLD
+                # Two ruled lines.
+                if line_x0 <= px <= line_x1 and (
+                        line1_y <= py < line1_y + line_h
+                        or line2_y <= py < line2_y + line_h):
+                    r, g, b = NOTE_LINE
+                # Green check mark.
+                if (_segment_distance(px, py, *check_a, *check_b) <= check_w / 2
+                        or _segment_distance(px, py, *check_b, *check_c) <= check_w / 2):
+                    r, g, b = NOTE_CHECK
+            rows.extend((r, g, b, 255))
+    return bytes(rows)
+
+
 def write_png(path: Path, size: int, pixels: bytes) -> None:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (struct.pack(">I", len(data)) + kind + data
@@ -98,6 +183,16 @@ def main() -> None:
     # Maskable: keep the glyph inside the 80 % safe zone.
     write_png(OUT / "icon-maskable-512.png", 512,
               render(512, rounded_ratio=0.0, padding_ratio=0.10))
+
+    print("Writing Sticky Notes PWA icons to", OUT)
+    for size in (192, 512):
+        write_png(OUT / f"notes-{size}.png", size, render_note(size))
+    # iOS home screen: no transparency, corners are added by the OS.
+    write_png(OUT / "notes-apple-touch-icon.png", 180,
+              render_note(180, rounded_ratio=0.0))
+    # Maskable: keep the note inside the 80 % safe zone.
+    write_png(OUT / "notes-maskable-512.png", 512,
+              render_note(512, rounded_ratio=0.0, padding_ratio=0.10))
 
 
 if __name__ == "__main__":

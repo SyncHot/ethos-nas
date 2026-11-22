@@ -119,7 +119,9 @@ def _check_html_and_sw(errors: list[str]) -> None:
             ref = match.group(1)
             if ref.startswith(("http://", "https://", "//")):
                 continue
-            if not (base / ref).resolve().exists():
+            # Root-relative URLs in index.html/sw.js ("/static/x.js") are
+            # relative to the frontend directory on disk, not to "/".
+            if not (base / ref.lstrip("/")).resolve().exists():
                 errors.append(f"{doc.relative_to(ROOT)}: references missing '{ref}'")
 
 

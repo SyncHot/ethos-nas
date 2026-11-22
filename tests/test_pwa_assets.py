@@ -73,6 +73,57 @@ def main() -> int:
     check("shell sets a theme colour", 'name="theme-color"' in html)
     check("shell sets an apple-touch-icon", 'rel="apple-touch-icon"' in html)
 
+    # ── Sticky Notes PWA (`/notes`) ─────────────────────────────────────────
+    notes_manifest_path = FRONTEND / "manifest-notes.webmanifest"
+    check("notes manifest exists", notes_manifest_path.is_file())
+    try:
+        notes_manifest = json.loads(notes_manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        check("notes manifest is valid JSON", False, str(exc))
+        notes_manifest = {}
+    for key in ("name", "short_name", "id", "start_url", "scope", "display",
+                "theme_color", "background_color"):
+        check(f"notes manifest has {key}", bool(notes_manifest.get(key)), str(notes_manifest.get(key)))
+    check("notes manifest is scoped to /notes",
+          notes_manifest.get("id") == "/notes"
+          and notes_manifest.get("start_url") == "/notes"
+          and notes_manifest.get("scope") == "/notes", str(notes_manifest.get("scope")))
+    check("notes manifest ships New note / New task shortcuts",
+          {s.get("url") for s in notes_manifest.get("shortcuts") or []}
+          >= {"/notes?new=note", "/notes?new=checklist"})
+    target = notes_manifest.get("share_target") or {}
+    check("notes manifest is a GET share target",
+          target.get("action") == "/notes" and target.get("method") == "GET", str(target))
+
+    notes_icons = notes_manifest.get("icons") or []
+    notes_sizes = {icon.get("sizes") for icon in notes_icons}
+    check("notes manifest ships 192 and 512 icons",
+          {"192x192", "512x512"} <= notes_sizes, str(notes_sizes))
+    check("notes manifest ships a maskable icon",
+          any(i.get("purpose") == "maskable" for i in notes_icons), str(notes_icons))
+    for icon in notes_icons:
+        src = icon.get("src") or ""
+        dims = png_size(FRONTEND / src.lstrip("/"))
+        check(f"notes icon {src} is a PNG of the declared size",
+              dims is not None and f"{dims[0]}x{dims[1]}" == icon.get("sizes"),
+              f"{dims} vs {icon.get('sizes')}")
+    notes_touch = FRONTEND / "static" / "icons" / "notes-apple-touch-icon.png"
+    check("notes apple-touch-icon is 180×180", png_size(notes_touch) == (180, 180),
+          str(png_size(notes_touch)))
+
+    notes_html = (FRONTEND / "notes.html").read_text()
+    check("notes page links its manifest",
+          'rel="manifest" href="/manifest-notes.webmanifest"' in notes_html)
+    check("notes page loads the shared tokens + notes styles",
+          "/static/css/tokens.css" in notes_html and "/static/css/notes.css" in notes_html)
+    check("notes page loads its module", "/static/notes/notes.js" in notes_html)
+
+    main_py = (ROOT / "backend" / "main.py").read_text()
+    check("core serves the notes shell", "serve_notes" in main_py and "notes.html" in main_py)
+    check("notes shell + manifest are public paths",
+          '"/notes",' in main_py and '"/notes/",' in main_py
+          and '"/manifest-notes.webmanifest",' in main_py)
+
     sw_path = FRONTEND / "sw.js"
     check("service worker exists", sw_path.is_file())
     sw = sw_path.read_text() if sw_path.is_file() else ""
@@ -82,6 +133,12 @@ def main() -> int:
     check("worker is network-first (fetches before cache lookup)",
           sw.index("await fetch(request)") < sw.index("caches.match(request"), "order")
     check("worker prunes old caches on activate", "caches.delete" in sw)
+    check("worker precaches the notes shell",
+          "'/notes'," in sw and "/static/css/notes.css" in sw and "/static/notes/notes.js" in sw)
+    check("worker handles Web Push", "addEventListener('push'" in sw)
+    check("worker handles notification clicks", "addEventListener('notificationclick'" in sw)
+    check("worker routes notification clicks to /notes",
+          "startsWith('/notes')" in sw and "openWindow(target)" in sw)
 
     app = (FRONTEND / "static" / "app.js").read_text()
     check("bootstrap registers the worker", "serviceWorker.register('/sw.js')" in app)

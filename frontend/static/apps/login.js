@@ -91,6 +91,8 @@ export async function submitLogin(username, password) {
             // Overlay login does not reload the page — start the notification
             // badge poll now that a token exists (no-op if already running).
             if (window.startNotificationPolling) window.startNotificationPolling();
+            // Mount a pinned package's right-edge ribbon, if one is installed.
+            if (window.initPackageRibbons) window.initPackageRibbons();
             hideLogin();
             showDesktop();
             _hydratePerUserDesktop();

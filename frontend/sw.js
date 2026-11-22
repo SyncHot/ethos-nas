@@ -18,12 +18,25 @@
  * activate.
  */
 
-const CACHE_VERSION = 'ethos-shell-v4';
+const CACHE_VERSION = 'ethos-shell-v5';
 const SHELL_URLS = [
     '/',
     '/manifest.webmanifest',
     '/static/icons/icon-192.png',
     '/static/icons/icon-512.png',
+    // Sticky Notes PWA: the standalone capture page and its shell. The module
+    // graph below `/static/notes/` is cached on first visit by the fetch
+    // handler, so an installed PWA opens offline after one online load.
+    '/notes',
+    '/notes/',
+    '/manifest-notes.webmanifest',
+    '/static/css/tokens.css',
+    '/static/css/notes.css',
+    '/static/notes/notes.js',
+    '/static/icons/notes-192.png',
+    '/static/icons/notes-512.png',
+    '/static/icons/notes-maskable-512.png',
+    '/static/icons/notes-apple-touch-icon.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -73,10 +86,61 @@ self.addEventListener('fetch', (event) => {
             const cached = await caches.match(request, { ignoreSearch: false });
             if (cached) return cached;
             if (request.mode === 'navigate') {
-                const shell = await caches.match('/');
+                // The notes PWA keeps its own shell when the NAS is unreachable;
+                // every other navigation falls back to the desktop shell.
+                const fallback = (url.pathname === '/notes' || url.pathname === '/notes/')
+                    ? url.pathname
+                    : '/';
+                const shell = await caches.match(fallback, { ignoreSearch: true });
                 if (shell) return shell;
             }
             throw err;
         }
+    })());
+});
+
+// ── Web Push (Sticky Notes reminders) ───────────────────────────────────────
+// The package service sends `{title, body, tag, url, note_id, …}`. Show one
+// notification per reminder tag (a re-fired reminder replaces the old card) and
+// send the click to the notes PWA, never to the desktop shell.
+self.addEventListener('push', (event) => {
+    let payload = {};
+    try {
+        payload = event.data ? event.data.json() : {};
+    } catch {
+        try { payload = { body: event.data ? event.data.text() : '' }; } catch { payload = {}; }
+    }
+    const title = String(payload.title || 'Sticky Notes');
+    const body = String(payload.body || 'Reminder');
+    const rawUrl = typeof payload.url === 'string' ? payload.url : '/notes';
+    const url = rawUrl.startsWith('/') ? rawUrl : '/notes';
+    const tag = String(payload.tag || 'sticky-notes');
+    event.waitUntil(self.registration.showNotification(title, {
+        body,
+        tag,
+        renotify: true,
+        icon: '/static/icons/notes-192.png',
+        badge: '/static/icons/notes-192.png',
+        data: { url, noteId: payload.note_id || null },
+    }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    const raw = event.notification.data && event.notification.data.url
+        ? String(event.notification.data.url)
+        : '/notes';
+    const target = new URL(raw.startsWith('/') ? raw : '/notes', self.location.origin).href;
+    event.waitUntil((async () => {
+        const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        const notesClient = windows.find((client) => {
+            try { return new URL(client.url).pathname.startsWith('/notes'); } catch { return false; }
+        });
+        if (notesClient) {
+            await notesClient.focus();
+            if ('navigate' in notesClient) await notesClient.navigate(target).catch(() => {});
+            return;
+        }
+        if (self.clients.openWindow) await self.clients.openWindow(target);
     })());
 });

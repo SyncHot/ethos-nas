@@ -1,0 +1,56 @@
+/* EthOS base theme tokens — shared by the desktop shell and standalone pages.
+ *
+ * Light is the default. The theme bootstrap sets `html.light` / `html.dark`
+ * from localStorage (`ethos-theme`). Keep this file free of layout rules so a
+ * standalone page (for example /notes) can load it without the desktop chrome.
+ */
+
+:root {
+    --bg-primary: #f5f6f7;          /* app background (light gray) */
+    --bg: #ffffff;                  /* per-app window background (apps use var(--bg, …)) */
+    --surface-0: #ffffff;           /* cards / panels */
+    --surface-1: #f4f5f7;           /* subtle fills, table headers */
+    --surface-2: #e8eaed;           /* borders-ish fills */
+    --accent: #2563eb;              /* accent blue — 5.17:1 with white text (AA) */
+    --accent-hover: #2b5ce0;
+    --accent-glow: rgba(60, 110, 245, 0.18);
+    /* AA-checked against #ffffff / #f1f5f9 / #e2e8f0 (TODO.md P3-11):
+       text-2 ≥ 6.1:1, text-3 ≥ 4.8:1 */
+    --text-1: #1f2430;              /* primary text */
+    --text-2: #4b5563;              /* secondary text */
+    --text-3: #5b6472;              /* muted text (still ≥4.5:1) */
+    --border: #e3e5e8;              /* hairlines */
+    --overlay: rgba(15,23,42,0.4);  /* dim scrim (previews/backdrops) */
+    --topbar-bg: #ffffff;
+    --topbar-h: 42px;
+    --taskbar-h: 52px;
+    --sidebar-w: 216px;
+}
+
+:root.dark {
+    --bg-primary: #0a0f1e;
+    --bg: #0f172a;
+    --surface-0: #111827;
+    --surface-1: #1a2332;
+    --surface-2: #243044;
+    --accent: #2563eb;              /* 5.2:1 with white text (AA) */
+    --accent-hover: #4d96f0;
+    --accent-glow: rgba(53, 132, 228, 0.25);
+    --text-1: #e2e8f0;
+    --text-2: #a5b3c4;
+    --text-3: #8b98a9;              /* ≥5.3:1 on --surface-2 (was 3.3:1) */
+    --border: rgba(255,255,255,0.08);
+    --overlay: rgba(15,23,42,0.6);
+    --topbar-bg: rgba(17,24,39,0.92);
+}
+
+:root.light {
+    --bg-primary: #eef2f7;
+    --bg: #ffffff;
+    --surface-0: #ffffff;
+    --surface-1: #f1f5f9;
+    --surface-2: #e2e8f0;
+    --accent: #2563eb;
+    --accent-glow: rgba(37, 99, 235, 0.15);
+    --topbar-bg: rgba(255,255,255,0.85);
+}

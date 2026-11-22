@@ -1,5 +1,6 @@
 // EthOS NAS — Bootstrap (ES modules entry point)
 import { renderDesktopIcons, refreshDesktopIcons, setPkgIconData, initDesktopCtxMenu, initDesktopDropZone, initDesktopReorder, _showDesktopCtx as _showDc, isAppVisible } from './core/registry.js';
+import { initPackageRibbons, refreshPackageRibbons } from './core/package-ribbon.js';
 import { loadRemoteLayout, ensureTrashPinned } from './core/desktop-layout.js';
 import { loadRemoteWallpaper } from './core/wallpaper.js';
 import { initDesktopTrash, openTrashFromDesktop } from './core/desktop-trash.js';
@@ -153,17 +154,21 @@ async function _loadDynamicIcons() {
         setPkgIconData(icons); // caches + re-renders desktop in pin order
         setPackageIdentity(icons); // window headers/taskbar use the same name + icon
         refreshDrawerPackages(); // keep the App Drawer in sync with Packages
+        refreshPackageRibbons().catch(() => {}); // install/update/uninstall may change the ribbon
     } catch { /* best-effort: dynamic icons are optional */ }
 }
 _loadDynamicIcons().catch(() => {});
 // Packages uses this after install/update/uninstall to refresh desktop icons.
 window.refreshPackageIcons = _loadDynamicIcons;
+window.initPackageRibbons = initPackageRibbons;
+window.refreshPackageRibbons = refreshPackageRibbons;
 
 // Initialize app drawer (taskbar "Show Applications" button + fullscreen grid)
 initAppDrawer();
 renderTaskbar(); // ensure the Show Applications button exists before any window opens
 startNotificationPolling(); // opens /ws/notifications + 60 s safety-net badge poll
 initDesktopTrash(); // Trash shortcut badge + drop-to-trash target
+initPackageRibbons(); // right-edge ribbon for a pinned native package (if any)
 
 // ── Generic package window renderer (for dynamic pkg-* apps from desktop icons) ─
 async function _renderNativePackage(pkg, container) {

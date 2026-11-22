@@ -1,0 +1,27 @@
+/* EthOS core — right-edge package ribbon host.
+ *
+ * A package that declares `ui.ribbon` renders inside this fixed layer. It sits
+ * above app windows (z 502–800) and the taskbar (900), below the App Drawer
+ * (960), the task-progress panel (9989), the Notification Center sheet (9990)
+ * and toasts (9999). The host is intentionally pointer-events: none so the
+ * desktop stays usable; the package module re-enables pointer events on its
+ * own tab and panel.
+ *
+ * The desktop icon grid reads --desktop-right-gutter (see core/registry.js), so
+ * an enabled ribbon shifts the rightmost icon column instead of covering it.
+ */
+
+#ethos-ribbon-host {
+    position: fixed;
+    top: var(--topbar-h);
+    right: 0;
+    bottom: var(--taskbar-h);
+    width: 0;
+    z-index: 950;
+    pointer-events: none;
+}
+
+@media (max-width: 900px) {
+    /* Phones use the installable notes PWA at /notes instead. */
+    #ethos-ribbon-host { display: none; }
+}
