@@ -60,6 +60,23 @@ DEFAULT_CONFIG = {
 }
 
 
+class MusicLibraryState(BaseModel):
+    """Per-user library document returned by `GET /api/music/state`.
+
+    Both clients read this shape (the `/music` PWA and the old Android app).
+    Track dicts stay free-form on purpose — the normaliser in `_norm_track`
+    evolves them without a migration — but the five top-level sections are a
+    fixed contract, and unknown extra sections are preserved.
+    """
+
+    model_config = {"extra": "allow"}
+    liked: List[dict] = Field(default_factory=list)
+    playlists: List[dict] = Field(default_factory=list)
+    history: List[dict] = Field(default_factory=list)
+    podcasts: dict = Field(default_factory=dict)
+    radio: dict = Field(default_factory=dict)
+
+
 # ── Request models (TODO.md P1-09) ──────────────────────────────────────────
 # Both clients (the `/music` PWA and the old Android app) send the wrapped
 # `{"track": {...}}` form; the flat form is still accepted by `_norm_track`.
@@ -1340,7 +1357,7 @@ def _norm_podcast(p: Any) -> Optional[dict]:
     }
 
 
-@router.get("/state")
+@router.get("/state", response_model=MusicLibraryState)
 async def state_get(request: Request):
     """Full library state for the current user (web + Android share this).
 
