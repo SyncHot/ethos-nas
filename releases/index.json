@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T06:39:14+00:00",
+  "generated_at": "2026-11-22T06:47:45+00:00",
   "latest": {
-    "version": "2.8.0",
-    "git_sha": "87d4d5e",
-    "git_sha_full": "87d4d5e97f45a48d1a855172d6db26f7fa917e06",
-    "build": 83,
-    "released_at": "2026-11-22T06:39:14+00:00",
-    "notes": "System: Ubuntu package updates — check, install from Settings → System, reboot prompt"
+    "version": "2.9.0",
+    "git_sha": "c811b30",
+    "git_sha_full": "c811b306653b1b7b03fcbcf53630ae05b51f295e",
+    "build": 86,
+    "released_at": "2026-11-22T06:47:45+00:00",
+    "notes": "Downloads: torrent and hoster-link provider slots, including tb7.pl multihoster support"
   },
   "releases": [
+    {
+      "version": "2.9.0",
+      "git_sha": "c811b30",
+      "git_sha_full": "c811b306653b1b7b03fcbcf53630ae05b51f295e",
+      "build": 86,
+      "released_at": "2026-11-22T06:47:45+00:00",
+      "notes": "Downloads: torrent and hoster-link provider slots, including tb7.pl multihoster support"
+    },
     {
       "version": "2.8.0",
       "git_sha": "87d4d5e",
@@ -201,14 +209,6 @@
       "build": 29,
       "released_at": "2026-11-17T18:19:53+00:00",
       "notes": "Download Manager: multi-part archives (part01.rar, r00, zip.001) group into one JDownloader-style package row with aggregate status and package Resume/Pause/Delete."
-    },
-    {
-      "version": "2.3.5",
-      "git_sha": "3c09467",
-      "git_sha_full": "3c094674df75fb1dd858c7d60178e8592f322e3c",
-      "build": 27,
-      "released_at": "2026-11-17T18:11:13+00:00",
-      "notes": "Download Manager: archive-tools host requirement installs bsdtar (7z/rar extraction) through the root helper when available; optional so installs never fail."
     }
   ]
 }
