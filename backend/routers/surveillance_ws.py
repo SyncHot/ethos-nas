@@ -31,7 +31,7 @@ def _status_frames(user: dict) -> list[dict]:
     for cam in cs.list_cameras(user):
         status = dict(cam.get("status") or {})
         status["camera_id"] = cam["id"]
-        status["name"] = cam.get("name")
+        status["name"] = cs.mask_text(cam.get("name") or "")
         frames.append(status)
     return frames
 

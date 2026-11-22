@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.25.1] - 2026-11-22
+
+### Security
+
+- **Camera stream passwords no longer reach disk logs.** ffmpeg echoes the input
+  URL (including `user:password@`) on connection errors; stderr is now drained
+  through a redacting writer and the per-run log starts empty. A camera named
+  after its URL is masked in the UI, events and notifications.
+
 ## [2.25.0] - 2026-11-22
 
 ### Added

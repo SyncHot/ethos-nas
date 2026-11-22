@@ -158,6 +158,30 @@ def _stderr_tail(path: Path, limit: int = 300) -> str:
     return camera_service.mask_text(lines[-1][:limit]) if lines else ""
 
 
+def _drain_stderr(stream, path: Path, proc: "_Proc") -> None:
+    """Copy ffmpeg stderr into the per-run log with credentials masked.
+
+    ffmpeg prints the full input URL (including user:password) on connection
+    errors, so the file must never receive stderr verbatim.
+    """
+    try:
+        with open(path, "ab") as fh:
+            for raw in iter(stream.readline, b""):
+                line = camera_service.mask_text(raw.decode("utf-8", "replace")).rstrip()
+                if not line:
+                    continue
+                proc.last_line = line[:400]
+                fh.write((line + "\n").encode("utf-8"))
+                fh.flush()
+    except (OSError, ValueError):
+        pass  # the process went away; the exit path reports the failure
+    finally:
+        try:
+            stream.close()
+        except OSError:
+            pass  # already closed by the process teardown
+
+
 # ── Motion detection ────────────────────────────────────────────────────────
 
 class MotionDetector:
@@ -226,6 +250,7 @@ class _Proc:
     log_path: Path
     started_at: float
     detail: dict = field(default_factory=dict)
+    last_line: str = ""
 
 
 class CameraPipeline(threading.Thread):
@@ -275,8 +300,13 @@ class CameraPipeline(threading.Thread):
 
     # ── supervisor ─────────────────────────────────────────────────────────
 
+    def _label(self) -> str:
+        """Camera name for logs/notifications; masks an RTSP URL used as a name."""
+        name = str(self.cam.get("name") or "")
+        return camera_service.mask_text(name) if name else self.cam_id
+
     def run(self) -> None:
-        logger.info("Camera pipeline started: %s (%s)", self.cam.get("name"), self.cam_id)
+        logger.info("Camera pipeline started: %s (%s)", self._label(), self.cam_id)
         if not self._codec:
             probe = _probe(_live_source(self.cam))
             self._codec = probe.get("codec", "")
@@ -309,7 +339,7 @@ class CameraPipeline(threading.Thread):
                     except OSError:
                         pass  # already gone
         self._recording = False
-        logger.info("Camera pipeline stopped: %s (%s)", self.cam.get("name"), self.cam_id)
+        logger.info("Camera pipeline stopped: %s (%s)", self._label(), self.cam_id)
 
     # ── process management ─────────────────────────────────────────────────
 
@@ -321,17 +351,19 @@ class CameraPipeline(threading.Thread):
         url = _live_source(self.cam)
         out_dir = camera_storage.camera_live_dir(self.cam_id)
         log_path = out_dir / "ffmpeg.log"
-        self._truncate(log_path)
+        self._reset_log(log_path)
         cmd = _live_cmd(url, self._codec, out_dir)
         try:
             process = subprocess.Popen(
                 limit_child(cmd, mem_mb=1024),
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=open(log_path, "ab"))
+                stderr=subprocess.PIPE)
         except OSError as exc:
             self._fail("live", f"{type(exc).__name__}: {exc}")
             return
         self._live = _Proc("live", process, log_path, time.time())
+        threading.Thread(target=_drain_stderr, args=(process.stderr, log_path, self._live),
+                         name=f"stderr-live-{self.cam_id}", daemon=True).start()
         self._frame_reader = threading.Thread(
             target=self._read_frames, args=(process.stdout,),
             name=f"frames-{self.cam_id}", daemon=True)
@@ -361,16 +393,19 @@ class CameraPipeline(threading.Thread):
             self._fail("archive", f"Cannot create recordings folder: {exc}")
             return
         log_path = out_dir / "ffmpeg.log"
+        self._reset_log(log_path)
         cmd = _archive_cmd(camera_service.stream_urls(self.cam, "main"), self._codec,
                            out_dir, segment_s)
         try:
             process = subprocess.Popen(
                 limit_child(cmd, mem_mb=768), stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=open(log_path, "ab"))
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         except OSError as exc:
             self._fail("archive", f"{type(exc).__name__}: {exc}")
             return
         self._archive = _Proc("archive", process, log_path, time.time(), {"day": day})
+        threading.Thread(target=_drain_stderr, args=(process.stderr, log_path, self._archive),
+                         name=f"stderr-archive-{self.cam_id}", daemon=True).start()
         self._archive_day = day
         self._fails["archive"] = 0
         self._next_try["archive"] = 0.0
@@ -399,7 +434,7 @@ class CameraPipeline(threading.Thread):
         if not proc:
             return
         code = proc.process.returncode
-        tail = _stderr_tail(proc.log_path)
+        tail = proc.last_line or _stderr_tail(proc.log_path)
         setattr(self, f"_{name}", None)
         if name == "archive":
             self._recording = False
@@ -413,14 +448,14 @@ class CameraPipeline(threading.Thread):
         self._next_try[name] = time.time() + RESTART_BACKOFF[attempt]
         self._restarts += 1
         self._last_error = f"{name}: {detail}"
-        logger.warning("Camera %s (%s) %s failed (%d): %s", self.cam.get("name"), self.cam_id,
+        logger.warning("Camera %s (%s) %s failed (%d): %s", self._label(), self.cam_id,
                        name, self._fails[name], detail)
         if self._fails[name] == 3:
             try:
                 from backend.services.notifications_service import emit_event
 
                 if camera_settings.load().get("notify_offline", True):
-                    emit_event("error", f"Camera offline — {self.cam.get('name')}",
+                    emit_event("error", f"Camera offline — {self._label()}",
                                detail, source="surveillance",
                                action={"label": "Open Cameras", "appId": "surveillance"},
                                dedupe_key=f"camera:{self.cam_id}:offline",
@@ -429,10 +464,10 @@ class CameraPipeline(threading.Thread):
                 logger.debug("Camera offline notification failed", exc_info=True)
 
     @staticmethod
-    def _truncate(path: Path) -> None:
+    def _reset_log(path: Path) -> None:
+        """Start every run with an empty log (no stale credentials on disk)."""
         try:
-            if path.exists() and path.stat().st_size > 256 * 1024:
-                path.write_text("", encoding="utf-8")
+            path.write_text("", encoding="utf-8")
         except OSError:
             pass  # a log we cannot truncate is not worth failing over
 

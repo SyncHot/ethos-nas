@@ -95,6 +95,11 @@ one ffmpeg per stream (CameraPipeline supervisor, restart 5/15/60 s)
 - Credentials never leave the backend: API payloads use `url_masked`, the
   password is AES-256-GCM encrypted with a key derived from the JWT secret, and
   every ffmpeg log/detail goes through `mask_text`.
+- ffmpeg writes the input URL (with `user:password@`) to stderr on connection
+  errors, so stderr is drained through a redacting writer into
+  `<live>/ffmpeg.log`. The log is reset on every run; nothing on disk contains a
+  stream password. A camera *named* after its URL is masked in the UI, events,
+  notifications and logs.
 - Media URLs carry `?token=` (the documented pattern for `<img>`/`<video>`);
   hls.js sends `Authorization` through `xhrSetup`.
 
@@ -172,3 +177,8 @@ but are admin-only; the desktop app records through `record.mode`.
   snapshots — **PASS**.
 - 2026-11-22 — Package 2.0.0 UI rewritten on the shared shell; manifest signed
   with `ethos-pack`.
+- 2026-11-22 — Eufy Floodlight Cam 2 Pro diagnosis: NAS reached the camera
+  (`ping` OK) but `192.168.50.191:554` refused — the camera's RTSP server was
+  not running. `ffmpeg.log` captured the full URL with the password; fixed by
+  draining stderr through `mask_text`, resetting the log per run and masking
+  URL-like camera names (v2.25.1).

@@ -459,6 +459,8 @@ def public_camera(cam: dict) -> dict:
     sub = mask_url(streams.get("sub") or "")
     out["streams"] = {"main": main, "sub": sub or None}
     out["url"] = main          # legacy field the old UI/tests read
+    # A camera named after its URL must not leak `user:password@` to the UI.
+    out["name"] = mask_text(cam.get("name") or "")
     auth = cam.get("auth") or {}
     out["auth"] = ({"user": auth.get("user", ""),
                     "has_password": bool(auth.get("password_enc"))} if auth else None)
@@ -826,10 +828,11 @@ def record_motion_event(cam: dict, image_rel: Optional[str], *,
                         score: float = 0.0, recording: Optional[dict] = None,
                         notify: bool = True) -> dict:
     """Append a motion event (newest first, capped) + Notification Center entry."""
+    safe_name = mask_text(cam.get("name") or "") or "camera"
     event = {
         "id": f"mev_{uuid.uuid4().hex[:12]}",
         "camera_id": cam["id"],
-        "camera_name": cam["name"],
+        "camera_name": safe_name,
         "kind": "motion",
         "at": _now_iso(),
         "ended_at": None,
@@ -848,7 +851,7 @@ def record_motion_event(cam: dict, image_rel: Optional[str], *,
 
             if camera_settings.load().get("notify_motion", True):
                 emit_event(
-                    "warning", f"Motion detected — {cam['name']}",
+                    "warning", f"Motion detected — {safe_name}",
                     f"{round(float(score) * 100)}% of the watched area changed",
                     source="surveillance",
                     action={"label": "View", "appId": "surveillance", "arg": event["id"]},
