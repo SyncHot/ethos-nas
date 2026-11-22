@@ -660,7 +660,7 @@ async def stream(request: Request, video_id: str = Query(...)):
         for attempt in range(MAX_RECONNECTS + 1):
             try:
                 while True:
-                    chunk = await asyncio.to_thread(upstream.read, 65536)
+                    chunk = await asyncio.to_thread(upstream.read, 262144)
                     if not chunk:
                         break
                     yield chunk
@@ -1798,7 +1798,7 @@ async def episode_audio(request: Request, url: str = Query(...)):
         sent = 0
         try:
             while True:
-                chunk = await asyncio.to_thread(upstream.read, 65536)
+                chunk = await asyncio.to_thread(upstream.read, 262144)
                 if not chunk:
                     break
                 sent += len(chunk)

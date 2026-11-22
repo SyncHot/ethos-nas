@@ -995,6 +995,7 @@ function renderDownloads() {
             <h3>Miejsce na urządzeniu</h3>
             <div class="mu-meter"><i style="width:${percent.toFixed(1)}%"></i></div>
             <p>${storage ? `${fmtBytes(storage.usage)} z ${fmtBytes(storage.quota)} wykorzystane` : 'Brak danych o pamięci'} · muzyka: ${fmtBytes(offline.totalBytes())}</p>
+            <p>Pobieranie jest najszybsze przy otwartej aplikacji — w tle system mobilny może je wstrzymać.</p>
             ${paused ? `<p>Pobieranie wstrzymane: ${esc(offline.pauseReason() === 'quota' ? 'pamięć urządzenia prawie pełna' : 'ręcznie')}.</p>
                 <button type="button" class="mu-btn small" data-act="resume-downloads">Wznów pobieranie</button>` : ''}
         </div>
@@ -1026,6 +1027,12 @@ function renderSettings() {
             <div class="mu-toggle-row">
                 <span>Pobieraj playlisty automatycznie</span>
                 <input type="checkbox" id="mu-auto-offline" ${offline.isAutoDownload() ? 'checked' : ''} aria-label="Pobieraj playlisty automatycznie">
+            </div>
+            <div class="mu-toggle-row">
+                <span>Równoległe pobierania</span>
+                <select id="mu-parallel" class="mu-select" aria-label="Ile utworów pobierać równolegle">
+                    ${[1, 2, 4, 6].map((n) => `<option value="${n}" ${offline.downloadParallelism() === n ? 'selected' : ''}>${n}</option>`).join('')}
+                </select>
             </div>
             <div class="mu-meter"><i style="width:${percent.toFixed(1)}%"></i></div>
             <p>${storage ? `${fmtBytes(storage.usage)} z ${fmtBytes(storage.quota)}` : ''} · ${rows.filter((row) => row.status === 'done').length} plików</p>
@@ -1060,6 +1067,13 @@ function renderSettings() {
                 offline.syncPlaylists(store.playlists);
                 toast('Playlisty będą pobierane na to urządzenie');
             }
+        });
+    }
+    const parallel = $('mu-parallel');
+    if (parallel) {
+        parallel.addEventListener('change', () => {
+            const value = offline.setDownloadParallelism(Number(parallel.value));
+            toast(value === 1 ? 'Pobieranie po kolei' : `Pobieranie po ${value} równolegle`);
         });
     }
 }

@@ -11,6 +11,16 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.20.1] - 2026-11-22
+
+### Changed
+
+- **Music downloads are about twice as fast.** Four tracks download at once
+  instead of two (Settings → „Równoległe pobierania”: 1/2/4/6), each slot now
+  fetches only the audio — the cover is stored afterwards, outside the queue —
+  and the download badge repaints at most four times a second instead of on
+  every chunk. The NAS proxy also reads 256 KB chunks instead of 64 KB.
+
 ## [2.20.0] - 2026-11-22
 
 ### Added

@@ -49,6 +49,15 @@ card (Home and Library) and a counter + meter in the playlist header —
 `✓ 12/12` when complete, `↓ 4/12` while some tracks are missing or queued. It
 updates in place while downloads run, and each row keeps its own `offline` tag.
 
+**Parallel downloads.** Four tracks are fetched at once by default; Settings →
+„Równoległe pobierania” offers 1/2/4/6. Each slot carries only the audio — the
+cover is stored afterwards, outside the queue — and the UI repaints at most
+four times a second per track instead of on every chunk. The NAS resolves and
+proxies every stream independently (the engine is a threaded loopback server),
+so a playlist is limited by the link, not by the client. Backgrounding the PWA
+may pause downloads: mobile browsers throttle background pages, hence the hint
+in the Downloads view.
+
 ### Liked is the playlist „Polubione”
 
 There is no separate liked list any more: the heart adds the track to a real
@@ -79,10 +88,11 @@ non-audio content types, caps the payload at 400 MiB and writes nothing to disk.
 
 | Limit | Value |
 |---|---|
-| concurrent downloads | 2 |
+| concurrent downloads | 4 by default (Settings: 1/2/4/6) |
+| progress repaint | at most 4×/s per track |
 | pause threshold | usage > 92 % of `storage.estimate().quota` |
 | persistence | `navigator.storage.persist()` on start |
-| interrupted download | marked “Przerwane” and retried on demand (no byte resume) |
+| interrupted download | re-queued on the next start (no byte resume) |
 
 Progress uses the global `core/progress.js` task panel; a full disk pauses the
 queue and emits one Notification Center warning instead of failing every track.

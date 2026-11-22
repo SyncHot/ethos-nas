@@ -248,6 +248,15 @@ def main() -> int:
                   "1 z 1" in page.inner_text("[data-playlist-download]"),
                   page.inner_text("[data-playlist-download]"))
 
+            # 4d. downloads are parallel by default and the setting sticks
+            page.click('[data-testid="music-nav-settings"]')
+            page.wait_for_selector("#mu-parallel", timeout=8000)
+            check("download parallelism defaults to 4", page.input_value("#mu-parallel") == "4")
+            page.select_option("#mu-parallel", "2")
+            page.wait_for_timeout(150)
+            check("the parallelism choice is kept on the device",
+                  page.evaluate("localStorage.getItem('ethos.music.parallel')") == "2")
+
             # 5. offline reload: shell from the SW, library from the IDB snapshot
             mode["offline"] = True
             context.set_offline(True)

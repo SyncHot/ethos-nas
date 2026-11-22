@@ -22,7 +22,10 @@ const ROWS = 'rows';
 const BLOBS = 'blobs';
 const META = 'meta';
 
-const CONCURRENCY = 2;
+const PARALLEL_KEY = 'ethos.music.parallel';
+const PARALLEL_CHOICES = [1, 2, 4, 6];
+const DEFAULT_PARALLEL = 4;      // NAS resolves and proxies in parallel; YouTube tolerates this
+const PROGRESS_MS = 250;         // repaint budget per row while bytes stream in
 const QUOTA_STOP = 0.92;
 const STATE_KEY = 'library';
 const AUTO_KEY = 'ethos.music.autooffline';
@@ -42,6 +45,7 @@ let _task = null;
 let _batchDone = 0;
 let _batchTotal = 0;
 let _quotaNotified = false;
+let _lastProgress = new Map();
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────
 
@@ -220,6 +224,26 @@ export function setAutoDownload(on) {
     try { localStorage.setItem(AUTO_KEY, on ? '1' : '0'); } catch { /* private mode */ }
 }
 
+/** How many tracks are fetched at the same time (user setting, default 4). */
+export function downloadParallelism() {
+    try {
+        const value = Number(localStorage.getItem(PARALLEL_KEY));
+        return PARALLEL_CHOICES.includes(value) ? value : DEFAULT_PARALLEL;
+    } catch {
+        return DEFAULT_PARALLEL;
+    }
+}
+
+export function setDownloadParallelism(value) {
+    const next = Number(value);
+    if (!PARALLEL_CHOICES.includes(next)) return downloadParallelism();
+    try { localStorage.setItem(PARALLEL_KEY, String(next)); } catch { /* private mode */ }
+    // Raising the limit takes effect immediately; lowering it lets running
+    // tracks finish instead of cutting them off.
+    pump();
+    return next;
+}
+
 // ── playlist mirroring (Android parity) ───────────────────────────────────
 
 /**
@@ -286,7 +310,8 @@ function enqueue(item) {
 
 async function pump() {
     if (_paused) return;
-    while (_inflight < CONCURRENCY && _queue.length) {
+    const parallel = downloadParallelism();
+    while (_inflight < parallel && _queue.length) {
         const item = _queue.shift();
         if (!_index.get(item.key)) continue;            // deleted while queued
         _inflight += 1;
@@ -331,19 +356,19 @@ async function runDownload({ key, track, kind }) {
     upsert({ ...row, status: 'downloading', error: '' });
     dbPut(ROWS, _index.get(key)).catch(() => {});
     ensureTask();
+    _lastProgress.delete(key);
     try {
         const { blob, type } = await fetchBlob(src, (done, total) => {
+            // A 4 MB track yields ~64 chunks; painting the badges on every one
+            // of them keeps the main thread busy for no benefit.
+            const now = Date.now();
+            if (now - (_lastProgress.get(key) || 0) < PROGRESS_MS) return;
+            _lastProgress.set(key, now);
             upsert({ ..._index.get(key), bytes: done, bytes_total: total || row.bytes_total || 0 });
         });
-        let thumb = null;
-        const art = artUrl(track);
-        if (art) {
-            try {
-                const res = art.startsWith('/') ? await apiFetch(art) : await fetch(art, { mode: 'cors' });
-                if (res.ok) thumb = await res.blob();
-            } catch { /* covers are optional */ }
-        }
-        await dbPut(BLOBS, { key, audio: blob, thumb, type });
+        // Audio first, cover later: the slot must be free for the next track
+        // as soon as the bytes are stored, not after a thumbnail round-trip.
+        await dbPut(BLOBS, { key, audio: blob, thumb: null, type });
         const done = upsert({
             ..._index.get(key),
             status: 'done',
@@ -351,12 +376,12 @@ async function runDownload({ key, track, kind }) {
             bytes_total: blob.size,
             error: '',
             completed_at: Date.now(),
-            has_thumb: !!thumb,
         });
         await dbPut(ROWS, done);
         _batchDone += 1;
         taskProgress();
         logInfo('Music download stored', `${key} ${blob.size} B`);
+        storeCover(key, track).catch(() => {});
         await refreshStorage();
     } catch (error) {
         const quota = error?.name === 'QuotaExceededError';
@@ -384,6 +409,22 @@ function markFailed(key, message) {
     upsert({ ...row, status: 'failed', error: message });
     dbPut(ROWS, _index.get(key)).catch(() => {});
     notifyChange();
+}
+
+/** Covers are cosmetic: fetched after the track is usable, never in a slot. */
+async function storeCover(key, track) {
+    const art = artUrl(track);
+    if (!art) return;
+    try {
+        const res = art.startsWith('/') ? await apiFetch(art) : await fetch(art, { mode: 'cors' });
+        if (!res.ok) return;
+        const thumb = await res.blob();
+        const record = await dbGet(BLOBS, key);
+        if (!record) return;                        // deleted meanwhile
+        await dbPut(BLOBS, { ...record, thumb });
+        const row = _index.get(key);
+        if (row) upsert({ ...row, has_thumb: true });
+    } catch { /* covers are optional */ }
 }
 
 async function fetchBlob(src, onProgress) {
