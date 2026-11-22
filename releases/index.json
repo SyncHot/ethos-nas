@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-22T12:52:52+00:00",
+  "generated_at": "2026-11-22T13:00:52+00:00",
   "latest": {
-    "version": "2.17.0",
-    "git_sha": "d6d8f0d",
-    "git_sha_full": "d6d8f0d7aad8bb11fcef426e2c3567ee7e27a5cf",
-    "build": 133,
-    "released_at": "2026-11-22T12:52:52+00:00",
-    "notes": "Music: the phone player is now the installable /music web app with offline playlist downloads; the Android APK is retired"
+    "version": "2.18.0",
+    "git_sha": "070524a",
+    "git_sha_full": "070524a03eec3a0dc3a6f496f1c39edb50afb1db",
+    "build": 135,
+    "released_at": "2026-11-22T13:00:52+00:00",
+    "notes": "Videos: Select many films at once (phone and desktop) and download them in one go using your default version."
   },
   "releases": [
+    {
+      "version": "2.18.0",
+      "git_sha": "070524a",
+      "git_sha_full": "070524a03eec3a0dc3a6f496f1c39edb50afb1db",
+      "build": 135,
+      "released_at": "2026-11-22T13:00:52+00:00",
+      "notes": "Videos: Select many films at once (phone and desktop) and download them in one go using your default version."
+    },
     {
       "version": "2.17.0",
       "git_sha": "d6d8f0d",
@@ -201,14 +209,6 @@
       "build": 75,
       "released_at": "2026-11-20T16:05:20+00:00",
       "notes": "Downloads: per-user queues, folders, categories and qBittorrent scope"
-    },
-    {
-      "version": "2.6.5",
-      "git_sha": "e3df643",
-      "git_sha_full": "e3df6432c23f51e94802f514ecd103cd49789f7f",
-      "build": 73,
-      "released_at": "2026-11-20T15:51:28+00:00",
-      "notes": "Libraries: per-user gallery, music, video and editor state"
     }
   ]
 }
