@@ -738,8 +738,9 @@ export function initTopbarMenu() {
         restartBtn.addEventListener('click', async () => {
             closeTopbarDropdown();
             const ok = await window.showModalConfirm('Restart App',
-                '⚠️ Restart EthOS NAS?\n\n' +
-                'The web server will restart and this page will refresh automatically.'
+                'Restart the EthOS NAS web server?\n\n' +
+                'The server restarts in place and this page reconnects automatically.',
+                { confirmLabel: 'Restart' }
             );
             if (!ok) return;
             try {
@@ -762,9 +763,9 @@ export function initTopbarMenu() {
         rebootBtn.addEventListener('click', async () => {
             closeTopbarDropdown();
             const ok = await window.showModalConfirm('Reboot Server',
-                '⚠️ Reboot Server\n\n' +
-                'This will shut down and restart the entire server.\n' +
-                'All connections will be lost. Continue?'
+                'Reboot the entire server?\n\n' +
+                'This shuts down EthOS NAS and restarts the machine. All connections will be lost.',
+                { danger: true, confirmLabel: 'Reboot' }
             );
             if (!ok) return;
             try {

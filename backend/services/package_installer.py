@@ -469,7 +469,7 @@ async def uninstall(pkg_id: str, job_id: str, remove_volumes: bool = False,
     # runs while the record still exists — release() excludes this id itself.
     package_jobs.set_step(job_id, "sysdeps")
     await asyncio.to_thread(system_deps.release, pkg_id, job_id)
-    packages_store.set_step(job_id, "cleanup")
+    package_jobs.set_step(job_id, "cleanup")
     packages_store.remove_package(pkg_id)
     target = packages_store.package_dir(pkg_id)
     if target.exists():

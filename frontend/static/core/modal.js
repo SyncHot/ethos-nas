@@ -106,7 +106,7 @@ export function showAlert(title, message) {
         _resolveCurrent = resolve;
         _renderModal({
             title,
-            bodyHtml: `<p style="margin:0;font-size:14px;line-height:1.6;color:var(--modal-text,#cbd5e1);">${escapeHtml(message)}</p>`,
+            bodyHtml: `<p class="ethos-modal-message">${escapeHtml(message)}</p>`,
             footerHtml: `<button class="ethos-modal-btn ethos-modal-btn-primary" data-testid="ethos-modal-ok" autofocus>OK</button>`,
             onKeydown(e, close) { if (e.key === 'Enter') { e.preventDefault(); close(); resolve(true); _resolveCurrent = null; } },
         });
@@ -137,10 +137,10 @@ export function showConfirm(title, message, onConfirm, onCancel) {
         _resolveCurrent = resolve;
         _renderModal({
             title,
-            bodyHtml: `<p style="margin:0;font-size:14px;line-height:1.6;color:var(--modal-text,#cbd5e1);">${escapeHtml(message)}</p>`,
+            bodyHtml: `<p class="ethos-modal-message">${escapeHtml(message)}</p>`,
             footerHtml: `
                 <button class="ethos-modal-btn ethos-modal-btn-ghost" data-testid="ethos-modal-cancel">${escapeHtml(cancelLabel)}</button>
-                <button class="${danger ? 'ethos-modal-btn-danger' : 'ethos-modal-btn-primary'}" data-testid="ethos-modal-ok">${escapeHtml(confirmLabel)}</button>`,
+                <button class="ethos-modal-btn ${danger ? 'ethos-modal-btn-danger' : 'ethos-modal-btn-primary'}" data-testid="ethos-modal-ok">${escapeHtml(confirmLabel)}</button>`,
             onKeydown(e, close) {
                 if (e.key === 'Enter') { e.preventDefault(); close(); resolve(true); _resolveCurrent = null; if (confirmCb) confirmCb(); }
             },
@@ -166,7 +166,7 @@ export function showPrompt(title, message, defaultValue, callback) {
             title,
             width: '420px',
             bodyHtml: `
-                <p style="margin:0 0 12px;font-size:14px;line-height:1.6;color:var(--modal-text,#cbd5e1);">${escapeHtml(message)}</p>
+                <p class="ethos-modal-message" style="margin-bottom:12px;">${escapeHtml(message)}</p>
                 <input class="ethos-modal-input" data-testid="ethos-modal-input" value="${escapeAttr(defVal)}" placeholder="Type here..." autofocus>`,
             footerHtml: `
                 <button class="ethos-modal-btn ethos-modal-btn-ghost" data-testid="ethos-modal-cancel">Cancel</button>
@@ -214,7 +214,7 @@ export function showFormModal({
                 <span data-modal-error role="alert"
                       style="display:none;flex:1;text-align:left;align-self:center;font-size:12px;line-height:1.5;color:#ef4444;"></span>
                 <button class="ethos-modal-btn ethos-modal-btn-ghost" data-testid="modal-form-cancel">Cancel</button>
-                <button class="${danger ? 'ethos-modal-btn-danger' : 'ethos-modal-btn-primary'}" data-testid="modal-form-ok">${escapeHtml(confirmLabel)}</button>`,
+                <button class="ethos-modal-btn ${danger ? 'ethos-modal-btn-danger' : 'ethos-modal-btn-primary'}" data-testid="modal-form-ok">${escapeHtml(confirmLabel)}</button>`,
             onKeydown(e) {
                 if (e.key === 'Enter' && e.target?.tagName !== 'TEXTAREA' && e.target?.tagName !== 'BUTTON') {
                     e.preventDefault();

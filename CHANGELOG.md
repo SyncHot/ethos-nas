@@ -11,6 +11,27 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.12.2] - 2026-11-22
+
+### Fixed
+
+- **Packages: uninstall finishes cleanly.** The uninstall job no longer fails at
+  the cleanup step, so the package disappears from Installed right after the
+  progress row reaches 100%.
+- **Dialogs: primary buttons are styled again.** Confirm and form dialogs render
+  the OK/Restart/Uninstall action with the same radius, padding and hover as every
+  other EthOS button; long messages keep their paragraph breaks and scroll inside
+  the dialog instead of stretching it off-screen.
+- **Restart and Reboot confirmations name the action** (`Restart`, `Reboot`) and
+  spell out what happens in two short paragraphs.
+
+### Changed
+
+- **Packages window polish.** The catalog search gets a search icon, category
+  filters are pills, cards clamp long descriptions and align their actions, and
+  the Sources tab no longer shows the catalog search/filter row. Start, Restart and
+  Stop use the shared SVG icon set with accessible labels instead of text glyphs.
+
 ## [2.12.1] - 2026-11-22
 
 ### Fixed

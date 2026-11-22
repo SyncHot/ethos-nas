@@ -521,6 +521,112 @@
 .ui-result-row:hover { background: var(--ui-hover); }
 .ui-result-icon { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
 
+/* ── Chips (filters above lists and catalogs) ───────────────────────────── */
+
+.ui-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    border: 1px solid var(--ui-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-3);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.4;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.ui-chip:hover { background: var(--ui-hover); color: var(--text-1); }
+/* `.ui-shell button { color: inherit }` outranks a bare class — scope it. */
+.ui-shell .ui-chip { color: var(--text-3); }
+.ui-shell .ui-chip:hover { color: var(--text-1); }
+.ui-chip.is-active {
+    border-color: var(--ui-accent-border);
+    background: var(--ui-accent-soft);
+    color: var(--ui-accent);
+}
+.ui-shell .ui-chip.is-active { color: var(--ui-accent); }
+.ui-chip:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
+
+/* ── Packages window (apps/packages.js) ─────────────────────────────────── */
+
+.pkg-search { position: relative; flex: 1 1 auto; min-width: 200px; max-width: 340px; }
+.pkg-search > svg {
+    position: absolute;
+    left: 11px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-3);
+    pointer-events: none;
+}
+.pkg-search-input { padding-left: 32px; }
+
+.ui-panel.pkg-card {
+    padding: 16px 17px;
+    gap: 10px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.ui-panel.pkg-card:hover {
+    border-color: var(--ui-accent-border);
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+}
+:root.dark .ui-panel.pkg-card:hover { box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28); }
+
+.pkg-card-head { display: flex; align-items: flex-start; gap: 10px; }
+.pkg-card-title { flex: 1; min-width: 0; }
+.pkg-card-title h2 {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+.pkg-card-title .ui-muted { margin: 2px 0 0; }
+.pkg-card-caps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.pkg-card-caps:empty { display: none; }
+
+.pkg-card-desc {
+    margin: 0;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+}
+.pkg-card-desc:empty,
+.pkg-card-meta:empty { display: none; }
+.pkg-card-meta {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.pkg-card-foot {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: auto;
+    padding-top: 2px;
+}
+.pkg-card-foot .ui-row { justify-content: flex-end; flex-wrap: wrap; }
+
+.pkg-sources-toolbar { align-items: flex-start; }
+.pkg-source { padding: 13px 15px; }
+.pkg-source-info { min-width: 0; }
+.pkg-source-info strong { font-size: 12.5px; }
+.pkg-source-url {
+    margin: 2px 0 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+}
+
 /* Dense viewers (Logs) take the full main pane without the page header. */
 .ui-main-flush { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
 .ui-view-fill { flex: 1; min-height: 0; margin-top: 0; gap: 0; }

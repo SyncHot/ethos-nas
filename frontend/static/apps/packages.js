@@ -194,14 +194,15 @@ export async function renderPackagesPage(body) {
     toolbar.className = 'ui-toolbar';
     toolbar.id = 'pkgToolbar';
     toolbar.innerHTML = `
-        <div class="ui-row">
-            <input id="pkgSearch" class="ui-input" data-testid="pkg-search-input" type="search"
+        <div class="pkg-search" id="pkgSearchWrap">
+            ${uiIcon('search', 14)}
+            <input id="pkgSearch" class="ui-input pkg-search-input" data-testid="pkg-search-input" type="search"
                    placeholder="Search packages…" aria-label="Search packages" value="${escapeAttr(_pkg.search)}">
-            <span id="pkgTabCount" class="ui-tag" data-testid="pkg-tab-count" hidden></span>
         </div>
         <div class="ui-row">
+            <span id="pkgTabCount" class="ui-tag" data-testid="pkg-tab-count" hidden></span>
             <button class="ui-btn small primary" id="pkgUpdateAllBtn" data-testid="pkg-update-all"
-                    title="Update every package with a newer version" hidden>⬆ Update all</button>
+                    title="Update every package with a newer version" hidden>${uiIcon('arrowUp', 12)} Update all</button>
             <button class="ui-btn small" id="pkgRefreshBtn" data-testid="pkg-refresh-btn">${uiIcon('refresh', 12)} Refresh</button>
         </div>`;
 
@@ -229,6 +230,7 @@ export async function renderPackagesPage(body) {
 
     shell.onSection((id) => {
         _pkg.tab = id;
+        _syncToolbar();
         _renderContent();
     });
 
@@ -283,6 +285,7 @@ async function _loadAll(force = false) {
             count.hidden = !_pkg.updates.length;
         }
         _renderFilterBar();
+        _syncToolbar();
         _syncUpdateAllButton();
         _renderContent();
     } catch (err) {
@@ -306,14 +309,27 @@ function _renderFilterBar() {
     if (!bar) return;
     const cats = _categories();
     bar.innerHTML = cats.length
-        ? `<button class="ui-btn small${_pkg.category === '' ? ' primary' : ''}" data-cat="">All</button>`
-            + cats.map((cat) => `<button class="ui-btn small${_pkg.category === cat ? ' primary' : ''}" data-cat="${escapeAttr(cat)}">${escapeHtml(cat)}</button>`).join('')
+        ? `<button class="ui-chip${_pkg.category === '' ? ' is-active' : ''}" data-cat="">All</button>`
+            + cats.map((cat) => `<button class="ui-chip${_pkg.category === cat ? ' is-active' : ''}" data-cat="${escapeAttr(cat)}">${escapeHtml(cat)}</button>`).join('')
         : '';
     bar.querySelectorAll('[data-cat]').forEach((btn) => btn.addEventListener('click', () => {
         _pkg.category = btn.dataset.cat;
         _renderFilterBar();
+        _syncToolbar();
         _renderContent();
     }));
+}
+
+// Search and category chips describe the catalog only; on Sources they would
+// just add noise. Keep the refresh action reachable from every tab.
+function _syncToolbar() {
+    const root = shell?.root;
+    if (!root) return;
+    const catalogTab = _pkg.tab !== 'sources';
+    const search = root.querySelector('#pkgSearchWrap');
+    if (search) search.hidden = !catalogTab;
+    const filters = root.querySelector('#pkgFilterBar');
+    if (filters) filters.hidden = !catalogTab || !filters.childElementCount;
 }
 
 // The "Update all" entry point sits in the toolbar so it is reachable from
@@ -327,10 +343,10 @@ function _syncUpdateAllButton() {
     btn.disabled = !!_pkg.job || !!queue;
     if (queue) {
         const index = Math.min(queue.done + 1, queue.total);
-        btn.textContent = `Updating ${index}/${queue.total}…`;
+        btn.innerHTML = `${uiIcon('refresh', 12)} Updating ${index}/${queue.total}…`;
         btn.title = queue.name ? `Updating ${queue.name}` : 'Updating packages';
     } else {
-        btn.textContent = `⬆ Update all${total ? ` (${total})` : ''}`;
+        btn.innerHTML = `${uiIcon('arrowUp', 12)} Update all${total ? ` (${total})` : ''}`;
         btn.title = 'Update every package with a newer version';
     }
 }
@@ -412,20 +428,22 @@ function _card(pkg) {
             ? `<button class="ui-btn small primary" data-install="${escapeAttr(pkg.id)}" data-testid="pkg-install-${escapeAttr(pkg.id)}"${disabled}>Install</button>`
             : '<span class="ui-tag">Admin required</span>';
     }
+    const caps = _capabilityBadges(pkg);
+    const meta = `${pkg.source_name || pkg.source || ''}${pkg.author ? ` · ${pkg.author}` : ''}`;
     return `
-        <article data-card-id="${escapeAttr(pkg.id)}" data-testid="pkg-card-${escapeAttr(pkg.id)}" class="ui-panel ui-card">
-            <div class="ui-row" style="align-items:flex-start;">
+        <article data-card-id="${escapeAttr(pkg.id)}" data-testid="pkg-card-${escapeAttr(pkg.id)}" class="ui-panel ui-card pkg-card">
+            <div class="pkg-card-head">
                 <div class="ui-card-icon">${_icon(pkg, 28)}</div>
-                <div style="min-width:0;flex:1;">
+                <div class="pkg-card-title">
                     <h2>${escapeHtml(pkg.name)}</h2>
                     <p class="ui-muted">v${escapeHtml(pkg.version)} · ${escapeHtml(pkg.category || 'other')}</p>
-                    <div>${_capabilityBadges(pkg)}</div>
+                    <div class="pkg-card-caps">${caps}</div>
                 </div>
                 ${_trustBadge(pkg)}
             </div>
-            <p class="ui-muted">${escapeHtml(pkg.description || '')}</p>
-            <p class="ui-muted">${escapeHtml(pkg.source_name || pkg.source || '')}${pkg.author ? ` · ${escapeHtml(pkg.author)}` : ''}</p>
-            <div class="ui-row" style="justify-content:flex-end;">${action}</div>
+            <p class="ui-muted pkg-card-desc">${escapeHtml(pkg.description || '')}</p>
+            <p class="ui-muted pkg-card-meta" title="${escapeAttr(meta)}">${escapeHtml(meta)}</p>
+            <div class="pkg-card-foot">${action}</div>
         </article>`;
 }
 
@@ -471,14 +489,14 @@ function _installedRow(pkg) {
     // Files-only packages (native UI, no service) have nothing to start or stop.
     const hasService = (pkg.runtime || 'compose') !== 'files';
     const serviceButtons = hasService ? `
-        <button class="ui-btn small" data-action="start" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-start"${disabled}>▶</button>
-        <button class="ui-btn small" data-action="restart" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-restart"${disabled}>↻</button>
-        <button class="ui-btn small" data-action="stop" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-stop"${disabled}>⏹</button>` : '';
+        <button class="ui-btn small" data-action="start" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-start"${disabled} title="Start ${escapeAttr(pkg.name)}" aria-label="Start ${escapeAttr(pkg.name)}">${uiIcon('play', 11)}</button>
+        <button class="ui-btn small" data-action="restart" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-restart"${disabled} title="Restart ${escapeAttr(pkg.name)}" aria-label="Restart ${escapeAttr(pkg.name)}">${uiIcon('refresh', 11)}</button>
+        <button class="ui-btn small" data-action="stop" data-id="${escapeAttr(pkg.id)}" data-testid="pkg-action-${escapeAttr(pkg.id)}-stop"${disabled} title="Stop ${escapeAttr(pkg.name)}" aria-label="Stop ${escapeAttr(pkg.name)}">${uiIcon('stop', 11)}</button>` : '';
     const actions = _pkg.isAdmin ? `
         ${serviceButtons}
         <button class="ui-btn small danger" data-uninstall="${escapeAttr(pkg.id)}" data-testid="pkg-uninstall-${escapeAttr(pkg.id)}"${disabled}>Uninstall</button>` : '';
     const update = _pkg.isAdmin && _pkg.updates.some((u) => u.id === pkg.id)
-        ? `<button class="ui-btn small primary" data-update="${escapeAttr(pkg.id)}" data-testid="pkg-update-${escapeAttr(pkg.id)}"${disabled}>⬆ Update</button>` : '';
+        ? `<button class="ui-btn small primary" data-update="${escapeAttr(pkg.id)}" data-testid="pkg-update-${escapeAttr(pkg.id)}"${disabled}>${uiIcon('arrowUp', 11)} Update</button>` : '';
     const openUi = pkg.ui && (pkg.ui.mode === 'native' ? pkg.ui.entry : pkg.ui.port)
         ? `<button class="ui-btn small" data-open-ui="${escapeAttr(pkg.id)}">Open UI</button>` : '';
     const openLogsBtn = _pkg.isAdmin
@@ -898,11 +916,8 @@ function _renderSources(panel) {
     const official = _pkg.sources.find((s) => s.url === OFFICIAL_SOURCE.url);
     const officialLabel = official ? 'Fix official source' : '+ Official source';
     panel.innerHTML = `
-        <div class="ui-toolbar">
-            <div>
-                <h2>Package sources</h2>
-                <p class="ui-muted">Native UI packages require a signed source with its public key.</p>
-            </div>
+        <div class="ui-toolbar pkg-sources-toolbar">
+            <p class="ui-muted">Native UI packages require a signed source with its public key.</p>
             <div class="ui-row">
                 ${!official || official.trust !== 'pinned' ? `<button class="ui-btn small" id="pkgAddOfficialSource" data-testid="pkg-source-add-official">${officialLabel}</button>` : ''}
                 <button class="ui-btn small primary" id="pkgAddSource" data-testid="pkg-source-add-btn">+ Add source</button>
@@ -910,11 +925,11 @@ function _renderSources(panel) {
         </div>
         <div class="ui-list">
             ${_pkg.sources.map((source, index) => `
-                <div class="ui-panel" style="padding:10px 12px;">
+                <div class="ui-panel pkg-source">
                     <div class="ui-toolbar">
-                        <div style="min-width:0;">
+                        <div class="pkg-source-info">
                             <strong>${escapeHtml(source.name || source.url)}</strong>
-                            <p class="ui-muted path">${escapeHtml(source.url)}</p>
+                            <p class="ui-muted pkg-source-url" title="${escapeAttr(source.url)}">${escapeHtml(source.url)}</p>
                         </div>
                         <div class="ui-row">
                             ${source.trust === 'pinned' ? _badge('signed', 'badge-green') : _badge('unverified', 'badge-yellow')}
