@@ -34,13 +34,19 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import psutil
+
 from backend.config import settings
+from backend.services import json_store
 
 logger = logging.getLogger("ethos-nas.services.trash_service")
 
 LEGACY_OWNER = "_legacy"
 NAMESPACE_MARKER = ".namespace"
 META_SUFFIX = ".meta.json"
+#: Per-volume recycle bin (hidden dot-directory at the mount root).
+VOLUME_TRASH_NAME = ".@Recycle"
+VOLUMES_STORE_NAME = "trash_volumes.json"
 
 _OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$")
 _HOME_RE = re.compile(r"^/home/([^/]+)(?:/|$)")
@@ -181,17 +187,141 @@ def _entry_size(entry: Path) -> int:
     return total
 
 
+# ── Volume-local bins ───────────────────────────────────────────────────────────
+
+
+def _volumes_store():
+    """Registry of volume bins (DATA_DIR stays the canonical index)."""
+    return json_store.get(settings.DATA_DIR / VOLUMES_STORE_NAME, dict, version=1)
+
+
+def registered_volumes() -> list[Path]:
+    """Existing ``<mount>/.@Recycle`` directories, in registration order."""
+    data = _volumes_store().load()
+    values = data.get("volumes") if isinstance(data, dict) else None
+    out: list[Path] = []
+    for value in values or []:
+        if not isinstance(value, str):
+            continue
+        candidate = Path(value)
+        # An unplugged volume keeps its registration; it just vanishes from the
+        # listing until the mount is back (items are not lost).
+        if candidate.is_dir() and candidate not in out:
+            out.append(candidate)
+    return out
+
+
+def _register_volume(directory: Path) -> None:
+    target = str(directory)
+
+    def _add(data):
+        if not isinstance(data, dict):
+            data = {}
+        volumes = [v for v in data.get("volumes", []) if isinstance(v, str)]
+        if target not in volumes:
+            volumes.append(target)
+            data["volumes"] = volumes
+            logger.info("Trash: registered volume-local bin %s", target)
+        return data
+
+    try:
+        _volumes_store().update(_add)
+    except OSError:
+        logger.error("Trash: could not register volume bin %s", directory, exc_info=True)
+
+
+def _mount_point(path: str, dev: int) -> Path | None:
+    """Longest mounted path that contains *path* and lives on device *dev*."""
+    best: str | None = None
+    for part in psutil.disk_partitions(all=True):
+        mount = part.mountpoint
+        try:
+            if os.stat(mount).st_dev != dev:
+                continue
+        except OSError:
+            continue
+        if path != mount and not path.startswith(mount.rstrip("/") + "/"):
+            continue
+        if best is None or len(mount) > len(best):
+            best = mount
+    return Path(best) if best else None
+
+
+def _volume_trash_dir(src: str) -> Path | None:
+    """``<mount>/.@Recycle`` for *src*, or None when DATA_DIR trash is used.
+
+    Only used when the source is on a different filesystem than DATA_DIR (a
+    same-volume item already renames into ``DATA_DIR/trash``) and the mount is
+    writable for the service account. ``/`` never gets a recycle bin.
+    """
+    if not settings.TRASH_VOLUME_LOCAL:
+        return None
+    try:
+        src_dev = os.stat(src).st_dev
+    except OSError:
+        return None
+    try:
+        data_dev = os.stat(settings.DATA_DIR).st_dev
+    except OSError:
+        data_dev = None
+    if data_dev is not None and src_dev == data_dev:
+        return None
+    mount = _mount_point(os.path.abspath(src), src_dev)
+    if mount is None or mount == Path("/"):
+        return None
+    if not os.access(mount, os.W_OK | os.X_OK):
+        return None
+    return mount / VOLUME_TRASH_NAME
+
+
+def volume_bin_for(path: str) -> Path | None:
+    """Public helper: the volume-local bin a delete would rename into (or None)."""
+    return _volume_trash_dir(path)
+
+
+def _mark_namespace(directory: Path, owner: str, kind: str = "user") -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / NAMESPACE_MARKER
+    if not marker.exists():
+        _write_json_atomic(marker, {"owner": owner, "kind": kind})
+    return directory
+
+
+def _owner_dirs(owner: str) -> list[Path]:
+    """Existing namespaces holding *owner*'s items (DATA_DIR first, then volumes)."""
+    if owner == LEGACY_OWNER:
+        legacy = root() / LEGACY_OWNER
+        return [legacy] if legacy.is_dir() else []
+    owner = normalize_owner(owner)
+    dirs: list[Path] = []
+    primary = root() / owner
+    if primary.is_dir():
+        dirs.append(primary)
+    for volume in registered_volumes():
+        candidate = volume / owner
+        if candidate.is_dir():
+            dirs.append(candidate)
+    return dirs
+
+
+def _name_taken(owner: str, name: str) -> bool:
+    """Collision check across *every* namespace: names are unique per owner."""
+    for directory in _owner_dirs(owner):
+        if os.path.lexists(directory / name):
+            return True
+        if (directory / f"{name}{META_SUFFIX}").exists():
+            return True
+    return False
+
+
 # ── Namespaces ───────────────────────────────────────────────────────────────
 
 def namespace_dir(owner: str, create: bool = False) -> Path:
-    """Directory holding one user's trashed items."""
+    """Directory holding one user's trashed items (under DATA_DIR)."""
     owner = normalize_owner(owner)
     directory = root() / owner
     if create:
-        directory.mkdir(parents=True, exist_ok=True)
-        marker = directory / NAMESPACE_MARKER
-        if not marker.exists():
-            _write_json_atomic(marker, {"owner": owner, "kind": "user"})
+        _mark_namespace(directory, owner)
     return directory
 
 
@@ -205,30 +335,21 @@ def _legacy_dir(create: bool = True) -> Path:
     return directory
 
 
-def _owner_dir(owner: str) -> Path:
-    """Namespace directory for per-item operations.
-
-    `_legacy` is normally a reserved name (normalize_owner rejects it), but the
-    admin all-users view surfaces those items as a pseudo-owner — restores and
-    permanent deletes must work on them too. Callers are responsible for the
-    admin check.
-    """
-    if owner == LEGACY_OWNER:
-        return root() / LEGACY_OWNER
-    return namespace_dir(owner)
-
-
 def _namespace_dirs(include_legacy: bool = False) -> list[Path]:
-    base = root()
-    if not base.is_dir():
-        return []
+    """Every namespace directory: DATA_DIR namespaces plus volume-local bins."""
     out = []
-    for entry in base.iterdir():
-        if not _is_namespace(entry):
+    for base in [root(), *registered_volumes()]:
+        if not base.is_dir():
             continue
-        if entry.name == LEGACY_OWNER and not include_legacy:
-            continue
-        out.append(entry)
+        for entry in base.iterdir():
+            if not _is_namespace(entry):
+                continue
+            if entry.name == LEGACY_OWNER:
+                # Only the DATA_DIR layout has a legacy pseudo-owner.
+                if include_legacy and base == root():
+                    out.append(entry)
+                continue
+            out.append(entry)
     return out
 
 
@@ -243,11 +364,25 @@ def reserve_dest(src: str, owner: str) -> tuple[Path, dict]:
     """
     _ensure_migrated()
     owner = normalize_owner(owner)
-    dest_dir = namespace_dir(owner, create=True)
+    dest_dir = None
+    # Items on another filesystem rename into that volume's own bin instead of
+    # being copied into DATA_DIR (a 20 GB movie used to mean a 20 GB copy).
+    volume_bin = _volume_trash_dir(src)
+    if volume_bin is not None:
+        try:
+            dest_dir = _mark_namespace(volume_bin / owner, owner)
+            _register_volume(volume_bin)
+        except OSError as exc:
+            logger.warning(
+                "Trash: volume bin %s unusable (%s) — falling back to %s",
+                volume_bin, exc, root())
+            dest_dir = None
+    if dest_dir is None:
+        dest_dir = namespace_dir(owner, create=True)
     name = os.path.basename(src.rstrip(os.sep)) or "item"
     dest = dest_dir / name
     counter = 0
-    while os.path.lexists(dest) or _meta_path(dest).exists():
+    while _name_taken(owner, dest.name):
         counter += 1
         dest = dest_dir / f"{name}_{counter}"
     meta = {
@@ -305,27 +440,25 @@ def resolve_item(owner: str, name: str) -> tuple[Path, Path, dict]:
     """
     _ensure_migrated()
     name = valid_item_name(name)
-    directory = _owner_dir(owner)
-    src = directory / name
-    if not src.exists() and not src.is_symlink():
-        raise FileNotFoundError(name)
-    return src, _meta_path(src), _read_meta(src)
+    for directory in _owner_dirs(owner):
+        src = directory / name
+        if src.exists() or src.is_symlink():
+            return src, _meta_path(src), _read_meta(src)
+    raise FileNotFoundError(name)
 
 
 def list_items(owner: str, include_all: bool = False, limit: int = 0, offset: int = 0) -> dict:
     """Trash contents for one owner, or every namespace when `include_all`."""
     _ensure_migrated()
     entries: list[tuple[str, Path]] = []
+    items = []
     if include_all:
         for directory in _namespace_dirs(include_legacy=True):
             entries.extend((directory.name, item) for item in _items_in(directory))
         entries.extend((LEGACY_OWNER, item) for item in _flat_legacy_items())
     else:
-        directory = namespace_dir(owner)
-        if directory.is_dir():
-            entries.extend((normalize_owner(owner), item) for item in _items_in(directory))
-
-    items = []
+        for directory in _owner_dirs(owner):
+            entries.extend((directory.name, item) for item in _items_in(directory))
     for item_owner, entry in entries:
         meta = _read_meta(entry)
         items.append({
@@ -352,8 +485,7 @@ def empty(owner: str | None, include_all: bool = False) -> tuple[int, int]:
             targets.extend(_items_in(directory))
         targets.extend(_flat_legacy_items())
     else:
-        directory = namespace_dir(str(owner))
-        if directory.is_dir():
+        for directory in _owner_dirs(str(owner)):
             targets.extend(_items_in(directory))
 
     count = failed = 0
@@ -446,7 +578,8 @@ def usage() -> dict:
     for item in candidates:
         files += 1
         size += _entry_size(item)
-    return {"path": str(root()), "files": files, "bytes": size}
+    return {"path": str(root()), "files": files, "bytes": size,
+            "volumes": [str(v) for v in registered_volumes()]}
 
 
 # ── Legacy migration ─────────────────────────────────────────────────────────

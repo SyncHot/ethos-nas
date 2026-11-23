@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.32.0"
+APP_VERSION = "2.33.0"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -112,6 +112,17 @@ class Settings:
     # Overridable so a second instance (e.g. a test server on another port)
     # can run fully isolated from the production data files.
     DATA_DIR: Path = Path(os.getenv("ETHOS_DATA_DIR", str(Path(__file__).parent / "data")))
+
+    # Recycle bin on the item's own filesystem. DATA_DIR usually lives on the
+    # system SSD, so moving a movie from an external/USB volume into
+    # ``DATA_DIR/trash`` copies every byte across disks (and doubles the space).
+    # When enabled, a delete from a *different* filesystem renames the item into
+    # ``<mount>/.@Recycle/<user>`` — instant, no bytes moved — and that bin is
+    # registered in ``DATA_DIR/trash_volumes.json`` so Trash/restore/retention
+    # still find it. Set ``ETHOS_TRASH_VOLUME_LOCAL=0`` to keep everything under
+    # DATA_DIR.
+    TRASH_VOLUME_LOCAL: bool = os.getenv(
+        "ETHOS_TRASH_VOLUME_LOCAL", "true").lower() in ("1", "true", "yes", "on")
 
     # ── First-run setup ("claim this appliance") ────────────────────────────
     # The OS image writes this state file from ethos-firstboot (root). It holds

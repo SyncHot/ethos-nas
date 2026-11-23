@@ -11,6 +11,24 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.33.0] - 2026-11-23
+
+### Changed
+
+- **Files → Trash**: deleting from a data disk no longer copies the file onto
+  the system drive. An item on another filesystem now moves into a hidden
+  `<mount>/.@Recycle/<user>` bin with a plain rename — instant and no SSD
+  space — while the Trash view, restore, retention, usage and the desktop badge
+  keep working across every volume. `.@Recycle` is hidden from the file list,
+  search and backups; `ETHOS_TRASH_VOLUME_LOCAL=0` restores the old behaviour.
+
+### Fixed
+
+- **Files**: “Move to Trash” on `/mnt` or `/media` could take minutes (and
+  double the space) for a multi-GB file, because the item was copied byte by
+  byte into `DATA_DIR/trash` on the system SSD. The trash operation also skips
+  its size pre-walk when every path renames into a volume bin.
+
 ## [2.32.0] - 2026-11-23
 
 ### Changed

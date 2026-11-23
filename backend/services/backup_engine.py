@@ -29,7 +29,7 @@ logger = logging.getLogger("ethos-nas.services.backup_engine")
 
 DEFAULT_EXCLUDES = [
     ".ethos-partial", "lost+found", "#recycle", "@eaDir", ".Trash-*",
-    ".snapshot", ".snapshots", ".gvfs",
+    ".snapshot", ".snapshots", ".gvfs", ".@Recycle",
 ]
 
 _PERCENT_RE = re.compile(r"(\d{1,3})%")

@@ -345,6 +345,11 @@ async def list_directory(
         entries: list[tuple[str, str, bool]] = []
         with os.scandir(abs_path) as it:
             for entry in it:
+                # The per-volume recycle bin is managed through Trash, never
+                # browsed/deleted through the file list (deleting an item there
+                # would "trash" it a second time).
+                if entry.name == trash_service.VOLUME_TRASH_NAME:
+                    continue
                 try:
                     is_dir = entry.is_dir(follow_symlinks=True)
                 except OSError:

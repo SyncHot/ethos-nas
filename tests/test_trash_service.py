@@ -115,6 +115,74 @@ def main() -> int:
         check("all-users empty clears _legacy too",
               ts.empty(None, include_all=True) == (1, 0), str(ts.usage()))
         check("recycle bin is fully empty", ts.usage()["files"] == 0, str(ts.usage()))
+
+        # ── Volume-local bin: a cross-filesystem delete is a rename ────────
+        # `tmp` and DATA_DIR share a device here, so the real resolver must say
+        # "no volume bin" (the DATA_DIR one is already local).
+        real_volume_trash_dir = ts._volume_trash_dir
+        check("same-device deletes keep using DATA_DIR trash",
+              real_volume_trash_dir(str(tmp / "trash")) is None)
+
+        volume_root = tmp / "volume" / ts.VOLUME_TRASH_NAME
+        # Same device → real resolver puts this one in DATA_DIR/trash.
+        same_vol = _make_file(tmp / "src" / "v", "film.mkv", "same")
+        ts.move_to_trash(str(same_vol), "alice")
+
+        # Force the volume bin to exercise the cross-device path.
+        ts._volume_trash_dir = lambda src: volume_root
+        try:
+            movie = _make_file(tmp / "volume" / "movies", "film.mkv", "v" * 4096)
+            moved = ts.move_to_trash(str(movie), "alice")
+            check("volume delete removes the source", not movie.exists())
+            check("volume delete lands in <mount>/.@Recycle/<user>",
+                  (volume_root / "alice" / "film.mkv_1").is_file(), moved["name"])
+            check("volume namespace is marked",
+                  (volume_root / "alice" / ".namespace").is_file())
+            check("volume bin is registered",
+                  str(volume_root) in [str(v) for v in ts.registered_volumes()])
+            check("usage reports the volume bin",
+                  str(volume_root) in ts.usage().get("volumes", []), str(ts.usage()))
+            check("names stay unique across namespaces",
+                  moved["name"] == "film.mkv_1", str(moved))
+            check("list spans DATA_DIR + volume bin", ts.list_items("alice")["total"] == 2,
+                  str(ts.list_items("alice")))
+            check("volume item resolves by name",
+                  ts.resolve_item("alice", "film.mkv_1")[0] == volume_root / "alice" / "film.mkv_1")
+
+            # Retention must see volume items too.
+            old = _make_file(volume_root / "alice", "old.mkv", "old")
+            old_stamp = time.time() - 40 * 86400
+            os.utime(old, (old_stamp, old_stamp))
+            swept = ts.sweep_retention(30 * 86400)
+            check("retention sweeps volume items", not old.exists(), str(swept))
+            check("retention keeps fresh volume items",
+                  (volume_root / "alice" / "film.mkv_1").is_file())
+
+            # An unwritable volume falls back to the DATA_DIR bin (never loses data).
+            real_mark = ts._mark_namespace
+
+            def _flaky(directory, owner, kind="user"):
+                if str(directory).startswith(str(volume_root)):
+                    raise OSError("read-only volume")
+                return real_mark(directory, owner, kind)
+
+            ts._mark_namespace = _flaky
+            try:
+                fallback_src = _make_file(tmp / "volume" / "movies", "fallback.mkv", "fb")
+                fallback = ts.move_to_trash(str(fallback_src), "bob")
+                check("unusable volume bin falls back to DATA_DIR",
+                      (tmp / "trash" / "bob" / fallback["name"]).is_file(), str(fallback))
+            finally:
+                ts._mark_namespace = real_mark
+
+            # Emptying a user's bin reaches every namespace it owns.
+            check("empty covers DATA_DIR + volume items", ts.empty("alice") == (2, 0),
+                  str(ts.usage()))
+            check("volume namespace survives empty",
+                  (volume_root / "alice" / ".namespace").is_file())
+            check("only bob's fallback item remains", ts.usage()["files"] == 1, str(ts.usage()))
+        finally:
+            ts._volume_trash_dir = real_volume_trash_dir
     finally:
         settings.DATA_DIR = original_data_dir
         shutil.rmtree(tmp, ignore_errors=True)

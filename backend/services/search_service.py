@@ -23,6 +23,7 @@ SEARCH_SKIP_DIRS = {
     ".git", ".hg", ".svn", "node_modules", "__pycache__", ".cache",
     ".npm", ".yarn", ".gradle", ".mypy_cache", ".pytest_cache", ".ruff_cache",
     ".venv", "venv", "site-packages", ".tox", ".next", ".nuxt", "dist",
+    ".@Recycle",
 }
 
 #: File-type filters for universal search → allowed extensions.

@@ -530,10 +530,16 @@ async def start_trash_operation(paths: list[str], owner: str) -> str:
     if not abs_paths:
         raise ValueError("paths must be a non-empty array")
     # Byte totals give real progress for cross-device moves; the walk runs in a
-    # thread so a huge tree never blocks the event loop.
-    bytes_total = await asyncio.to_thread(
-        lambda: sum(_path_total_size(p) for p in abs_paths)
-    )
+    # thread so a huge tree never blocks the event loop. A delete that renames
+    # into the item's own volume bin (trash_service.volume_bin_for) moves no
+    # bytes, so the pre-walk is pure latency and is skipped.
+    from backend.services import trash_service  # local: keeps the import graph acyclic
+    if all(trash_service.volume_bin_for(p) is not None for p in abs_paths):
+        bytes_total = 0
+    else:
+        bytes_total = await asyncio.to_thread(
+            lambda: sum(_path_total_size(p) for p in abs_paths)
+        )
     op_id = uuid.uuid4().hex[:12]
     op = {
         "op_id": op_id, "action": "trash", "status": "running",
