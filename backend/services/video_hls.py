@@ -30,6 +30,11 @@ logger = logging.getLogger("ethos-nas.services.video_hls")
 MAX_SESSIONS = 2
 MAX_PER_USER = 1
 IDLE_TTL = 120.0
+# A player killed without its stop request (force-closed PWA, dropped pagehide
+# beacon) leaves a session holding the per-user slot until the idle sweep. A
+# new start may replace the caller's own session once it stopped fetching;
+# a stream still playing elsewhere keeps its slot and is refused as before.
+REPLACE_IDLE = 15.0
 DIR_TTL = 600.0
 FAILED_TTL = 30.0
 START_TIMEOUT = 15.0
@@ -84,11 +89,12 @@ class HlsManager:
     def __init__(self, limiter: TranscodeLimiter = LIMITER, *,
                  max_sessions: int = MAX_SESSIONS, max_per_user: int = MAX_PER_USER,
                  idle_ttl: float = IDLE_TTL, dir_ttl: float = DIR_TTL,
-                 start_timeout: float = START_TIMEOUT):
+                 start_timeout: float = START_TIMEOUT, replace_idle: float = REPLACE_IDLE):
         self.limiter = limiter
         self.max_sessions = max_sessions
         self.max_per_user = max_per_user
         self.idle_ttl = idle_ttl
+        self.replace_idle = replace_idle
         self.dir_ttl = dir_ttl
         self.start_timeout = start_timeout
         self._sessions: dict[str, HlsSession] = {}
@@ -109,17 +115,29 @@ class HlsManager:
     async def start(self, owner: str, abs_path: str, cmd_factory: Callable[[str], list[str]],
                     *, mode: str, encoder: str | None, decode_hw: bool = False) -> HlsSession:
         lock = self._ensure_lock()
+        replaced: list[HlsSession] = []
         async with lock:
             self._prune_locked()
             # Count starts that are still preparing a playlist: two clicks used
             # to slip past MAX_PER_USER before either session was registered.
             inflight = sum(self._reserved.values())
             owner_inflight = self._reserved.get(owner, 0)
+            if owner_inflight < self.max_per_user:
+                now = time.monotonic()
+                replaced = [
+                    s for s in self._sessions.values()
+                    if s.owner == owner and now - s.last_access >= self.replace_idle
+                ]
+                for session in replaced:
+                    self._sessions.pop(session.sid, None)
             if len(self._sessions) + inflight >= self.max_sessions:
                 raise HlsLimitError("Too many active video streams — stop one and retry")
             if sum(1 for s in self._sessions.values() if s.owner == owner) + owner_inflight >= self.max_per_user:
                 raise HlsLimitError("You already have an active video stream")
             self._reserved[owner] = owner_inflight + 1
+        for session in replaced:
+            logger.info("HLS session replaced | id=%s owner=%s", session.sid, owner)
+            await self._terminate(session, remove=True)
         try:
             return await self._start_reserved(
                 owner, abs_path, cmd_factory, mode=mode, encoder=encoder, decode_hw=decode_hw,

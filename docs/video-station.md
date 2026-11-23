@@ -333,7 +333,10 @@ oneVPL implementation is missing; libx264 remains the software fallback.
   `<DATA_DIR>/video_hls/<sid>`, owner-checked, uuid4 ids, `-re` real-time read,
   fMP4 segments (`-hls_time 4`, list 10 ≈ 40 s), `delete_segments` +
   `independent_segments` + `temp_file`, init.mp4. Caps: 2 sessions global, 1 per
-  user; idle TTL 120 s, dir TTL 600 s; sweeper registered with `task_registry`;
+  user; a new start **replaces the caller's own session** once it stopped
+  fetching for 15 s (`REPLACE_IDLE`) so a force-closed PWA no longer answers
+  `429 HLS unavailable` for the next movie; a stream still playing is refused as
+  before. Idle TTL 120 s, dir TTL 600 s; sweeper registered with `task_registry`;
   `stop_all()` on app shutdown.
 - Endpoints (JWT + `path_scope.scope_request`, no public paths):
   `POST /api/videos/hls`, `GET /api/videos/hls/{sid}/index.m3u8` (rewrites

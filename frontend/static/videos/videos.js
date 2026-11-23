@@ -1227,7 +1227,13 @@ function updatePositionState(player) {
 }
 
 async function openPlayer(item, { local = false } = {}) {
-    stopPlayer({ quiet: true });
+    // Await the previous HLS stop (bounded): the server allows one session per
+    // user, so a start racing the stop of the old movie answered 429 and fell
+    // back to the legacy stream with a misleading warning.
+    await Promise.race([
+        stopPlayer({ quiet: true }),
+        new Promise((resolve) => setTimeout(resolve, 1500)),
+    ]);
     els.player.hidden = false;
     els.playerTitle.textContent = displayTitle(item);
     els.playerMode.hidden = true;
@@ -1622,7 +1628,7 @@ function restoreResume(player) {
 
 function stopPlayer({ quiet = false } = {}) {
     const player = state.player;
-    if (!player) return;
+    if (!player) return Promise.resolve();
     state.player = null;
     if (!quiet) {
         if (player.local) saveLocalProgress(player, true);
@@ -1632,10 +1638,12 @@ function stopPlayer({ quiet = false } = {}) {
     clearSubtitleTrack(player);
     try { els.video.pause(); } catch { /* ignore */ }
     if (player.hls) { try { player.hls.destroy(); } catch { /* ignore */ } }
+    let stopped = Promise.resolve();
     if (player.session) {
         const sid = player.session;
         player.session = null;
-        apiFetch(`/api/videos/hls/${encodeURIComponent(sid)}/stop`, { method: 'POST' }).catch(() => {});
+        stopped = apiFetch(`/api/videos/hls/${encodeURIComponent(sid)}/stop`, { method: 'POST' })
+            .catch(() => {});
     }
     releaseWakeLock(player);
     try { els.video.removeAttribute('src'); els.video.load(); } catch { /* ignore */ }
@@ -1643,6 +1651,7 @@ function stopPlayer({ quiet = false } = {}) {
     els.player.hidden = true;
     els.playerError.hidden = true;
     if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    return stopped;
 }
 
 function togglePlay(player = state.player) {

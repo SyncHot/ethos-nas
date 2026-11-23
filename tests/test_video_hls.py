@@ -160,6 +160,30 @@ async def run() -> int:
                   await mgr2.get(session2.sid, "carol") is not None)
     finally:
         await mgr2.stop_all()
+
+    # A player closed without its stop request (force-killed PWA) must not block
+    # the next movie for the full idle TTL: a start after ``replace_idle`` takes
+    # over the caller's own stale session, while one still fetching is refused.
+    limiter3 = ve.TranscodeLimiter(3)
+    mgr3 = video_hls.HlsManager(limiter=limiter3)
+    try:
+        first = await mgr3.start("dave", sample, factory, mode=mode, encoder=status.get("encoder"))
+        still_playing = False
+        try:
+            await mgr3.start("dave", sample, factory, mode=mode, encoder=status.get("encoder"))
+        except video_hls.HlsLimitError:
+            still_playing = True
+        check("a session still fetching blocks a second start", still_playing)
+
+        first.last_access -= mgr3.replace_idle + 5
+        second = await mgr3.start("dave", sample, factory, mode=mode, encoder=status.get("encoder"))
+        check("an idle session is replaced instead of 429",
+              second is not first and second.owner == "dave")
+        check("the replaced session is no longer visible",
+              await mgr3.get(first.sid, "dave") is None)
+        check("the replaced encoder was stopped", first.process.returncode is not None)
+    finally:
+        await mgr3.stop_all()
     return 0
 
 
