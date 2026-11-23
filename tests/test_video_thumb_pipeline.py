@@ -68,13 +68,13 @@ def main() -> int:
     fm._ensure_thumb_dir()
 
     real_queue = fm._queue_video_thumb
-    queued: list[str] = []
-    fm._queue_video_thumb = lambda p: (queued.append(p) or True)
+    queued: list[tuple[str, bool]] = []
+    fm._queue_video_thumb = lambda p, face=True: (queued.append((p, face)) or True)
     try:
         # 1. Cache miss → 202 + one queued job (no ffmpeg in the request path).
         resp = asyncio.run(fm.video_thumbnail(path=str(video), size=320))
         check("cache miss returns 202", resp.status_code == 202, str(resp.status_code))
-        check("cache miss enqueues exactly one job", queued == [str(video)], str(queued))
+        check("cache miss enqueues exactly one job", queued == [(str(video), True)], str(queued))
         check("cache miss sets Retry-After", resp.headers.get("Retry-After") == "2",
               str(resp.headers.get("Retry-After")))
 
@@ -94,6 +94,21 @@ def main() -> int:
         if slot.exists():
             with Image.open(slot) as img:
                 check("slot width matches request", img.width == 320, str(img.width))
+
+        # 2b. face=0 (File Manager) has its own master/slot cache and never
+        # shares the face-aware artifact used by Photos.
+        queued.clear()
+        resp = asyncio.run(fm.video_thumbnail(path=str(video), size=320, face=0))
+        check("face=0 cache miss returns 202", resp.status_code == 202, str(resp.status_code))
+        check("face=0 queues a flat job", queued == [(str(video), False)], str(queued))
+        flat_master = thumbs._video_master_file(str(video), face=False)
+        check("flat master has its own cache slot", flat_master != master, str(flat_master))
+        Image.new("RGB", (640, 360), (90, 30, 30)).save(flat_master, "WEBP")
+        thumbs._write_thumb_meta(flat_master, str(video))
+        resp = asyncio.run(fm.video_thumbnail(path=str(video), size=640, face=0))
+        check("face=0 640 serves the flat master", Path(resp.path) == flat_master, str(resp.path))
+        resp = asyncio.run(fm.video_thumbnail(path=str(video), size=640))
+        check("default 640 still serves the face master", Path(resp.path) == master, str(resp.path))
 
         # 3. A changed source invalidates the master and the derived slot.
         video.write_bytes(b"\x01" * 8192)
@@ -134,7 +149,7 @@ def main() -> int:
 
         queued.clear()
         out = asyncio.run(fm.warm_thumbnails(paths=f"{second},{cached},/etc/passwd"))
-        check("warm queues only uncached videos", queued == [str(second)], str(queued))
+        check("warm queues only uncached videos", queued == [(str(second), True)], str(queued))
         check("warm reports accepted count", out.get("accepted") == 1, str(out))
     finally:
         fm._queue_video_thumb = real_queue

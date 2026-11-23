@@ -134,30 +134,6 @@ export function fmToggleDensity() {
     fmSetDensity(order[(order.indexOf(_fmDensity()) + 1) % order.length]);
 }
 
-// ── Cinematic video preview (grid): enlarge video thumbnails up to 507×285 (16:9) ──
-const FM_VIDEO_XL_KEY = 'ethos-fm-video-xl';
-function _fmVideoXL() { try { return localStorage.getItem(FM_VIDEO_XL_KEY) === '1'; } catch { return false; } }
-export function fmSetVideoXL(on) {
-    on = !!on;
-    try { localStorage.setItem(FM_VIDEO_XL_KEY, on ? '1' : '0'); } catch {}
-    document.querySelectorAll('.fm-content').forEach(el => el.classList.toggle('fm-video-xl', on));
-    _syncVideoXlButtons();
-    // Re-render open grid views so video thumbnails request the right resolution (320 vs 640)
-    for (const st of fmWindowStates.values()) {
-        const root = st._rootEl;
-        if (!root || st.viewMode !== 'grid' || st._inTrash || st._searchTerm) continue;
-        _silentRefetch(root);
-    }
-}
-export function fmToggleVideoXL() { fmSetVideoXL(!_fmVideoXL()); }
-function _syncVideoXlButtons() {
-    const on = _fmVideoXL();
-    document.querySelectorAll('[data-testid="fm-video-xl-btn"]').forEach(btn => {
-        btn.classList.toggle('active', on);
-        btn.title = `Video preview: ${on ? 'cinematic (up to 507×285)' : 'compact'} — click to change`;
-    });
-}
-
 function _fmIsFavorite(p) { return _fmFavSet.has(p); }
 
 export async function fmLoadFavorites() {
@@ -357,9 +333,6 @@ export function initFileManager(body) {
                         <button class="fm-nav-btn" data-testid="fm-density-btn" onclick="fmToggleDensity()" title="Density: compact (click to change)">
                             ${svgIcon('<rect x="3" y="3" width="18" height="4"/><rect x="3" y="10" width="18" height="4"/><rect x="3" y="17" width="18" height="4"/>', 16)}
                         </button>
-                        <button class="fm-nav-btn ${_fmVideoXL() ? 'active' : ''}" data-testid="fm-video-xl-btn" onclick="fmToggleVideoXL()" title="${_fmVideoXL() ? 'Video preview: cinematic (up to 507×285)' : 'Video preview: compact'} — click to change">
-                            ${svgIcon('<rect x="2" y="5" width="14" height="14" rx="2"/><polygon points="16,9 22,5 22,19 16,15"/>', 16)}
-                        </button>
                         <div style="width:1px;height:20px;background:var(--fm-border);margin:0 3px;"></div>
                         <div class="fm-segmented" role="group" aria-label="View mode">
                             <button class="fm-seg-btn ${state.viewMode === 'grid' ? 'active' : ''}" data-testid="fm-view-grid" onclick="fmSetViewMode('grid')" title="Grid view">
@@ -416,7 +389,6 @@ export function initFileManager(body) {
     const _density = _fmDensity();
     if (_density === 'small') contentEl.classList.add('fm-size-small');
     else if (_density === 'large') contentEl.classList.add('fm-size-large');
-    if (_fmVideoXL()) contentEl.classList.add('fm-video-xl');
 
     // Open a specific path if requested (e.g. "Open in New Window"), otherwise
     // reopen the folder this browser last looked at — a file manager that forgets
@@ -1360,13 +1332,15 @@ function fmRenderGridView(container, files, path, state) {
         const isImg = !f.is_dir && _imgExts.includes(ext);
         const isVid = !f.is_dir && _videoExts.includes(ext);
         const tk = encodeURIComponent(localStorage.getItem('token') || '');
-        const vidSize = _fmVideoXL() ? 640 : 320;  // cinematic mode fetches a sharper frame (backend caps at 640)
+        // File Manager always uses the plain 320 px frame: no cinematic size,
+        // no face-detection crop (face=0 uses its own cache slot server-side).
+        const vidSize = 320;
         const star = _fmIsFavorite(f.path) ? '<span class="fm-item-star" title="Favorite">★</span>' : '';
         let iconHtml = '';
         if (isImg) {
             iconHtml = `<div class="fm-file-thumb-wrap"><img class="fm-grid-thumb" draggable="false" data-src="/api/files/thumbnail?path=${encodeURIComponent(f.path||'')}&size=${thumbSize}&token=${tk}" alt=""></div>`;
         } else if (isVid) {
-            iconHtml = `<div class="fm-file-thumb-wrap fm-video-thumb"><img class="fm-grid-thumb" draggable="false" data-vid-src="/api/files/video-thumbnail?path=${encodeURIComponent(f.path||'')}&size=${vidSize}&token=${tk}" alt=""><div class="fm-video-play-badge">▶</div></div>`;
+            iconHtml = `<div class="fm-file-thumb-wrap fm-video-thumb"><img class="fm-grid-thumb" draggable="false" data-vid-src="/api/files/video-thumbnail?path=${encodeURIComponent(f.path||'')}&size=${vidSize}&face=0&token=${tk}" alt=""><div class="fm-video-play-badge">▶</div></div>`;
         } else {
             iconHtml = `<div class="fm-file-icon">${getFileIcon(f.name, f.is_dir ? 'dir' : 'file')}</div>`;
         }
@@ -3614,8 +3588,6 @@ window.fmToggleCurrentFolderFavorite = fmToggleCurrentFolderFavorite;
 window.fmLoadFavorites = fmLoadFavorites;
 window.fmSetDensity = fmSetDensity;
 window.fmToggleDensity = fmToggleDensity;
-window.fmSetVideoXL = fmSetVideoXL;
-window.fmToggleVideoXL = fmToggleVideoXL;
 window.fmOpenInNewWindow = fmOpenInNewWindow;
 // Path bar (inline onclick handlers) + keyboard extras
 window.fmStartPathEdit = fmStartPathEdit;

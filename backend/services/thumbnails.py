@@ -92,22 +92,32 @@ def _video_cache_base(abs_path: str) -> str:
     return hashlib.sha256(abs_path.encode()).hexdigest()[:16]
 
 
-def _video_master_file(abs_path: str) -> Path:
-    """Full-width frame extracted from the video (the only ffmpeg artifact)."""
-    return media_cache.THUMB_DIR / f"{_video_cache_base(abs_path)}_{_VIDEO_THUMB_VERSION}.webp"
+def _video_master_file(abs_path: str, face: bool = True) -> Path:
+    """Full-width frame extracted from the video (the only ffmpeg artifact).
+
+    ``face=False`` keeps a separate master for callers that opt out of the
+    face-detection crop (the File Manager).
+    """
+    suffix = "" if face else "_noface"
+    return media_cache.THUMB_DIR / (
+        f"{_video_cache_base(abs_path)}_{_VIDEO_THUMB_VERSION}{suffix}.webp")
 
 
-def _video_slot_file(abs_path: str, size: int) -> Path:
+def _video_slot_file(abs_path: str, size: int, face: bool = True) -> Path:
     """Per-size WebP rendered from the master frame."""
-    return media_cache.THUMB_DIR / f"{_video_cache_base(abs_path)}_{_VIDEO_THUMB_VERSION}_{size}.webp"
+    suffix = "" if face else "_noface"
+    return media_cache.THUMB_DIR / (
+        f"{_video_cache_base(abs_path)}_{_VIDEO_THUMB_VERSION}{suffix}_{size}.webp")
 
 
-def _video_fail_file(abs_path: str) -> Path:
-    return media_cache.THUMB_DIR / f"{_video_cache_base(abs_path)}_{_VIDEO_THUMB_VERSION}.fail.json"
+def _video_fail_file(abs_path: str, face: bool = True) -> Path:
+    suffix = "" if face else "_noface"
+    return media_cache.THUMB_DIR / (
+        f"{_video_cache_base(abs_path)}_{_VIDEO_THUMB_VERSION}{suffix}.fail.json")
 
 
-def _video_master_is_fresh(abs_path: str) -> bool:
-    master = _video_master_file(abs_path)
+def _video_master_is_fresh(abs_path: str, face: bool = True) -> bool:
+    master = _video_master_file(abs_path, face)
     return master.exists() and _cache_is_fresh(master, abs_path)
 
 
@@ -122,14 +132,14 @@ def _video_slot_is_fresh(slot: Path, master: Path, abs_path: str) -> bool:
         return False
 
 
-def _read_video_thumb_failure(abs_path: str) -> dict:
+def _read_video_thumb_failure(abs_path: str, face: bool = True) -> dict:
     """Failure marker for the current source; {} when absent or stale.
 
     The marker stores the source mtime+size, so replacing/re-encoding a file
     that used to fail starts a fresh set of attempts.
     """
     try:
-        data = json.loads(_video_fail_file(abs_path).read_text())
+        data = json.loads(_video_fail_file(abs_path, face).read_text())
         if not isinstance(data, dict):
             return {}
         st = os.stat(abs_path)
@@ -141,13 +151,14 @@ def _read_video_thumb_failure(abs_path: str) -> dict:
         return {}
 
 
-def _record_video_thumb_failure(abs_path: str, reason: str, permanent: bool = False) -> dict:
+def _record_video_thumb_failure(abs_path: str, reason: str, permanent: bool = False,
+                                face: bool = True) -> dict:
     """Bump the attempt counter and schedule the next try (exponential)."""
     try:
         st = os.stat(abs_path)
     except OSError:
         return {}
-    attempts = int(_read_video_thumb_failure(abs_path).get("attempts", 0)) + 1
+    attempts = int(_read_video_thumb_failure(abs_path, face).get("attempts", 0)) + 1
     permanent = permanent or attempts >= _VIDEO_THUMB_FAIL_MAX_ATTEMPTS
     delay = (_VIDEO_THUMB_PERMANENT_BACKOFF if permanent
              else _VIDEO_THUMB_BACKOFF[min(attempts, len(_VIDEO_THUMB_BACKOFF)) - 1])
@@ -160,20 +171,20 @@ def _record_video_thumb_failure(abs_path: str, reason: str, permanent: bool = Fa
         "src_size": st.st_size,
     }
     try:
-        _video_fail_file(abs_path).write_text(json.dumps(data))
+        _video_fail_file(abs_path, face).write_text(json.dumps(data))
     except OSError:
         pass  # bookkeeping only — a lost marker costs one extra attempt
     return data
 
 
-def _clear_video_thumb_failure(abs_path: str):
+def _clear_video_thumb_failure(abs_path: str, face: bool = True):
     with contextlib.suppress(OSError):
-        _video_fail_file(abs_path).unlink()
+        _video_fail_file(abs_path, face).unlink()
 
 
-def _video_thumb_backoff(abs_path: str) -> dict | None:
+def _video_thumb_backoff(abs_path: str, face: bool = True) -> dict | None:
     """Active backoff marker, or None when a new attempt is allowed now."""
-    data = _read_video_thumb_failure(abs_path)
+    data = _read_video_thumb_failure(abs_path, face)
     if not data:
         return None
     try:
@@ -205,7 +216,7 @@ def _render_video_slot(master: Path, abs_path: str, size: int, slot: Path) -> bo
         return False
 
 
-async def _generate_video_master(abs_path: str) -> bool:
+async def _generate_video_master(abs_path: str, face: bool = True) -> bool:
     """Background worker: one niced ffmpeg frame grab into the master slot."""
     if _cover_is_fresh(abs_path):
         # A user cover supersedes the automatic frame — not a failure.
@@ -213,29 +224,30 @@ async def _generate_video_master(abs_path: str) -> bool:
     try:
         if os.path.getsize(abs_path) > _VIDEO_THUMB_MAX_BYTES:
             logger.warning("Video too large for thumbnail: %s", abs_path)
-            _record_video_thumb_failure(abs_path, "too_large", permanent=True)
+            _record_video_thumb_failure(abs_path, "too_large", permanent=True, face=face)
             return False
     except OSError:
         return False
-    master = _video_master_file(abs_path)
+    master = _video_master_file(abs_path, face)
     ok = False
     async with _video_thumb_semaphore:
         try:
             ok = await asyncio.to_thread(
-                _extract_video_frame, abs_path, VIDEO_THUMB_WIDTH, master)
+                _extract_video_frame, abs_path, VIDEO_THUMB_WIDTH, master, face_crop=face)
         except Exception as exc:
             logger.warning("Video thumbnail generation failed for %s: %s",
                            abs_path, exc, exc_info=True)
     if ok and master.exists():
-        _clear_video_thumb_failure(abs_path)
+        _clear_video_thumb_failure(abs_path, face)
         return True
-    _record_video_thumb_failure(abs_path, "no_frame")
+    _record_video_thumb_failure(abs_path, "no_frame", face=face)
     return False
 
 
-def _queue_video_thumb(abs_path: str) -> bool:
+def _queue_video_thumb(abs_path: str, face: bool = True) -> bool:
     """Deduplicated enqueue of a master-frame job. True when a job is pending."""
-    task = _VIDEO_THUMB_INFLIGHT.get(abs_path)
+    key = abs_path if face else abs_path + "|noface"
+    task = _VIDEO_THUMB_INFLIGHT.get(key)
     if task is not None and not task.done():
         return True
     if len(_VIDEO_THUMB_INFLIGHT) >= _VIDEO_THUMB_QUEUE_MAX:
@@ -243,11 +255,11 @@ def _queue_video_thumb(abs_path: str) -> bool:
     if not pressure_guard.heavy_work_allowed():
         # Low-memory window: do not start new ffmpeg runs; the grid polls again.
         return False
-    task = task_registry.spawn(_generate_video_master(abs_path), name="video-thumb")
+    task = task_registry.spawn(_generate_video_master(abs_path, face), name="video-thumb")
     if task is None:
         return False
-    _VIDEO_THUMB_INFLIGHT[abs_path] = task
-    task.add_done_callback(lambda _t, k=abs_path: _VIDEO_THUMB_INFLIGHT.pop(k, None))
+    _VIDEO_THUMB_INFLIGHT[key] = task
+    task.add_done_callback(lambda _t, k=key: _VIDEO_THUMB_INFLIGHT.pop(k, None))
     return True
 
 # ── Custom video covers (user-captured frame shown as the file's thumbnail) ──

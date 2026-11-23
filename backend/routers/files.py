@@ -871,18 +871,20 @@ async def thumbnail(
 async def video_thumbnail(
     path: str = Query(...),
     size: int = Query(320, ge=64, le=640),
+    face: int = Query(1, ge=0, le=1),
 ):
     """Serve a cached video frame; enqueue extraction on a miss.
 
     One master frame per file is extracted by a bounded, niced background
-    worker and every size is a cheap PIL downscale of it — the compact (320)
-    and cinematic (640) grids share a single ffmpeg run. A miss answers
+    worker and every size is a cheap PIL downscale of it. A miss answers
     **202 Accepted** with ``Retry-After`` so the client re-requests instead of
     holding the connection; repeated failures back off exponentially per file.
 
     Args:
         path: Absolute filesystem path to the video file.
         size: Thumbnail width in pixels (64-640, default 320).
+        face: 1 (default) allows the optional face-aware crop used by Photos;
+            File Manager sends 0 and gets a plain frame from its own cache slot.
     """
     abs_path = _sanitize_read(path)
     if not os.path.isfile(abs_path):
@@ -892,6 +894,7 @@ async def video_thumbnail(
     if ext not in _VIDEO_EXTS:
         raise HTTPException(status_code=400, detail="Not a supported video format")
 
+    use_face = bool(face)
     _ensure_thumb_dir()
     width = min(int(size), VIDEO_THUMB_WIDTH)
 
@@ -913,9 +916,9 @@ async def video_thumbnail(
             return _serve(cover_file)
         return _video_fallback_svg(width)
 
-    master = _video_master_file(abs_path)
+    master = _video_master_file(abs_path, use_face)
     if not (master.exists() and _cache_is_fresh(master, abs_path)):
-        backoff = _video_thumb_backoff(abs_path)
+        backoff = _video_thumb_backoff(abs_path, use_face)
         if backoff is not None:
             if backoff.get("permanent"):
                 # Hopeless source — show the generic tile instead of re-queueing
@@ -927,7 +930,7 @@ async def video_thumbnail(
                 delay = 2
             return Response(status_code=202,
                             headers={"Retry-After": str(max(2, min(10, delay)))})
-        if not _queue_video_thumb(abs_path):
+        if not _queue_video_thumb(abs_path, use_face):
             # Worker pool saturated — ask the client to poll again shortly.
             return Response(status_code=202, headers={"Retry-After": "5"})
         return Response(status_code=202, headers={"Retry-After": "2"})
@@ -935,7 +938,7 @@ async def video_thumbnail(
     if width >= VIDEO_THUMB_WIDTH:
         return _serve(master)
 
-    slot = _video_slot_file(abs_path, width)
+    slot = _video_slot_file(abs_path, width, use_face)
     if not _video_slot_is_fresh(slot, master, abs_path):
         ok = await asyncio.to_thread(_render_video_slot, master, abs_path, width, slot)
         if not ok:

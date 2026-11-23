@@ -8,7 +8,7 @@ Scope: `frontend/static/apps/files.js`, `frontend/static/apps/fm-controls.js`,
 `backend/routers/file_ops.py`, `backend/services/files_service.py`,
 `backend/services/media_cache.py` (cache roots + mtime/size sidecar meta),
 `backend/services/thumbnails.py` (video master frame, per-size slots, covers,
-face crop, image thumbs), `backend/services/transcode.py` (H.264 worker + job
+optional face crop for Photos, image thumbs), `backend/services/transcode.py` (H.264 worker + job
 registry — the router only exposes `/api/files/transcode*`),
 `tests/test_file_station_*.py`, `tests/test_media_cache_transcode.py`,
 `tests/test_video_thumb_pipeline.py`.
@@ -299,15 +299,15 @@ restart (Settings → Restart).
 `202 Accepted` whenever both ffmpeg slots were busy, but the grid loaded frames
 through a plain `<img>` tag: an `<img>` cannot read a status code — it only
 fires `error` — so every queued tile was marked "missing" permanently. On top
-of that, each grid size re-ran ffmpeg (compact 320 vs cinematic 640), the four
+of that, each grid size re-ran ffmpeg (320 px vs a larger 640 px frame), the four
 candidate seeks multiplied decode work, and the 8K VR files in Downloads timed
 out over and over on every scroll, saturating CPU.
 
 **Fix.**
 
 - **One master frame per video** (`<hash>_vid_v3.webp`, 640 px): every size is a
-  PIL downscale of that master. Compact ↔ cinematic toggling no longer decodes
-  the folder again; `warm-thumbnails` uses the same artifact.
+  PIL downscale of that master. Switching tile sizes no longer decodes the folder
+  again; `warm-thumbnails` uses the same artifact.
 - **Background worker + 202**: the endpoint only checks the cache and enqueues
   a deduplicated job (`_VIDEO_THUMB_INFLIGHT`, cap 48); extraction runs in
   `settings.VIDEO_THUMB_CONCURRENCY` (default 2) niced workers. A request never
@@ -327,6 +327,12 @@ out over and over on every scroll, saturating CPU.
 - Face detection (media-enhance package) is only attempted when the package is
   running; without it the first valid frame wins instead of decoding three
   candidates to find nothing.
+
+**File Manager vs Photos.** File Manager no longer has a compact/cinematic video
+preview toggle and never asks for a face crop: video tiles always request the
+plain 320 px frame with `face=0`, which has its own `_noface` master/slot cache
+(and its own failure markers). Photos keeps the default `face=1` path, so a
+face-detected crop is only ever used there.
 
 **Measured on the test fixtures**: 1080p input-seek extraction 0.4 s (plain)
 / 0.8–1.9 s niced; a 6 s single-keyframe clip dropped from 9.7 s + 0-byte

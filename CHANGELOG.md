@@ -11,6 +11,21 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.32.0] - 2026-11-23
+
+### Changed
+
+- **Files**: video thumbnails are always the plain 320 px frame. The grid asks
+  the backend for `face=0`, so File Manager no longer runs (or waits on) the
+  media-enhance face-detection pass; the plain frame also has its own cache
+  slot, so it never competes with Photos' face-aware crop.
+
+### Removed
+
+- **Files**: the "cinematic / compact video preview" toggle and its enlarged
+  (up to 507×285, 640 px source) grid mode were removed — video tiles keep the
+  standard 16:9 frame. Photos still uses face-aware thumbnails.
+
 ## [2.31.4] - 2026-11-23
 
 ### Added

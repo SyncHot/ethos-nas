@@ -1499,15 +1499,8 @@
         .fm-file-thumb-wrap.fm-thumb-missing img { display: none; }
         .fm-video-play-badge { position: absolute; right: 5px; bottom: 5px; width: 22px; height: 22px; border-radius: 50%; background: rgba(0,0,0,0.6); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 10px; pointer-events: none; box-shadow: 0 1px 4px rgba(0,0,0,0.45); }
 
-        /* Video thumbnails: wider 16:9 frame */
+        /* Video thumbnails: wider 16:9 frame (always the plain 320 px still) */
         .fm-file-thumb-wrap.fm-video-thumb { aspect-ratio: 16/9; width: calc(var(--fm-icon) * 1.5); height: auto; }
-
-        /* Cinematic video preview (grid): video items span columns, thumbnail capped at 507×285 (16:9) */
-        .fm-content { --fm-vid-span: 6; }
-        .fm-content.fm-size-small { --fm-vid-span: 7; }
-        .fm-content.fm-size-large { --fm-vid-span: 4; }
-        .fm-content.fm-video-xl .fm-file-item.fm-video-item { grid-column: span var(--fm-vid-span); }
-        .fm-content.fm-video-xl .fm-file-thumb-wrap.fm-video-thumb { width: min(507px, 100%); height: auto; aspect-ratio: 16/9; }
 
         /* Grid meta row (size · date / kind) */
         .fm-file-meta { font-size: 10.5px; color: var(--fm-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; line-height: 1.25; }
