@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.31.3"
+APP_VERSION = "2.31.4"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -186,9 +186,10 @@ class Settings:
     UPDATE_TTL_SECONDS: int = int(os.getenv("ETHOS_UPDATE_TTL_SECONDS", "3600"))
     # Background check cadence (the first run happens one interval after start).
     UPDATE_CHECK_HOURS: float = float(os.getenv("ETHOS_UPDATE_CHECK_HOURS", "24"))
-    # Browser extension download shown in Settings → Updates. Every extension
-    # release publishes the stable `ethos-nas-downloader.zip` asset, so the
-    # latest/download URL stays valid across versions.
+    # Browser-extension fallback for Settings → Updates: the extension repo's
+    # release workflow publishes the stable `ethos-nas-downloader.zip` asset on
+    # every vX.Y.Z tag, so this link survives versions. A zip deployed under
+    # `apks/extension/` is preferred (served by the NAS, shows its version).
     EXTENSION_DOWNLOAD_URL: str = os.getenv(
         "ETHOS_EXTENSION_DOWNLOAD_URL",
         "https://github.com/SyncHot/ethos-nas-chrome-extensions/releases/latest/"

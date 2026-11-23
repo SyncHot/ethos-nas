@@ -278,13 +278,14 @@ async function renderUpdates(isCurrent) {
                     <p class="ui-muted">EthOS NAS Downloader for Chrome, Edge, Brave and Vivaldi —
                         right-click links and magnets into the Download Manager.</p>
                 </div>
-                <span class="ui-tag is-info">ZIP</span>
+                <span class="ui-tag is-info" data-testid="extension-version">ZIP</span>
             </div>
             <div class="ui-panel-body ui-row">
                 <a class="ui-btn small primary" data-testid="extension-download"
                    target="_blank" rel="noopener" hidden>${uiIcon('download', 12)} Download</a>
-                <span class="ui-muted">Unpack the zip, open <code>chrome://extensions</code>, enable
-                    Developer mode and choose <em>Load unpacked</em>.</span>
+                <span class="ui-muted" data-testid="extension-hint">Unpack the zip, open
+                    <code>chrome://extensions</code>, enable Developer mode and choose
+                    <em>Load unpacked</em>.</span>
             </div>
         </section>
 
@@ -322,7 +323,11 @@ async function renderUpdates(isCurrent) {
             </div>
         </section>`;
 
-    await Promise.all([_fillCoreUpdate(isCurrent), _fillApkRows(isCurrent)]);
+    await Promise.all([
+        _fillCoreUpdate(isCurrent),
+        _fillApkRows(isCurrent),
+        _fillExtension(isCurrent),
+    ]);
 
     shell.view.querySelector('[data-action="update-check"]')?.addEventListener('click', async (event) => {
         const button = event.currentTarget;
@@ -372,13 +377,9 @@ async function _fillCoreUpdate(isCurrent) {
             downloadEl.innerHTML = `${uiIcon('download', 12)} Download v${escapeHtml(targetVersion)}`;
             downloadEl.title = `Download the v${targetVersion} source archive from GitHub`;
             downloadEl.hidden = false;
+        } else {
+            downloadEl.hidden = true;
         }
-    }
-
-    const extensionEl = shell.view.querySelector('[data-testid="extension-download"]');
-    if (extensionEl && data.extension_download_url) {
-        extensionEl.href = data.extension_download_url;
-        extensionEl.hidden = false;
     }
 
     const latest = data.latest || null;
@@ -450,6 +451,50 @@ async function _fillApkRows(isCurrent) {
             <td class="actions">${link}</td>
         </tr>`;
     }).join('');
+}
+
+async function _fillExtension(isCurrent) {
+    const link = shell.view.querySelector('[data-testid="extension-download"]');
+    const tag = shell.view.querySelector('[data-testid="extension-version"]');
+    const hint = shell.view.querySelector('[data-testid="extension-hint"]');
+    if (!link || !tag) return;
+
+    // Prefer a zip deployed on this server (works offline and shows its exact
+    // version, same contract as the APK rows); fall back to the public GitHub
+    // release asset when the NAS has none.
+    const [local, update] = await Promise.all([
+        apiRequest('/api/app/version?app=extension').catch(() => null),
+        apiRequest('/api/system/update').catch((err) => {
+            logError('Settings: update info unavailable for the extension link', err?.detail || err?.message);
+            return null;
+        }),
+    ]);
+    if (!isCurrent()) return;
+
+    if (local?.version_name) {
+        tag.className = 'ui-tag is-ok';
+        tag.textContent = `v${local.version_name}`;
+        link.href = _withToken(local.url || '/api/app/download?app=extension');
+        link.title = `Download EthOS NAS Downloader v${local.version_name} from this server`;
+        link.hidden = false;
+        return;
+    }
+
+    if (update?.extension_download_url) {
+        tag.className = 'ui-tag is-info';
+        tag.textContent = 'Latest';
+        link.href = update.extension_download_url;
+        link.title = 'Download the latest EthOS NAS Downloader release from GitHub';
+        link.hidden = false;
+        return;
+    }
+
+    tag.className = 'ui-tag is-warn';
+    tag.textContent = 'Unavailable';
+    if (hint) {
+        hint.textContent = 'No extension package is reachable — check the NAS connection, or copy '
+            + 'ethos-nas-downloader-<version>.zip into apks/extension/.';
+    }
 }
 
 async function _applyUpdate() {

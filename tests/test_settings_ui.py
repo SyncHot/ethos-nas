@@ -24,10 +24,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = tempfile.mkdtemp(prefix="ethos-settings-ui-")
+# Deterministic browser-extension package for the Updates card, independent of
+# whether this checkout has a dist/ zip in the sibling extension repository.
+EXTENSION_ZIP = Path(DATA) / "ethos-nas-downloader-9.9.9.zip"
+EXTENSION_ZIP.write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # empty zip archive
 os.environ.update({
     "ETHOS_DATA_DIR": DATA,
     "ETHOS_JWT_SECRET": "settings-ui-test",
     "ETHOS_PACKAGES_DEFAULT_SOURCE": "0",
+    "ETHOS_EXTENSION_ZIP_PATH": str(EXTENSION_ZIP),
 })
 sys.path.insert(0, str(ROOT))
 
@@ -151,9 +156,12 @@ def main() -> int:
                   and download_href.endswith(".zip"), str(download_href))
             page.wait_for_selector('[data-testid="extension-download"]:not([hidden])')
             extension_href = page.get_attribute('[data-testid="extension-download"]', "href")
-            check("extension card links the release zip",
-                  bool(extension_href) and extension_href.endswith(
-                      "/releases/latest/download/ethos-nas-downloader.zip"), str(extension_href))
+            check("extension card links the NAS-hosted zip",
+                  bool(extension_href) and "/api/app/download?app=extension" in extension_href
+                  and "token=" in extension_href, str(extension_href))
+            check("extension card shows the deployed version",
+                  page.locator('[data-testid="extension-version"]').inner_text().strip() == "v9.9.9",
+                  page.locator('[data-testid="extension-version"]').inner_text())
             page.click('[data-testid="settings-nav-system"]')
             page.wait_for_selector('[data-testid="settings-os-image-card"]')
             check("admin sees the OS image check button",

@@ -62,10 +62,11 @@ Response shape: `{enabled, index_url, key_fingerprint, extension_download_url,
 current{version,git_sha,build,download_url}, latest|null, update_available,
 checked_at, checked_at_iso, error, auto_check_hours}`.
 
-`extension_download_url` points at the stable `ethos-nas-downloader.zip` asset on
-the browser-extension repository's latest GitHub release (configurable through
-`ETHOS_EXTENSION_DOWNLOAD_URL`); the Updates page renders it as a Download
-button.
+`extension_download_url` is the fallback for the Browser extension card: the
+public `ethos-nas-chrome-extensions` release workflow uploads the stable
+`ethos-nas-downloader.zip` asset on every `vX.Y.Z` tag, so
+`/releases/latest/download/ethos-nas-downloader.zip` always resolves. Override it
+with `ETHOS_EXTENSION_DOWNLOAD_URL`.
 
 `download_url` is the GitHub source archive of the release tag
 (`https://github.com/SyncHot/ethos-nas/archive/refs/tags/v<version>.zip`) and is
@@ -175,8 +176,20 @@ the published (or running) release source archive, an admin-only **Check for
 updates** button and — when an update is available — **Update now** (confirm →
 progress task → restart overlay). The card reads cached data on open; only the
 buttons trigger work. Below the Android table a **Browser extension** card
-links the latest `<code>ethos-nas-downloader.zip</code> (Chrome/Edge/Brave/
-Vivaldi, MV3) with the load-unpacked instructions.
+shows the browser extension (Chrome/Edge/Brave/Vivaldi, MV3) with the
+load-unpacked instructions. It prefers a zip deployed on this server
+(`/api/app/version?app=extension` + a tokenized
+`/api/app/download?app=extension` link, with the exact version in the badge);
+without one it falls back to `extension_download_url` (GitHub release).
+
+### Deploying the extension zip
+
+The extension repository's `python3 package.py` writes
+`dist/ethos-nas-downloader-<x.y.z>.zip`; copy it into `apks/extension/` of the
+deployment (`apks/` is gitignored and survives updates, like the APK folders).
+The newest semantic version wins; a missing zip just means the card uses the
+GitHub fallback. `ETHOS_EXTENSION_ZIP_PATH` overrides the location (file or
+directory) and the developer checkout's `dist/` is searched as a convenience.
 
 ## Background check
 
@@ -194,7 +207,8 @@ network. A newly seen `git_sha` emits one Notification Center event
 | `ETHOS_UPDATE_PUBKEY` | pinned key | override for a fork/re-sign |
 | `ETHOS_UPDATE_TTL_SECONDS` | `3600` | cache TTL |
 | `ETHOS_UPDATE_CHECK_HOURS` | `24` | background cadence |
-| `ETHOS_EXTENSION_DOWNLOAD_URL` | `…/ethos-nas-chrome-extensions/releases/latest/download/ethos-nas-downloader.zip` | Browser-extension Download button |
+| `ETHOS_EXTENSION_DOWNLOAD_URL` | `…/ethos-nas-chrome-extensions/releases/latest/download/ethos-nas-downloader.zip` | Browser-extension fallback link |
+| `ETHOS_EXTENSION_ZIP_PATH` | *(auto)* | browser-extension zip (file or folder); defaults to `apks/extension/` |
 
 ## Releasing
 

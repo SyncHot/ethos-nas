@@ -11,6 +11,18 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.31.4] - 2026-11-23
+
+### Added
+
+- **Settings → Updates, Browser extension**: a card for the EthOS NAS Downloader
+  (Chrome, Edge, Brave, Vivaldi) with a Download button. It prefers the zip
+  deployed on the NAS (`apks/extension/`), showing its exact version and serving
+  it through the tokenized `/api/app/download?app=extension`; without a deployed
+  package it falls back to the GitHub release asset. `GET
+  /api/app/version?app=extension` advertises the package (version from the
+  filename, sha256, size); `ETHOS_EXTENSION_ZIP_PATH` overrides the location.
+
 ## [2.31.3] - 2026-11-23
 
 ### Added

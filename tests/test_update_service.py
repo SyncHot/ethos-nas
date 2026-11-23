@@ -102,7 +102,7 @@ def main() -> int:
           snapshot["current"]["download_url"].endswith(
               f"/archive/refs/tags/v{APP_VERSION}.zip"),
           snapshot["current"].get("download_url"))
-    check("status exposes the browser-extension download url",
+    check("status exposes the browser-extension fallback url",
           snapshot["extension_download_url"].endswith(
               "/releases/latest/download/ethos-nas-downloader.zip"),
           snapshot.get("extension_download_url"))
