@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-23T09:21:29+00:00",
+  "generated_at": "2026-11-23T09:47:39+00:00",
   "latest": {
-    "version": "2.31.2",
-    "git_sha": "6dd4cc9",
-    "git_sha_full": "6dd4cc9ae75a2de232ab5595be7f5dff12c7cc39",
-    "build": 253,
-    "released_at": "2026-11-23T09:21:29+00:00",
-    "notes": "Settings → Updates: a Download button links the published release's tagged source archive; every account can download it."
+    "version": "2.31.4",
+    "git_sha": "284287e",
+    "git_sha_full": "284287ed3346440d145e9a9dca65783618d86810",
+    "build": 257,
+    "released_at": "2026-11-23T09:47:39+00:00",
+    "notes": "Settings → Updates: a Browser-extension card downloads the EthOS NAS Downloader zip from the NAS (or GitHub as fallback), with the deployed version shown."
   },
   "releases": [
+    {
+      "version": "2.31.4",
+      "git_sha": "284287e",
+      "git_sha_full": "284287ed3346440d145e9a9dca65783618d86810",
+      "build": 257,
+      "released_at": "2026-11-23T09:47:39+00:00",
+      "notes": "Settings → Updates: a Browser-extension card downloads the EthOS NAS Downloader zip from the NAS (or GitHub as fallback), with the deployed version shown."
+    },
     {
       "version": "2.31.2",
       "git_sha": "6dd4cc9",
@@ -201,14 +209,6 @@
       "build": 180,
       "released_at": "2026-11-22T17:01:22+00:00",
       "notes": "Packages: fix a false share-write warning for named volumes; the whole catalog validates warning-free."
-    },
-    {
-      "version": "2.28.0",
-      "git_sha": "b0ea585",
-      "git_sha_full": "b0ea585532be84b87f034e8f6b162e5e0908bae0",
-      "build": 178,
-      "released_at": "2026-11-22T17:00:44+00:00",
-      "notes": "Packages: container health alerts, Docker-root disk preflight, channel filter, UID-aligned share writes; new Uptime Monitor and FreshRSS packages."
     }
   ]
 }
