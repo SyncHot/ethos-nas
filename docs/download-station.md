@@ -102,7 +102,7 @@ legacy config is adopted by the admin once at startup.
 | GET | `/tasks` | user | `status`, `limit` (0..5000), `offset`; returns `{tasks,total,active,max_concurrent}` |
 | GET | `/tasks/{id}` | user | 404 unknown |
 | POST | `/tasks` | user | `{url, name?, folder?, category?, mirrors?}`; explicit folder > category save_path > download_dir |
-| POST | `/tasks/torrent` | user | multipart `.torrent` upload (bencode parsed locally) |
+| POST | `/tasks/torrent` | user | multipart `.torrent` upload (bencode parsed locally); optional `?folder=&category=`, same folder > category > download_dir precedence |
 | POST | `/tasks/{id}/pause` | user | active → paused |
 | POST | `/tasks/{id}/resume` | user | paused/error → waiting |
 | POST | `/tasks/{id}/reset` | user | purge partial payload and restart (also returns to the primary source) |

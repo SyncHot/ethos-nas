@@ -1841,13 +1841,16 @@ async def add_task(payload: AddTaskRequest):
 
 
 @router.post("/tasks/torrent")
-async def add_torrent(files: list[UploadFile] = File(...), folder: str = ""):
+async def add_torrent(files: list[UploadFile] = File(...), folder: str = "", category: str = ""):
     """Upload one or more .torrent files → parse locally (bencode) → debrid tasks.
 
     Each torrent is parsed with the stdlib bencode decoder to build an
     equivalent magnet link, then routed through the configured debrid
     provider exactly like a pasted magnet URL would be. Files that fail to
     parse are reported in `errors` without aborting the rest of the batch.
+
+    Destination precedence matches `POST /tasks`: explicit `folder`, then the
+    category's save path, then the configured download directory.
     """
     cfg = _load_config()
     provider, torrent_creds = _providers.torrent_provider(cfg)
@@ -1861,12 +1864,16 @@ async def add_torrent(files: list[UploadFile] = File(...), folder: str = ""):
         )
 
     folder = (folder or "").strip()
+    category = (category or "").strip()[:64]
+    category_dir = _category_target(cfg, category) if category else ""
     if folder:
         # Absolute path or a subpath of download_dir; role-scoped like add_task.
         if os.path.isabs(folder) or folder.startswith("~"):
             target_dir = path_scope.sanitize(folder)
         else:
             target_dir = path_scope.sanitize(os.path.join(cfg["download_dir"], folder.rstrip("/")))
+    elif category_dir:
+        target_dir = category_dir
     else:
         target_dir = cfg["download_dir"]
 
@@ -1880,7 +1887,9 @@ async def add_torrent(files: list[UploadFile] = File(...), folder: str = ""):
             errors.append({"file": f.filename or "unknown", "error": str(exc)})
             continue
         name = os.path.basename(info["name"].replace("\\", "/")).strip() or f"torrent-{info['hash'][:12]}"
-        created.append(_make_debrid_task(target_dir, info["magnet"], name, size=info["size"]))
+        task = _make_debrid_task(target_dir, info["magnet"], name, size=info["size"])
+        task["category"] = category
+        created.append(task)
 
     if not created:
         detail = "; ".join(f"{e['file']}: {e['error']}" for e in errors) or "no files uploaded"

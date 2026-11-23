@@ -176,7 +176,14 @@ def norm_categories(raw) -> list:
 
 
 def category_target(cfg: dict, name: str) -> str:
-    """Destination directory for a category ("" when unknown or no save_path)."""
+    """Destination directory for a category ("" when the name is unknown).
+
+    An explicit ``save_path`` wins (absolute, ``~`` or relative to the download
+    dir). A blank one means ``<download_dir>/<name>`` — the same convention the
+    Download Manager settings editor documents — so a category picked in the
+    browser extension or the qBittorrent shim lands in its own subfolder even
+    when the user only typed a name.
+    """
     wanted = str(name or "").strip().lower()
     if not wanted:
         return ""
@@ -185,7 +192,13 @@ def category_target(cfg: dict, name: str) -> str:
             continue
         path = str(cat.get("save_path") or "").strip()
         if not path:
-            return ""
+            # qBittorrent-style category path: sanitize the name to one segment
+            # so ".." or a slash cannot escape <download_dir>.
+            safe = os.path.basename(str(cat.get("name") or "").strip().replace("\\", "/"))
+            safe = re.sub(r"[^A-Za-z0-9._-]", "_", safe).strip("._")
+            if not safe:
+                return ""
+            return path_scope.sanitize(os.path.join(cfg["download_dir"], safe))
         if os.path.isabs(path) or path.startswith("~"):
             return path_scope.sanitize(path)
         return path_scope.sanitize(os.path.join(cfg["download_dir"], path))

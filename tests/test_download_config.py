@@ -90,7 +90,10 @@ def main() -> int:
 
         # ── Save/load roundtrip + category destination ───────────────────────
         migrated["download_dir"] = _DATA
-        migrated["categories"] = [{"name": "movies", "save_path": "movies"}]
+        migrated["categories"] = [
+            {"name": "movies", "save_path": "movies"},
+            {"name": "vr", "save_path": ""},
+        ]
         migrated["schedule"] = {"enabled": True, "start": "22:00", "end": "03:00"}
         cfg.save_config(migrated)
         reloaded = cfg.load_config()
@@ -99,6 +102,17 @@ def main() -> int:
         check("relative category path resolves under download_dir",
               cfg.category_target(reloaded, "movies") == os.path.join(_DATA, "movies"),
               cfg.category_target(reloaded, "movies"))
+        check("blank category path resolves to <download_dir>/<name>",
+              cfg.category_target(reloaded, "vr") == os.path.join(_DATA, "vr"),
+              cfg.category_target(reloaded, "vr"))
+        check("blank category path keeps the configured name case",
+              cfg.category_target(
+                  {**reloaded, "categories": [{"name": "VR", "save_path": ""}]}, "vr")
+              == os.path.join(_DATA, "VR"))
+        for hostile, expected in (("../evil", os.path.join(_DATA, "evil")), ("..", "")):
+            target = cfg.category_target(
+                {**reloaded, "categories": [{"name": hostile, "save_path": ""}]}, hostile)
+            check(f"category name {hostile!r} cannot escape download_dir", target == expected, target)
         check("unknown category has no destination", cfg.category_target(reloaded, "nope") == "")
 
         # ── v8 → v9: the link-provider slot keeps AllDebrid routing ─────────

@@ -11,6 +11,20 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.31.1] - 2026-11-23
+
+### Fixed
+
+- **Download Manager categories**: a category whose save path is left blank now
+  downloads into `<download-dir>/<category>` as the settings editor documents,
+  and `.torrent` uploads keep the chosen category. The browser extension's
+  right-click *Send link to EthOS NAS* now uses the category picked in its popup
+  (it is saved as the send default), so VR/TV/Movies selections land in the right
+  folder.
+- **Video Station on Intel N100/N150**: QSV transcoding uses the low-power VDEnc
+  path, scales with `nv12` and no longer sets a pixel format that oneVPL rejects,
+  so hardware encoding works on VDEnc-only iGPUs.
+
 ## [2.31.0] - 2026-11-22
 
 ### Added

@@ -86,6 +86,32 @@ def _call(base: str, method: str, path: str, token: str | None = None, body=None
         return exc.code, parsed, dict(exc.headers)
 
 
+def _post_multipart(base: str, path: str, token: str, field: str, filename: str,
+                    data: bytes, ctype: str = "application/x-bittorrent"):
+    """POST one multipart file (the .torrent upload endpoint)."""
+    boundary = "----ethos-downloads-test"
+    head = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
+        f"Content-Type: {ctype}\r\n\r\n"
+    ).encode()
+    body = head + data + f"\r\n--{boundary}--\r\n".encode()
+    req = urllib.request.Request(base + path, data=body, method="POST")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode()
+            return resp.status, (json.loads(raw) if raw else None), dict(resp.headers)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = raw
+        return exc.code, parsed, dict(exc.headers)
+
+
 def _wait_ready(base: str, proc: subprocess.Popen, timeout: float = 25.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -242,6 +268,45 @@ def main() -> int:
               isinstance(cats, list) and len(cats) == 2, str(cats))
         check("category save_path is stored absolute",
               isinstance(cats, list) and cats[0].get("save_path") == movie_dir, str(cats))
+
+        # A category with a blank save_path is the documented
+        # "<download_dir>/<name>" case — it must not fall through to the root.
+        status, blank_task, _h = _call(base, "POST", "/api/downloads/tasks", admin,
+                                       {"url": "http://127.0.0.1:1/tv.bin", "category": "tv"})
+        blank_id = (blank_task or {}).get("id") if isinstance(blank_task, dict) else None
+        check("blank category keeps its name on the task",
+              status == 200 and (blank_task or {}).get("category") == "tv", f"HTTP {status}")
+        check("blank category lands in <download_dir>/<name>",
+              str((blank_task or {}).get("path") or "").startswith(str(download_dir / "tv")),
+              str((blank_task or {}).get("path")))
+        if blank_id:
+            _call(base, "DELETE", f"/api/downloads/tasks/{blank_id}?delete_file=false", admin)
+
+        print("\nTorrent upload destination")
+        status, _body, _h = _call(base, "POST", "/api/downloads/config", admin,
+                                  {"debrid": {"provider": "alldebrid", "alldebrid_api_key": "test-key"}})
+        check("a torrent provider can be configured", status == 200, f"HTTP {status}")
+        sys.path.insert(0, str(ROOT))
+        from backend.services.bencode import bencode_any  # noqa: E402
+        torrent_bytes = b"d4:info" + bencode_any({b"name": b"vr-clip.mkv", b"length": 10}) + b"e"
+        status, upload, _h = _post_multipart(base, "/api/downloads/tasks/torrent?category=tv",
+                                             admin, "files", "vr-clip.torrent", torrent_bytes)
+        queued = (upload or {}).get("queued") if isinstance(upload, dict) else None
+        check("torrent upload → 200 with a queued task",
+              status == 200 and isinstance(queued, list) and bool(queued),
+              f"HTTP {status}: {str(upload)[:160]}")
+        if queued:
+            check("torrent upload keeps its category",
+                  queued[0].get("category") == "tv", str(queued[0])[:160])
+            check("torrent category chooses <download_dir>/<name>",
+                  str(queued[0].get("path") or "").startswith(str(download_dir / "tv")),
+                  str(queued[0].get("path")))
+            for task in queued:
+                _call(base, "DELETE", f"/api/downloads/tasks/{task.get('id')}?delete_file=false", admin)
+        # Clearing the slot alone is not enough: a stored key keeps AllDebrid
+        # eligible as a link provider for every host.
+        _call(base, "POST", "/api/downloads/config", admin,
+              {"debrid": {"provider": "", "link_provider": "", "alldebrid_api_key": ""}})
 
         print("\nRSS feeds")
         status, cfg7, _h = _call(base, "POST", "/api/downloads/config", admin, {"rss_feeds": [
