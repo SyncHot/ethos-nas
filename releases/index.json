@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-23T11:32:13+00:00",
+  "generated_at": "2026-11-23T11:55:29+00:00",
   "latest": {
-    "version": "2.32.0",
-    "git_sha": "dab10fa",
-    "git_sha_full": "dab10facff06e4fb3d7b7cb257238b8fffa66216",
-    "build": 259,
-    "released_at": "2026-11-23T11:32:13+00:00",
-    "notes": "Files: plain 320 px video thumbnails; cinematic preview and face-detected crops removed"
+    "version": "2.33.0",
+    "git_sha": "b36e4d3",
+    "git_sha_full": "b36e4d33e60809f030851ba1fa9f58d4693e8f98",
+    "build": 261,
+    "released_at": "2026-11-23T11:55:29+00:00",
+    "notes": "Files: Move to Trash on a data disk is now an instant rename into <mount>/.@Recycle instead of copying onto the system SSD"
   },
   "releases": [
+    {
+      "version": "2.33.0",
+      "git_sha": "b36e4d3",
+      "git_sha_full": "b36e4d33e60809f030851ba1fa9f58d4693e8f98",
+      "build": 261,
+      "released_at": "2026-11-23T11:55:29+00:00",
+      "notes": "Files: Move to Trash on a data disk is now an instant rename into <mount>/.@Recycle instead of copying onto the system SSD"
+    },
     {
       "version": "2.32.0",
       "git_sha": "dab10fa",
@@ -201,14 +209,6 @@
       "build": 185,
       "released_at": "2026-11-22T17:29:26+00:00",
       "notes": "Packages: a stopped package service now says 'start it in Package Center' instead of showing a Python connection error; new cross-package QA sweep (docs/packages-qa.md)."
-    },
-    {
-      "version": "2.28.2",
-      "git_sha": "5713713",
-      "git_sha_full": "5713713bb6f8e768d2dee8300071a471716af4e7",
-      "build": 183,
-      "released_at": "2026-11-22T17:24:38+00:00",
-      "notes": "Package Center now tells you which service already holds a package port instead of failing with a raw Docker bind error; Forgejo moved to host port 3005."
     }
   ]
 }
