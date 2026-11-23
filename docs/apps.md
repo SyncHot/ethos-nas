@@ -31,7 +31,7 @@ and one status line — matching the native package windows.
 | Services | `apps/services.js` | `/api/systemd`, `/api/ethos-nas-service` |
 | SMART | `apps/smart.js` | `/api/smart` |
 | Samba shares | `ethos-packages/ethos-shares/frontend/app-shell.js` (package) | `/api/shares` |
-| Books | `ethos-packages/ethos-books/frontend/app.js` (package) + `/books` PWA | `/api/files`, `/api/files/raw` + the package's own venv service (`docs/books.md`, `docs/books-pwa.md`) |
+| Books | `ethos-packages/ethos-books/frontend/app.js` (package) + `/books` PWA | `/api/files`, `/api/files/raw`, `/api/files/download` + the package's own venv service (`docs/books.md`, `docs/books-pwa.md`) |
 | Network | `apps/network.js` | `/api/network` |
 | Logs | `apps/logs.js` | `/api/logs`, `/ws/logs/*` |
 | Search | `apps/search.js` | `/api/files/universal-search` |

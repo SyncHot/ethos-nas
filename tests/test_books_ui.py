@@ -222,9 +222,22 @@ def main() -> int:
             check("EPUB metadata parsed", any("Dune" in title for title in titles), str(titles))
             check("folder audiobook grouped", any("Book One" in title for title in titles), str(titles))
 
+            # Downloads stream through the core file API (/api/files/download) with
+            # the caller's token, so the browser saves the real file, not a copy.
+            page.locator('.bk-card', has_text="Dune").first.locator('[data-testid="books-menu"]').click()
+            with page.expect_download(timeout=15000) as book_download_info:
+                page.locator('[data-testid="books-act-download"]').click()
+            book_download = book_download_info.value
+            check("card menu downloads the EPUB", book_download.suggested_filename == "Dune.epub",
+                  book_download.suggested_filename)
+            saved_path = book_download.path()
+            check("downloaded book has content", bool(saved_path and Path(saved_path).stat().st_size > 0))
+
             page.locator('.bk-card', has_text="Dune").first.locator('[data-testid="books-open"]').click()
             page.wait_for_selector(".bk-epub-host iframe", timeout=20000)
             check("EPUB renders in the window", page.locator(".bk-epub-host iframe").count() == 1)
+            check("reader offers a download",
+                  page.locator('[data-testid="books-reader-download"]').count() == 1)
             page.wait_for_timeout(1200)
             position = page.locator("[data-reader-position]").inner_text()
             check("reader reports a position", "%" in position, position)
@@ -246,6 +259,12 @@ def main() -> int:
             page.locator('[data-testid="books-play"]').first.click()
             page.wait_for_selector(".bk-player", timeout=10000)
             check("player opens with tracks", page.locator(".bk-track").count() == 2)
+            with page.expect_download(timeout=15000) as track_download_info:
+                page.locator('[data-testid="books-track-download"]').first.click()
+            track_download = track_download_info.value
+            check("player downloads a single track",
+                  track_download.suggested_filename == "01 - Start.mp3",
+                  track_download.suggested_filename)
             page.click('[data-testid="books-reader-close"]')
 
             page.click('.bk-nav-item[data-view="settings"]')

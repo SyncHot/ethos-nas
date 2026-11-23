@@ -27,6 +27,7 @@ The app lives in the sibling repository, not in the core checkout:
 |---|---|
 | List a folder, scoped per role | `GET /api/files?path=` (`backend/routers/files.py::list_directory`) |
 | Stream a book with Range | `GET /api/files/raw?path=` (Starlette `FileResponse`) |
+| Save a title to the device | `GET /api/files/download?path=` (attachment, own JWT in `?token=`) |
 | Cover cache for images | `GET /api/files/thumbnail` (unused by Books — covers come from the book file) |
 | Per-account state | the package service, reached through `/api/packages/ethos-books/proxy/*` |
 | Identity | `X-Ethos-User` stamped by `backend/routers/packages.py::package_ui_proxy` |
@@ -87,6 +88,11 @@ Path validation refuses anything outside `/home`, `/mnt`, `/media` and any non-a
 - Vendored readers are fetched with `ctx.apiFetch` and executed as blob `<script>`s (a plain
   `<script src>` cannot send the bearer token). pdf.js gets the worker as a blob URL too, because it
   derives `workerSrc` from the script URL otherwise.
+- Downloads build a `/api/files/download?path=…&token=…` link and click a hidden anchor, so the
+  browser streams the file straight to disk — a 1 GB audiobook never sits in page memory. The card
+  menu, the reader/player bar and the audiobooks table save a whole title; a folder audiobook is one
+  file per track (the player has a `⤓` button on every track). Received shares download read-only
+  because `/download` uses `sanitize_read`, same as streaming.
 - Progress is throttled (2.5 s) and flushed on reader close and on the window close guard
   (`ctx.windows.registerCloseGuard('pkg-ethos-books', …)`).
 - Notifications go through `ctx.notifications.toast`; diagnostics through `ctx.log`; long scans use
@@ -123,6 +129,8 @@ spec: [`docs/books-pwa.md`](books-pwa.md). Folder management and scanning stay i
 - [x] EPUB reader (epub.js, CFI resume, TOC, reading themes, fonts/margins)
 - [x] PDF reader (pdf.js, page navigation/zoom/resume, inline fallback)
 - [x] Audiobook player (folder/M4B grouping, resume, speed, skip, sleep timer)
+- [x] Downloads to the device: a title from the card menu, reader bar or audiobooks table, and a
+  single track from the player (`/api/files/download`, no copy on the NAS)
 - [x] Signed catalog entry + package README
 - [x] `tests/test_books_ui.py` (Playwright, skips without the packages checkout)
 - [x] Docs: this file, `docs/app-store.md`, `docs/apps.md`

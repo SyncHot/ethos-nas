@@ -70,7 +70,7 @@ removed distributions reappears — there is no pending allowlist any more.
 | `ethos-media-enhance` | 8097 | OpenCV face detection | Photos video thumbnails (`face=1`; Files passes `face=0`) |
 | `ethos-kanban` | 8098 | boards + native UI | its own window (`user_access: true`) |
 | `ethos-sticky-notes` | 8099 | per-account notes + native UI | its own window (`user_access: true`) |
-| `ethos-books` | 8089 | per-account library metadata, covers, progress + native UI | its own window (`user_access: true`); book bytes come from `/api/files/raw` |
+| `ethos-books` | 8089 | per-account library metadata, covers, progress + native UI | its own window (`user_access: true`); book bytes come from `/api/files/raw` and are saved with `/api/files/download` |
 | `ethos-photos` | — | Photos desktop UI | core `/api/gallery` + `/api/moments` |
 | `ethos-music` | — | Music desktop UI | core `/api/music` (+ `ethos-music-engine`) |
 | `ethos-video` | — | Videos desktop UI | core `/api/videos` |
