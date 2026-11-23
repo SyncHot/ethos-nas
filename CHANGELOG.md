@@ -11,6 +11,16 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.31.3] - 2026-11-23
+
+### Added
+
+- **Settings → Updates**: a **Browser extension** card downloads the latest
+  EthOS NAS Downloader zip (Chrome, Edge, Brave, Vivaldi) with the load-unpacked
+  steps. The stable `ethos-nas-downloader.zip` comes from the extension's GitHub
+  releases (override with `ETHOS_EXTENSION_DOWNLOAD_URL`); every account can
+  download it.
+
 ## [2.31.2] - 2026-11-23
 
 ### Added

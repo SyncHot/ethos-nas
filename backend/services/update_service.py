@@ -221,6 +221,7 @@ def status() -> dict:
         "enabled": settings.UPDATE_ENABLED,
         "index_url": settings.UPDATE_INDEX_URL,
         "key_fingerprint": package_repo.key_fingerprint(settings.UPDATE_PUBKEY),
+        "extension_download_url": settings.EXTENSION_DOWNLOAD_URL,
         "current": current_release(),
         "latest": state.get("latest") or None,
         "update_available": state.get("update_available"),

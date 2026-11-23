@@ -274,6 +274,23 @@ async function renderUpdates(isCurrent) {
         <section class="ui-panel">
             <div class="ui-toolbar">
                 <div>
+                    <h2>${uiIcon('network', 13)} Browser extension</h2>
+                    <p class="ui-muted">EthOS NAS Downloader for Chrome, Edge, Brave and Vivaldi —
+                        right-click links and magnets into the Download Manager.</p>
+                </div>
+                <span class="ui-tag is-info">ZIP</span>
+            </div>
+            <div class="ui-panel-body ui-row">
+                <a class="ui-btn small primary" data-testid="extension-download"
+                   target="_blank" rel="noopener" hidden>${uiIcon('download', 12)} Download</a>
+                <span class="ui-muted">Unpack the zip, open <code>chrome://extensions</code>, enable
+                    Developer mode and choose <em>Load unpacked</em>.</span>
+            </div>
+        </section>
+
+        <section class="ui-panel">
+            <div class="ui-toolbar">
+                <div>
                     <h2>${uiIcon('music', 13)} Music on your phone</h2>
                     <p class="ui-muted">Music has no APK any more — the phone player is an installable web app
                         with the same account, playlists and offline downloads.</p>
@@ -355,9 +372,13 @@ async function _fillCoreUpdate(isCurrent) {
             downloadEl.innerHTML = `${uiIcon('download', 12)} Download v${escapeHtml(targetVersion)}`;
             downloadEl.title = `Download the v${targetVersion} source archive from GitHub`;
             downloadEl.hidden = false;
-        } else {
-            downloadEl.hidden = true;
         }
+    }
+
+    const extensionEl = shell.view.querySelector('[data-testid="extension-download"]');
+    if (extensionEl && data.extension_download_url) {
+        extensionEl.href = data.extension_download_url;
+        extensionEl.hidden = false;
     }
 
     const latest = data.latest || null;

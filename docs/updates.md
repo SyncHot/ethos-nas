@@ -58,8 +58,14 @@ schema 1), holding the last result + error.
 | POST | `/api/system/update/check` | admin | Fetch + verify the index now (1 h cache) |
 | POST | `/api/system/update` | admin | Write `update/request.json` and start the helper |
 
-Response shape: `{enabled, index_url, key_fingerprint, current{version,git_sha,build,download_url},
-latest|null, update_available, checked_at, checked_at_iso, error, auto_check_hours}`.
+Response shape: `{enabled, index_url, key_fingerprint, extension_download_url,
+current{version,git_sha,build,download_url}, latest|null, update_available,
+checked_at, checked_at_iso, error, auto_check_hours}`.
+
+`extension_download_url` points at the stable `ethos-nas-downloader.zip` asset on
+the browser-extension repository's latest GitHub release (configurable through
+`ETHOS_EXTENSION_DOWNLOAD_URL`); the Updates page renders it as a Download
+button.
 
 `download_url` is the GitHub source archive of the release tag
 (`https://github.com/SyncHot/ethos-nas/archive/refs/tags/v<version>.zip`) and is
@@ -168,7 +174,9 @@ notes when an update exists, the last helper result, a **Download** button for
 the published (or running) release source archive, an admin-only **Check for
 updates** button and — when an update is available — **Update now** (confirm →
 progress task → restart overlay). The card reads cached data on open; only the
-buttons trigger work.
+buttons trigger work. Below the Android table a **Browser extension** card
+links the latest `<code>ethos-nas-downloader.zip</code> (Chrome/Edge/Brave/
+Vivaldi, MV3) with the load-unpacked instructions.
 
 ## Background check
 
@@ -186,6 +194,7 @@ network. A newly seen `git_sha` emits one Notification Center event
 | `ETHOS_UPDATE_PUBKEY` | pinned key | override for a fork/re-sign |
 | `ETHOS_UPDATE_TTL_SECONDS` | `3600` | cache TTL |
 | `ETHOS_UPDATE_CHECK_HOURS` | `24` | background cadence |
+| `ETHOS_EXTENSION_DOWNLOAD_URL` | `…/ethos-nas-chrome-extensions/releases/latest/download/ethos-nas-downloader.zip` | Browser-extension Download button |
 
 ## Releasing
 

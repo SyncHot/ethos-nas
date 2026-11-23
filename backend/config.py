@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.31.2"
+APP_VERSION = "2.31.3"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -186,6 +186,14 @@ class Settings:
     UPDATE_TTL_SECONDS: int = int(os.getenv("ETHOS_UPDATE_TTL_SECONDS", "3600"))
     # Background check cadence (the first run happens one interval after start).
     UPDATE_CHECK_HOURS: float = float(os.getenv("ETHOS_UPDATE_CHECK_HOURS", "24"))
+    # Browser extension download shown in Settings → Updates. Every extension
+    # release publishes the stable `ethos-nas-downloader.zip` asset, so the
+    # latest/download URL stays valid across versions.
+    EXTENSION_DOWNLOAD_URL: str = os.getenv(
+        "ETHOS_EXTENSION_DOWNLOAD_URL",
+        "https://github.com/SyncHot/ethos-nas-chrome-extensions/releases/latest/"
+        "download/ethos-nas-downloader.zip",
+    )
 
     # ── OS package updates (services/os_update_service.py, docs/os-updates.md) ─
     # Ubuntu apt upgrades of the *current release only*: no release upgrade, no
@@ -304,6 +312,19 @@ class Settings:
         app: os.getenv(f"ETHOS_{app.upper()}_APK_PATH", "")
         for app in ("moments", "music", "video")
     }
+
+    # ── Browser extension delivery (routers/updates.py) ──────────────────────
+    # `apks/extension/` inside the install dir is the deployed location — the
+    # extension repo's `package.py` output (ethos-nas-downloader-<x.y.z>.zip)
+    # is copied there. The developer-checkout dist dir is a convenience only.
+    # The newest semantic version wins; ETHOS_EXTENSION_ZIP_PATH (file or dir)
+    # overrides both.
+    EXTENSION_DIRS: list[str] = [
+        str(INSTALL_DIR / "apks" / "extension"),
+        str(DEV_COMPOSE_DIR / "ethos-nas-chrome-extensions" / "dist"),
+    ]
+    EXTENSION_ZIP_PATH: str = os.getenv("ETHOS_EXTENSION_ZIP_PATH", "")
+
     # systemd unit that runs EthOS itself (self-management router).
     SERVICE_UNIT: str = os.getenv("ETHOS_SERVICE_UNIT", "ethos-nas.service")
 

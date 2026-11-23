@@ -41,6 +41,7 @@ SECTIONS = [
     ("system", '[data-testid="settings-system-card"]'),
     ("maintenance", '[data-testid="settings-caches-card"]'),
     ("users", ".ui-table"),
+    ("sharing", '[data-testid="settings-sharing-card"]'),
     ("security", '[data-testid="api-key-card"]'),
     ("appearance", '[data-testid="wp-custom-preview"]'),
     ("about", ".ui-table"),
@@ -119,8 +120,8 @@ def main() -> int:
             check("Settings window renders the shell", page.locator('[data-testid="settings-shell"]').count() == 1)
             rail_width = page.eval_on_selector('[data-testid="settings-rail"]', "el => getComputedStyle(el).width")
             check("rail is 218 px", rail_width == "218px", rail_width)
-            check("rail has eight sections",
-                  page.locator('[data-testid^="settings-nav-"]').count() == 8,
+            check(f"rail has {len(SECTIONS)} sections",
+                  page.locator('[data-testid^="settings-nav-"]').count() == len(SECTIONS),
                   str(page.locator('[data-testid^="settings-nav-"]').count()))
 
             for section, selector in SECTIONS:
@@ -148,6 +149,11 @@ def main() -> int:
             check("core card links the release archive",
                   bool(download_href) and "/archive/refs/tags/v" in download_href
                   and download_href.endswith(".zip"), str(download_href))
+            page.wait_for_selector('[data-testid="extension-download"]:not([hidden])')
+            extension_href = page.get_attribute('[data-testid="extension-download"]', "href")
+            check("extension card links the release zip",
+                  bool(extension_href) and extension_href.endswith(
+                      "/releases/latest/download/ethos-nas-downloader.zip"), str(extension_href))
             page.click('[data-testid="settings-nav-system"]')
             page.wait_for_selector('[data-testid="settings-os-image-card"]')
             check("admin sees the OS image check button",
@@ -185,6 +191,9 @@ def main() -> int:
             user_page.wait_for_selector('[data-testid="core-update-download"]:not([hidden])')
             check("non-admin can download the release",
                   user_page.locator('[data-testid="core-update-download"]:not([hidden])').count() == 1)
+            user_page.wait_for_selector('[data-testid="extension-download"]:not([hidden])')
+            check("non-admin can download the browser extension",
+                  user_page.locator('[data-testid="extension-download"]:not([hidden])').count() == 1)
             user_page.click('[data-testid="settings-nav-maintenance"]')
             user_page.wait_for_selector('[data-testid="settings-caches-card"]')
             restart_disabled = user_page.eval_on_selector('[data-action="restart"]', "el => el.disabled")

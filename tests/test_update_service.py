@@ -95,6 +95,17 @@ def main() -> int:
           update_service.release_download_url("") == ""
           and update_service.release_download_url("../evil") == ""
           and update_service.release_download_url("a b") == "")
+
+    print("\n[status]")
+    snapshot = update_service.status()
+    check("status exposes the running release download url",
+          snapshot["current"]["download_url"].endswith(
+              f"/archive/refs/tags/v{APP_VERSION}.zip"),
+          snapshot["current"].get("download_url"))
+    check("status exposes the browser-extension download url",
+          snapshot["extension_download_url"].endswith(
+              "/releases/latest/download/ethos-nas-downloader.zip"),
+          snapshot.get("extension_download_url"))
     for bad in (b"not json", json.dumps({"schema": 9, "latest": {}}).encode(),
                 json.dumps({"schema": 1, "latest": {}}).encode()):
         try:
