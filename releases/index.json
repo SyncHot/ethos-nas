@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-23T09:10:04+00:00",
+  "generated_at": "2026-11-23T09:21:29+00:00",
   "latest": {
-    "version": "2.31.1",
-    "git_sha": "754eab5",
-    "git_sha_full": "754eab532a0ab2182bff1e32c1222661cc662095",
-    "build": 251,
-    "released_at": "2026-11-23T09:10:04+00:00",
-    "notes": "Download Manager: the browser extension's picked category is now kept for right-click sends and .torrent uploads; a category without a save path downloads into its own subfolder."
+    "version": "2.31.2",
+    "git_sha": "6dd4cc9",
+    "git_sha_full": "6dd4cc9ae75a2de232ab5595be7f5dff12c7cc39",
+    "build": 253,
+    "released_at": "2026-11-23T09:21:29+00:00",
+    "notes": "Settings → Updates: a Download button links the published release's tagged source archive; every account can download it."
   },
   "releases": [
+    {
+      "version": "2.31.2",
+      "git_sha": "6dd4cc9",
+      "git_sha_full": "6dd4cc9ae75a2de232ab5595be7f5dff12c7cc39",
+      "build": 253,
+      "released_at": "2026-11-23T09:21:29+00:00",
+      "notes": "Settings → Updates: a Download button links the published release's tagged source archive; every account can download it."
+    },
     {
       "version": "2.31.1",
       "git_sha": "754eab5",
@@ -201,14 +209,6 @@
       "build": 178,
       "released_at": "2026-11-22T17:00:44+00:00",
       "notes": "Packages: container health alerts, Docker-root disk preflight, channel filter, UID-aligned share writes; new Uptime Monitor and FreshRSS packages."
-    },
-    {
-      "version": "2.27.0",
-      "git_sha": "6ac6c70",
-      "git_sha_full": "6ac6c708f73c587d3d4a09e45c5745f1430c17ca",
-      "build": 176,
-      "released_at": "2026-11-22T16:46:53+00:00",
-      "notes": "Packages: update notifications, purgable app data, disk-space preflight and PIN-safe catalog; new Syncthing and Forgejo packages."
     }
   ]
 }
