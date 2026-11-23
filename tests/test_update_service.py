@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT))
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat  # noqa: E402
 
-from backend.config import settings  # noqa: E402
+from backend.config import APP_VERSION, settings  # noqa: E402
 from backend.services import package_repo, update_service  # noqa: E402
 
 _results: list[tuple[str, bool, str]] = []
@@ -84,6 +84,17 @@ def main() -> int:
     check("keeps version/sha/build", parsed["version"] == "2.2.0" and parsed["git_sha"] == "def5678"
           and parsed["build"] == 101)
     check("builds a commit url", parsed["commit_url"].endswith("/def5678"))
+    check("builds the release archive url",
+          parsed["download_url"]
+          == "https://github.com/SyncHot/ethos-nas/archive/refs/tags/v2.2.0.zip",
+          parsed["download_url"])
+    check("running release has a download url",
+          update_service.current_release()["download_url"].endswith(
+              f"/archive/refs/tags/v{APP_VERSION}.zip"))
+    check("release_download_url rejects unusable versions",
+          update_service.release_download_url("") == ""
+          and update_service.release_download_url("../evil") == ""
+          and update_service.release_download_url("a b") == "")
     for bad in (b"not json", json.dumps({"schema": 9, "latest": {}}).encode(),
                 json.dumps({"schema": 1, "latest": {}}).encode()):
         try:

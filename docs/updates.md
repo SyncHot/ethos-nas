@@ -58,8 +58,13 @@ schema 1), holding the last result + error.
 | POST | `/api/system/update/check` | admin | Fetch + verify the index now (1 h cache) |
 | POST | `/api/system/update` | admin | Write `update/request.json` and start the helper |
 
-Response shape: `{enabled, index_url, key_fingerprint, current{version,git_sha,build},
-latest|null, update_available|null, checked_at, checked_at_iso, error, auto_check_hours}`.
+Response shape: `{enabled, index_url, key_fingerprint, current{version,git_sha,build,download_url},
+latest|null, update_available, checked_at, checked_at_iso, error, auto_check_hours}`.
+
+`download_url` is the GitHub source archive of the release tag
+(`https://github.com/SyncHot/ethos-nas/archive/refs/tags/v<version>.zip`) and is
+present on both `current` and each indexed release. It is a plain download link;
+the update *apply* path still uses the signed index and git, never this archive.
 
 ## Apply (root helper `ethos-update`)
 
@@ -159,7 +164,8 @@ Limits (deliberate):
 
 `Settings → System → EthOS NAS` card: running version + short sha, status line
 ("Up to date" / "Update available: v2.2.0 · sha" / "Check failed — …"), release
-notes when an update exists, the last helper result, an admin-only **Check for
+notes when an update exists, the last helper result, a **Download** button for
+the published (or running) release source archive, an admin-only **Check for
 updates** button and — when an update is available — **Update now** (confirm →
 progress task → restart overlay). The card reads cached data on open; only the
 buttons trigger work.

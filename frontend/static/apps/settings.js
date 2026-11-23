@@ -243,6 +243,8 @@ async function renderUpdates(isCurrent) {
                     <p class="ui-muted" data-testid="core-update-status">Loading update status…</p>
                 </div>
                 <div class="ui-row">
+                    <a class="ui-btn small" data-testid="core-update-download"
+                       target="_blank" rel="noopener" hidden></a>
                     ${isAdmin
                         ? `<button class="ui-btn small" data-action="update-check" data-testid="core-update-check">${uiIcon('refresh', 12)} Check for updates</button>
                            <button class="ui-btn small primary" data-action="update-apply" data-testid="core-update-apply" hidden>${uiIcon('download', 12)} Update now</button>`
@@ -339,6 +341,24 @@ async function _fillCoreUpdate(isCurrent) {
 
     const current = data.current || {};
     versionEl.textContent = `v${current.version || '?'}${current.git_sha ? ` · ${current.git_sha}` : ''}`;
+
+    // Every release is tagged v<version>, so its source archive is a real
+    // download. Prefer the published release; fall back to the running one
+    // when the cached check predates this field (or was never run).
+    const downloadEl = shell.view.querySelector('[data-testid="core-update-download"]');
+    const downloadTarget = (data.latest && data.latest.download_url) ? data.latest : current;
+    const downloadUrl = downloadTarget?.download_url || '';
+    if (downloadEl) {
+        if (downloadUrl) {
+            const targetVersion = downloadTarget.version || current.version || '';
+            downloadEl.href = downloadUrl;
+            downloadEl.innerHTML = `${uiIcon('download', 12)} Download v${escapeHtml(targetVersion)}`;
+            downloadEl.title = `Download the v${targetVersion} source archive from GitHub`;
+            downloadEl.hidden = false;
+        } else {
+            downloadEl.hidden = true;
+        }
+    }
 
     const latest = data.latest || null;
     const checked = data.checked_at_iso ? `last checked ${_fmtDate(data.checked_at_iso)}` : 'never checked';

@@ -143,6 +143,11 @@ def main() -> int:
             page.wait_for_selector('[data-testid="core-update-card"]')
             check("admin sees the update check button",
                   page.locator('[data-testid="core-update-check"]').count() == 1)
+            page.wait_for_selector('[data-testid="core-update-download"]:not([hidden])')
+            download_href = page.get_attribute('[data-testid="core-update-download"]', "href")
+            check("core card links the release archive",
+                  bool(download_href) and "/archive/refs/tags/v" in download_href
+                  and download_href.endswith(".zip"), str(download_href))
             page.click('[data-testid="settings-nav-system"]')
             page.wait_for_selector('[data-testid="settings-os-image-card"]')
             check("admin sees the OS image check button",
@@ -177,6 +182,9 @@ def main() -> int:
             user_page.wait_for_selector('[data-testid="core-update-card"]')
             check("non-admin has no update button",
                   user_page.locator('[data-testid="core-update-check"]').count() == 0)
+            user_page.wait_for_selector('[data-testid="core-update-download"]:not([hidden])')
+            check("non-admin can download the release",
+                  user_page.locator('[data-testid="core-update-download"]:not([hidden])').count() == 1)
             user_page.click('[data-testid="settings-nav-maintenance"]')
             user_page.wait_for_selector('[data-testid="settings-caches-card"]')
             restart_disabled = user_page.eval_on_selector('[data-action="restart"]', "el => el.disabled")

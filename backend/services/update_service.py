@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -38,6 +39,19 @@ _loop_task: asyncio.Task | None = None
 _loop_stop: asyncio.Event | None = None
 
 REPO_SLUG = "SyncHot/ethos-nas"
+
+
+def release_download_url(version: str) -> str:
+    """GitHub source archive for a release tag ("" without a usable version).
+
+    Every published release is tagged `v<version>` by the release ritual, so the
+    tag archive is the canonical downloadable copy of that release. The Settings
+    card links to it; nothing here downloads or executes it.
+    """
+    v = str(version or "").strip()
+    if not re.fullmatch(r"[0-9A-Za-z._-]{1,32}", v):
+        return ""
+    return f"https://github.com/{REPO_SLUG}/archive/refs/tags/v{v}.zip"
 
 
 # ── State store ─────────────────────────────────────────────────────────────
@@ -102,6 +116,7 @@ def current_release() -> dict:
         "git_sha": _git("rev-parse", "--short", "HEAD"),
         "build": build,
         "shallow": shallow,
+        "download_url": release_download_url(APP_VERSION),
     }
 
 
@@ -134,6 +149,7 @@ def _coerce_release(raw: Any) -> dict:
         "released_at": str(raw.get("released_at") or "").strip()[:64],
         "notes": str(raw.get("notes") or "").strip()[:8000],
         "commit_url": f"https://github.com/{REPO_SLUG}/commit/{sha}" if sha else "",
+        "download_url": release_download_url(version),
     }
 
 

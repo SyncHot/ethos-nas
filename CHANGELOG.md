@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.31.2] - 2026-11-23
+
+### Added
+
+- **Settings → Updates**: the EthOS NAS card has a **Download** button for the
+  published release (falling back to the running version) — the tagged source
+  archive from GitHub. Every account sees the download; *Check for updates* and
+  *Update now* stay admin-only.
+
 ## [2.31.1] - 2026-11-23
 
 ### Fixed
