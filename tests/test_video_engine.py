@@ -90,8 +90,18 @@ def test_video_args() -> None:
 
     pre, video, filters = ve.build_video_args(
         HEVC, "transcode", "qsv", "balanced", decode_hw=True, device="/dev/dri/renderD128")
-    check("QSV GPU downscale", "scale_qsv=w=-2:h=1080" in filters, str(filters))
+    check("QSV GPU downscale", "scale_qsv=w=-1:h=1080:format=nv12" in filters, str(filters))
     check("QSV encoder selected", "h264_qsv" in video)
+    check("QSV forces the low-power encoder",
+          video.count("-low_power") == 1 and "1" in video, str(video))
+    check("QSV never sets -pix_fmt (breaks hw frames)",
+          "-pix_fmt" not in video, str(video))
+
+    pre, video, filters = ve.build_video_args(
+        HEVC_10BIT, "transcode", "qsv", "high", decode_hw=True,
+        device="/dev/dri/renderD128")
+    check("QSV 10-bit source-res convert to nv12",
+          filters == ["scale_qsv=format=nv12"], str(filters))
 
     pre, video, filters = ve.build_video_args(HEVC, "transcode", None, "fast")
     check("libx264 gets CRF", "libx264" in video and "-crf" in video)

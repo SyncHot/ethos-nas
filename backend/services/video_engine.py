@@ -172,15 +172,26 @@ def build_video_args(
             pre += ["-qsv_device", device]
         if decode_hw and device:
             pre += ["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"]
+            # ``scale_qsv`` rejects ``-2`` (unlike ``scale_vaapi``) and
+            # h264_qsv consumes only 8-bit nv12, while a 10-bit source
+            # decodes to p010 surfaces — convert here or the encoder
+            # fails with "Current pixel format is unsupported" (-22).
             if downscale:
-                filters.append(f"scale_qsv=w=-2:h={max_height}")
+                filters.append(f"scale_qsv=w=-1:h={max_height}:format=nv12")
+            else:
+                filters.append("scale_qsv=format=nv12")
         else:
             if downscale:
                 filters.append(f"scale=-2:{max_height}")
             filters.append("format=nv12")
+        # N150-class iGPUs expose only the low-power (VDEnc) encoder, but
+        # ffmpeg's ``-low_power auto`` default picks the legacy path and the
+        # oneVPL gen runtime rejects every frame with -22 (EINVAL). Do not
+        # add ``-pix_fmt``: it makes ffmpeg insert an auto_scale that cannot
+        # bridge QSV hardware frames; nv12 comes from the filters instead.
         video = [
-            "-c:v", "h264_qsv", "-preset", "veryfast", "-b:v", bitrate,
-            "-g", "30", "-bf", "0", "-pix_fmt", "yuv420p",
+            "-c:v", "h264_qsv", "-low_power", "1", "-preset", "veryfast",
+            "-b:v", bitrate, "-g", "30", "-bf", "0",
         ]
     elif encoder == "vaapi":
         if device:
@@ -512,9 +523,12 @@ class HardwareProbe:
         return rc == 0, tail
 
     async def _probe_qsv(self, node: str) -> tuple[bool, str]:
+        # ``-low_power 1`` is mandatory on VDEnc-only iGPUs (N100/N150): the
+        # ``auto`` default selects the legacy path and fails with -22 even
+        # when the oneVPL runtime is installed and the MFX session opens.
         common = [
-            "-c:v", "h264_qsv", "-preset", "veryfast", "-b:v", "2M",
-            "-g", "30", "-bf", "0", "-pix_fmt", "nv12",
+            "-c:v", "h264_qsv", "-low_power", "1", "-preset", "veryfast",
+            "-b:v", "2M", "-g", "30", "-bf", "0", "-pix_fmt", "nv12",
         ]
         variants = [
             ["-qsv_device", node, *common],
