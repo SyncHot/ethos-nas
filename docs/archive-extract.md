@@ -87,7 +87,8 @@ Security:
 
 ## Provisioning
 `archive-tools` (`services/system_deps.py`, `deploy/ethos-system-deps`) installs
-`libarchive-tools` **and** `p7zip-full`; the requirement id, sudoers rules and
+`libarchive-tools` **and** `7zip` (the Ubuntu 26.04 package that provides `7z`; `p7zip-full` is gone);
+the requirement id, sudoers rules and
 `deploy/provision.json` are unchanged. `POST /api/system/deps/{id}/install` (admin)
 runs the root-owned `ethos-system-deps` helper for any serviceable requirement.
 

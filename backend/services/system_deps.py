@@ -75,8 +75,8 @@ SYSTEM_REQUIREMENTS: dict[str, dict] = {
         # (.001/.partN.rar) and a stdin-only password prompt. Declared by
         # download-manager; File Manager extraction uses the same binaries.
         "label": "Archive tools (bsdtar, 7-Zip)",
-        "bins": ("bsdtar",),
-        "apt": "libarchive-tools p7zip-full",
+        "bins": ("bsdtar", "7z"),
+        "apt": "libarchive-tools 7zip",
         "serviceable": True,
         "autoremove": True,
         "provisionable": False,

@@ -11,6 +11,21 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.38.0] - 2026-11-24
+
+### Changed
+
+- **Download Station: archives unpack themselves by default**: a finished
+  `.zip`, `.tar.*`, `.7z` or `.rar` download is extracted into a folder next to
+  it and the source volume(s) are removed after a successful extraction. Both
+  switches stay in Download Manager → Settings; accounts whose stored config had
+  the old off defaults are switched on once, and a later manual opt-out sticks.
+  Multi-part packages wait for every part, start at the first volume and keep
+  their sources when a part is skipped, the archive is broken or
+  password-protected, or the extractor produced no files. Split `.rar`/`.7z`
+  volumes use the `archive-tools` host requirement, now installed as
+  `libarchive-tools` + `7zip` (Ubuntu 26.04 no longer ships `p7zip-full`).
+
 ## [2.37.0] - 2026-11-24
 
 ### Added

@@ -39,7 +39,9 @@ check("only docker is provisionable",
       {k for k, v in system_deps.SYSTEM_REQUIREMENTS.items() if v.get("provisionable")} == {"docker"})
 check("archive-tools is a known requirement", "archive-tools" in system_deps.SYSTEM_REQUIREMENTS)
 check("archive-tools installs libarchive-tools + 7-Zip",
-      system_deps.install_hint("archive-tools") == "sudo apt install libarchive-tools p7zip-full")
+      system_deps.install_hint("archive-tools") == "sudo apt install libarchive-tools 7zip")
+check("archive-tools requires bsdtar and 7z",
+      set(system_deps.SYSTEM_REQUIREMENTS["archive-tools"]["bins"]) == {"bsdtar", "7z"})
 check("archive-tools is optional",
       system_deps.SYSTEM_REQUIREMENTS["archive-tools"].get("optional") is True)
 check("required requirements stay mandatory",

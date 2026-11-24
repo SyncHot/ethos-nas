@@ -40,13 +40,13 @@ no port). The engine, stores and `/api/downloads/*` stay in EthOS core, so the A
 
 ## Data model
 
-`downloads_config.json` (json_store v8, migrators fold legacy `watch_folder`, categories, RSS and schedule shapes):
+`downloads_config.json` (json_store v9, migrators fold legacy `watch_folder`, categories, RSS and schedule shapes):
 
 ```
 { download_dir, max_concurrent (1..16), auto_download_debrid,
   auto_retry, retry_max (0..10), retry_delay (10..3600 s, doubled per attempt),
   duplicate_policy (rename | skip | overwrite),
-  auto_extract, auto_extract_delete,                            # unpack archives after download
+  auto_extract, auto_extract_delete,                            # default on: unpack, then remove the sources
   watch_enabled, watch_folders: [{name, folder, destination}],   # max 8
   schedule: {enabled, start: "HH:MM", end: "HH:MM"},             # daily start window
   speed_limit: {global_bps, per_task_bps},                       # 0 = unlimited
@@ -208,13 +208,20 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
 - **Duplicates**: the same URL + destination in `waiting`/`downloading`/`paused` returns the existing
   task (`duplicate: true`, no new record). For HTTP downloads, `duplicate_policy` applies when the
   exact destination name exists (`rename` = ` (1)` suffix, `skip` = 409, `overwrite` = same name).
-- **Extraction**: `auto_extract` unpacks a finished archive next to it through
-  `services/files_service.extract_archive` (`.zip`, `.tar.*`, and `.7z`/`.rar` when `bsdtar` is present —
-  the optional `archive-tools` host requirement). Multi-part packages are only unpacked once every part
-  is `completed` and always start from the first volume (`part01`/`.zip`/`.001`); `auto_extract_delete`
-  removes the consumed volumes after success. Password-protected archives fail with the extractor
-  message; manual Extract reuses the same code path. Extraction runs off the event loop
+- **Extraction**: on by default. `auto_extract` unpacks a finished archive next to it through
+  `services/files_service.extract_archive` (`.zip`, `.tar.*`, `.7z`/`.rar` via `bsdtar`; split volumes
+  and password prompts via 7-Zip — the optional `archive-tools` host requirement installs
+  `libarchive-tools 7zip`). Multi-part packages are only unpacked once every part is `completed` and
+  always start from the first volume (`part01`/`.zip`/`.001`); `auto_extract_delete` (also on by
+  default) removes the consumed source volumes **only after a successful extraction**. A failed or
+  password-protected archive keeps its sources, a skipped volume blocks the whole package, and an
+  extractor run that produced 0 files (everything already present) also keeps the source.
+  Manual Extract reuses the same code path. Extraction runs off the event loop
   (`asyncio.to_thread`) and one job per package key is tracked in `_EXTRACT_JOBS`.
+- **One-time default change**: accounts whose stored config predates the new defaults (both flags
+  `false`) are switched to extract-and-remove once, recorded by `_extract_defaults_v2` in their
+  `users/<name>/downloads.json`; turning the switches off in Settings afterwards sticks. The extractor
+  reads the flags from the **task owner's** slice, never from the `system` identity.
 - **RSS**: one background loop scans enabled feeds once a minute; each feed has its own
   interval, an include regex (required) and an optional exclude regex. Matched items are
   queued through the same `add_task()` path, and seen item ids live in a capped store.
@@ -243,8 +250,9 @@ escaped with `escapeHtml`/`escapeAttr`/`jsAttr`.
 - [x] Search/sort and the task detail dialog
 - [x] Multi-part archive packages: grouped rows, aggregate status/progress, package Resume/Pause/Delete/Details
 - [x] Auto-retry with exponential backoff, Retry failed bulk action, duplicate/skip/overwrite policy
-- [x] Post-download extraction: `auto_extract` / `auto_extract_delete`, package-aware first-volume start,
-      manual Extract for a task or package, extract state on the row
+- [x] Post-download extraction: `auto_extract` / `auto_extract_delete` (both on by default, one-time
+      migration for old configs), package-aware first-volume start, manual Extract for a task or
+      package, extract state on the row
 - [x] Mirror / hoster failover: `mirrors[]`, per-source retry budget, cross-host resume reset, row indicator
 - [x] Per-part skip / unskip: excluded records stay in the package without blocking (except extraction)
 - [x] Per-package speed limit: shared token bucket per package key, selector on the package row

@@ -71,7 +71,7 @@ registry — the router only exposes `/api/files/transcode*`),
   **Extract to…** (destination picker, folder name, password, overwrite), double-click quick path,
   batch for multi-selection, split volumes. Formats the stdlib cannot open shell out to `bsdtar`
   (`libarchive-tools`), 7-Zip, `unar` or `unrar`; the `archive-tools` host requirement installs
-  `libarchive-tools p7zip-full` on package install/update or through the 409 prompt's admin button,
+  `libarchive-tools 7zip` on package install/update or through the 409 prompt's admin button,
   otherwise the UI shows the apt hint.
 - [ ] Extraction shows an indeterminate progress row — byte-level progress would need the
       `/api/files/ops/{id}` polling pattern (same as trash).

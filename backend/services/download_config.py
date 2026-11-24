@@ -43,8 +43,8 @@ DEFAULT_CONFIG = {
     "retry_max": 3,                # retries after the first failure (0 = never)
     "retry_delay": 60,             # base seconds; doubled per attempt
     "duplicate_policy": "rename",  # rename | skip | overwrite when the target file exists
-    "auto_extract": False,          # unpack completed archives next to the download
-    "auto_extract_delete": False,   # remove archives after a successful extraction
+    "auto_extract": True,           # unpack completed archives next to the download
+    "auto_extract_delete": True,    # remove archive sources after a successful extraction
     "watch_folder": "",             # legacy single watch folder — migrated into watch_folders on load
     "watch_enabled": False,         # master switch for the watch-folder scanners
     "watch_folders": [              # watched dirs; entry: {name, folder, destination}
@@ -104,8 +104,8 @@ def _migrate_config(from_version: int, to_version: int, data: dict) -> dict:
         data.setdefault("retry_delay", 60)
         data.setdefault("duplicate_policy", "rename")
     if from_version < 7:
-        data.setdefault("auto_extract", False)
-        data.setdefault("auto_extract_delete", False)
+        data.setdefault("auto_extract", True)
+        data.setdefault("auto_extract_delete", True)
     if from_version < 8:
         data.setdefault("package_limits", {})
     if from_version < 9:
@@ -137,6 +137,34 @@ def _default_download_dir() -> str:
     """<user home>/Downloads — inside the account's own path scope."""
     home = path_scope.home_dir(user_data.current_username()) or str(Path.home())
     return str(Path(home) / "Downloads")
+
+
+# Accounts that already stored the one-time extraction-default migration.
+_EXTRACT_DEFAULTS_MIGRATED: set[str] = set()
+_EXTRACT_DEFAULTS_FAILED: set[str] = set()
+
+
+def _persist_extract_defaults(username: str) -> None:
+    """Persist the one-time switch to extract-and-remove for an account."""
+    if username in _EXTRACT_DEFAULTS_MIGRATED or username in _EXTRACT_DEFAULTS_FAILED:
+        return
+
+    def _apply(data):
+        if not isinstance(data, dict):
+            data = {}
+        data["auto_extract"] = True
+        data["auto_extract_delete"] = True
+        data["_extract_defaults_v2"] = True
+        return data
+
+    try:
+        user_data.user_store("downloads.json").update(_apply)
+    except Exception:  # noqa: BLE001 — a read-only slice must not break downloads
+        _EXTRACT_DEFAULTS_FAILED.add(username)
+        logger.error("Could not persist extraction defaults for %s", username, exc_info=True)
+    else:
+        _EXTRACT_DEFAULTS_MIGRATED.add(username)
+        logger.info("Enabled archive extraction + source removal by default for %s", username)
 
 
 _CONFIG_STORE = json_store.get(CONFIG_FILE, version=9, migrate=_migrate_config)
@@ -352,13 +380,22 @@ def _load_config() -> dict:
         else:
             raw = user_data.user_store("downloads.json").load()
             user_slice = raw if isinstance(raw, dict) else {}
+        # Keys starting with `_` are internal migration markers, never config.
+        visible_slice = {k: v for k, v in user_slice.items() if not str(k).startswith("_")}
         merged = {**DEFAULT_CONFIG, **{
             k: v for k, v in global_data.items() if k in ENGINE_FIELDS or username == "system"
-        }, **user_slice}
+        }, **visible_slice}
         if not global_data and not user_slice:
             # First boot (no config yet) is normal, not a warning: this function
             # is called on every engine tick and by several endpoints.
             return json.loads(json.dumps(DEFAULT_CONFIG))
+        if username != "system" and user_slice.get("_extract_defaults_v2") is not True:
+            # One-time default change: archives unpack themselves and the source
+            # volumes are removed. Persist a marker so a later explicit "off" in
+            # Settings is respected instead of being re-enabled on every read.
+            merged["auto_extract"] = True
+            merged["auto_extract_delete"] = True
+            _persist_extract_defaults(username)
         if username != "system" and "download_dir" not in user_slice:
             merged["download_dir"] = _default_download_dir()
         merged["max_concurrent"] = max(1, min(16, int(merged.get("max_concurrent", 3))))
@@ -379,7 +416,7 @@ def _load_config() -> dict:
             merged["duplicate_policy"] = "rename"
         for flag in ("auto_extract", "auto_extract_delete"):
             if not isinstance(merged.get(flag), bool):
-                merged[flag] = False
+                merged[flag] = bool(DEFAULT_CONFIG[flag])
         for key in ("schedule", "speed_limit"):
             raw = merged.get(key)
             merged[key] = {**DEFAULT_CONFIG[key], **(raw if isinstance(raw, dict) else {})}
@@ -464,4 +501,7 @@ def save_config(cfg: dict) -> None:
     existing = store.load()
     existing = existing if isinstance(existing, dict) else {}
     existing.update({k: cfg[k] for k in USER_FIELDS if k in cfg})
+    # A saved config records the caller's choice; the one-time default migration
+    # must not re-enable extraction behind their back.
+    existing["_extract_defaults_v2"] = True
     store.save(existing)

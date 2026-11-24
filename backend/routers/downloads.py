@@ -832,16 +832,22 @@ def _first_volume(paths: list[str]) -> Optional[str]:
     return archives[0]
 
 
+def _config_for_tasks(tasks: list[dict]) -> dict:
+    """Config of the account that owns a download.
+
+    The pump and the extractor run as `system`, but extraction is a per-user
+    preference: reading the system slice would always see the defaults.
+    """
+    owner = next((str(t.get("owner") or "") for t in (tasks or []) if t.get("owner")), "")
+    if owner and owner != user_data.current_username():
+        with path_scope.identity_scope(owner, user_data.user_role(owner)):
+            return _load_config()
+    return _load_config()
+
+
 def _schedule_auto_extract(task: dict) -> None:
     """Queue extraction once every part of the package is complete."""
-    owner = str(task.get("owner") or "")
-    if owner and owner != user_data.current_username():
-        # The pump runs as `system`; auto-extract is a per-user preference.
-        with path_scope.identity_scope(owner, user_data.user_role(owner)):
-            enabled = _load_config().get("auto_extract")
-    else:
-        enabled = _load_config().get("auto_extract")
-    if not enabled:
+    if not _config_for_tasks([task]).get("auto_extract"):
         return
     try:
         loop = asyncio.get_running_loop()
@@ -897,7 +903,11 @@ async def _run_extract_scoped(tasks: list[dict], archive: str) -> None:
     try:
         result = await asyncio.to_thread(files_service.extract_archive, archive)
         dest = str(result.get("dest_dir") or "")
-        if _load_config().get("auto_extract_delete"):
+        # Only a run that actually produced files counts as "successful"; an
+        # archive whose members were all skipped (already extracted) keeps its
+        # source, so a 0-file run can never destroy the only copy.
+        if (int(result.get("extracted_count") or 0) > 0
+                and _config_for_tasks(tasks).get("auto_extract_delete")):
             for t in tasks:
                 for path in _local_archive_paths(t):
                     try:

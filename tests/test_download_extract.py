@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 from fastapi import HTTPException  # noqa: E402
 
 from backend.routers import downloads  # noqa: E402
-from backend.services import notifications_service  # noqa: E402
+from backend.services import download_config, notifications_service, path_scope, user_data  # noqa: E402
 
 FAILURES = []
 
@@ -83,6 +83,43 @@ def main() -> int:
     check("debrid_link local dest is used",
           downloads._local_archive_paths(link_task) == [str(link_dest)])
 
+    print("[defaults]")
+    check("archives extract and sources are removed by default",
+          download_config.DEFAULT_CONFIG["auto_extract"] is True
+          and download_config.DEFAULT_CONFIG["auto_extract_delete"] is True)
+    fresh = downloads._load_config()
+    check("a new account gets both extraction defaults",
+          fresh["auto_extract"] is True and fresh["auto_extract_delete"] is True, str(fresh))
+
+    # An account that stored the old defaults (both off) is switched on once.
+    store = user_data.user_store("downloads.json")
+    store.save({"download_dir": WORK, "auto_extract": False, "auto_extract_delete": False})
+    migrated = downloads._load_config()
+    check("an existing off config is migrated to the new default",
+          migrated["auto_extract"] is True and migrated["auto_extract_delete"] is True,
+          str(migrated))
+    check("the migration is recorded in the account slice",
+          store.load().get("_extract_defaults_v2") is True)
+    migrated["auto_extract"] = False
+    migrated["auto_extract_delete"] = False
+    downloads._save_config(migrated)
+    respected = downloads._load_config()
+    check("an explicit off after the migration is respected",
+          respected["auto_extract"] is False and respected["auto_extract_delete"] is False,
+          str(respected))
+
+    def write_user(name: str, **values) -> None:
+        with path_scope.system_scope(name):
+            user_data.user_store("downloads.json").save({"_extract_defaults_v2": True, **values})
+
+    write_user("alice", download_dir=WORK, auto_extract=True, auto_extract_delete=False)
+    write_user("bob", download_dir=WORK, auto_extract=True, auto_extract_delete=True)
+    with path_scope.system_scope():
+        alice_cfg = downloads._config_for_tasks([{"owner": "alice"}])
+        bob_cfg = downloads._config_for_tasks([{"owner": "bob"}])
+    check("the delete policy comes from the task owner's slice",
+          alice_cfg["auto_extract_delete"] is False and bob_cfg["auto_extract_delete"] is True)
+
     print("[auto extraction]")
     cfg = {"auto_extract": True, "auto_extract_delete": False, "download_dir": WORK}
     original_cfg = downloads._load_config
@@ -101,7 +138,7 @@ def main() -> int:
         check("files are extracted next to the archive",
               (dest / "inside.txt").is_file() and (dest / "inside.txt").read_bytes() == b"payload",
               str(dest))
-        check("archive is kept by default", auto_zip.exists())
+        check("archive is kept when deletion is off", auto_zip.exists())
 
         print("[delete after extraction]")
         cfg["auto_extract_delete"] = True
@@ -112,6 +149,15 @@ def main() -> int:
         check("archive is removed with auto_extract_delete",
               delete_task.get("_extract_state") == "done" and not delete_zip.exists(),
               str(delete_task))
+
+        empty_zip = Path(WORK) / "empty.zip"
+        with zipfile.ZipFile(empty_zip, "w"):
+            pass
+        empty_task = task("dl_empty", "empty.zip", str(empty_zip))
+        asyncio.run(run_auto(empty_task))
+        check("an extractor run with no files keeps the source",
+              empty_task.get("_extract_state") == "done" and empty_zip.exists(),
+              str(empty_task))
         cfg["auto_extract_delete"] = False
 
         print("[package completeness]")
