@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T22:03:03+00:00",
+  "generated_at": "2026-11-24T22:25:38+00:00",
   "latest": {
-    "version": "2.38.5",
-    "git_sha": "28ff6ab",
-    "git_sha_full": "28ff6abd4b928264e7e59245759dcd8c7395e224",
-    "build": 293,
-    "released_at": "2026-11-24T22:03:03+00:00",
-    "notes": "PWAs: downloads resume automatically after a NAS restart; /music and /notes stay usable offline with an expired session."
+    "version": "2.38.6",
+    "git_sha": "849a27c",
+    "git_sha_full": "849a27c07fab22eadcd46e266d68fda7d155c0bd",
+    "build": 295,
+    "released_at": "2026-11-24T22:25:38+00:00",
+    "notes": "Videos: ~2x smaller downloads (constant-quality QSV/VAAPI, 30 fps cap, HDR tone mapping), HEVC copies on iPhone, ETA/speed, and one-tap re-save from the NAS (7-day copies)."
   },
   "releases": [
+    {
+      "version": "2.38.6",
+      "git_sha": "849a27c",
+      "git_sha_full": "849a27c07fab22eadcd46e266d68fda7d155c0bd",
+      "build": 295,
+      "released_at": "2026-11-24T22:25:38+00:00",
+      "notes": "Videos: ~2x smaller downloads (constant-quality QSV/VAAPI, 30 fps cap, HDR tone mapping), HEVC copies on iPhone, ETA/speed, and one-tap re-save from the NAS (7-day copies)."
+    },
     {
       "version": "2.38.5",
       "git_sha": "28ff6ab",
@@ -201,14 +209,6 @@
       "build": 235,
       "released_at": "2026-11-22T22:20:48+00:00",
       "notes": "Downloads: URL/path guards extracted into a service (no behaviour change)"
-    },
-    {
-      "version": "2.29.7",
-      "git_sha": "4baa636",
-      "git_sha_full": "4baa636c4411841e0f033eb7c7f70164ac372c74",
-      "build": 231,
-      "released_at": "2026-11-22T22:18:25+00:00",
-      "notes": "Downloads: a second link provider (AllDebrid) now takes over when tb7.pl cannot unlock a hoster link"
     }
   ]
 }
