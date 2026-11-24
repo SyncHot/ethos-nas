@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T23:07:31+00:00",
+  "generated_at": "2026-11-24T23:12:05+00:00",
   "latest": {
-    "version": "2.39.3",
-    "git_sha": "c7d1501",
-    "git_sha_full": "c7d1501faf0a80797bd8d8895f7823851e5560a1",
-    "build": 309,
-    "released_at": "2026-11-24T23:07:31+00:00",
-    "notes": "Books offline: covers are cached on the phone (IndexedDB) when first shown and for every downloaded title; Settings shows how many are stored and adds a \"Pobierz okładki\" button to cache the whole library before a flight."
+    "version": "2.39.4",
+    "git_sha": "a475e2f",
+    "git_sha_full": "a475e2fc0fe6a068df9f1f4771c737de68546f26",
+    "build": 311,
+    "released_at": "2026-11-24T23:12:05+00:00",
+    "notes": "Books: covers are cached automatically in the background after every library load (downloaded titles immediately), so the phone is ready for airplane mode without pressing a button; Settings keeps the counter and a manual retry."
   },
   "releases": [
+    {
+      "version": "2.39.4",
+      "git_sha": "a475e2f",
+      "git_sha_full": "a475e2fc0fe6a068df9f1f4771c737de68546f26",
+      "build": 311,
+      "released_at": "2026-11-24T23:12:05+00:00",
+      "notes": "Books: covers are cached automatically in the background after every library load (downloaded titles immediately), so the phone is ready for airplane mode without pressing a button; Settings keeps the counter and a manual retry."
+    },
     {
       "version": "2.39.3",
       "git_sha": "c7d1501",
@@ -201,14 +209,6 @@
       "build": 251,
       "released_at": "2026-11-23T09:10:04+00:00",
       "notes": "Download Manager: the browser extension's picked category is now kept for right-click sends and .torrent uploads; a category without a save path downloads into its own subfolder."
-    },
-    {
-      "version": "2.31.0",
-      "git_sha": "9c22c54",
-      "git_sha_full": "9c22c5431f885db73992b4660d2c1e87974b0342",
-      "build": 248,
-      "released_at": "2026-11-22T23:22:42+00:00",
-      "notes": "Disk Cleaner: background scans with progress and cancel, a space map, trash-safe deletes and cache/Docker/journal cleanup."
     }
   ]
 }
