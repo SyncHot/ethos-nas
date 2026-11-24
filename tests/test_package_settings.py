@@ -138,6 +138,29 @@ try:
 finally:
     packages_store.get_package = original_get
 
+print("Compose environment — data folder (Docker Manager runs the same file)")
+grafana_record = {"id": "grafana", "settings": defs_only, "settings_values": {},
+                  "data": {"mount": "/var/lib/grafana", "label": "Grafana data folder"}}
+packages_store.get_package = lambda pkg_id: grafana_record
+try:
+    default_env = package_env.compose_env("grafana")
+    check("compose_env resolves the default data folder",
+          default_env.get("ETHOS_PACKAGE_DATA_DIR") == str(packages_store.data_root() / "grafana"),
+          default_env.get("ETHOS_PACKAGE_DATA_DIR", "missing"))
+    check("compose_env keeps the EthOS identity for any project",
+          {"ETHOS_SERVICE_UID", "ETHOS_SERVICE_GID", "ETHOS_DATA_DIR"} <= set(default_env))
+    packages_store.get_package = lambda pkg_id: {**grafana_record,
+                                                 "data_dir": "/mnt/storage/grafana"}
+    check("compose_env uses the chosen data folder",
+          package_env.compose_env("grafana")["ETHOS_PACKAGE_DATA_DIR"] == "/mnt/storage/grafana")
+    check("compose_env(string) and the installer helper agree",
+          package_installer._compose_env("grafana")["ETHOS_PACKAGE_DATA_DIR"]
+          == package_env.compose_env("grafana")["ETHOS_PACKAGE_DATA_DIR"])
+finally:
+    packages_store.get_package = original_get
+check("unmanaged project gets no package variables",
+      "ETHOS_PACKAGE_DATA_DIR" not in package_env.compose_env("someone-else"))
+
 print("Data folder")
 DATA = {"mount": "/var/lib/grafana", "label": "Grafana data folder"}
 check("data block normalized", validate_manifest({**BASE, "data": DATA})["data"]["mount"]

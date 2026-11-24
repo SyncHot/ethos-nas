@@ -40,7 +40,7 @@ from pydantic import BaseModel
 from backend.config import settings
 from backend.models import ContainerActionRequest
 from backend.routers.auth import require_admin
-from backend.services import docker_host, json_store, package_jobs, packages_store
+from backend.services import docker_host, json_store, package_env, package_jobs, packages_store
 from backend.services.notifications_service import emit_event
 from backend.services.package_schema import PackageError
 
@@ -898,9 +898,14 @@ async def compose_project_action(name: str, body: ComposeActionRequest) -> dict:
     else:  # destroy
         cmd += ["down", "--volumes", "--remove-orphans"]
 
+    # Package stacks interpolate `${ETHOS_PACKAGE_DATA_DIR}` and their stored
+    # settings, so the same environment the installer uses has to reach compose
+    # here too — otherwise `docker compose down` dies on
+    # `invalid spec: :/var/lib/grafana: empty section between colons`.
+    env = package_env.compose_env(name)
     try:
         proc = await asyncio.to_thread(
-            subprocess.run, cmd, cwd=working_dir,
+            subprocess.run, cmd, cwd=working_dir, env=env,
             capture_output=True, text=True, timeout=600,
         )
     except subprocess.TimeoutExpired:
@@ -911,6 +916,20 @@ async def compose_project_action(name: str, body: ComposeActionRequest) -> dict:
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()[-800:]
         logger.error("compose %s for project %s failed: %s", body.action, name, err)
+        if body.action in {"down", "destroy"}:
+            # Removal only needs the labels: never leave a stack running because
+            # compose refused to render its file (missing variable, bad YAML…).
+            summary = await asyncio.to_thread(
+                _teardown_project_by_label, name, body.action == "destroy"
+            )
+            emit_event("warning", f"Compose project {body.action} by labels", name,
+                       source="docker")
+            return {
+                "ok": True,
+                "project": name,
+                "action": body.action,
+                "output": f"{summary} (compose failed: {err[-200:]})",
+            }
         conflict = _explain_port_conflict(err)
         if conflict:
             raise HTTPException(status_code=409, detail=conflict)

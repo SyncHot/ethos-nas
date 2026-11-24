@@ -11,6 +11,20 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.38.3] - 2026-11-24
+
+### Fixed
+
+- **Docker Manager → Down/Up for a package stack**: the compose command now runs
+  with the package environment (`ETHOS_PACKAGE_DATA_DIR` plus the stored
+  settings), so a stack whose compose file binds `${ETHOS_PACKAGE_DATA_DIR}` no
+  longer aborts with `invalid spec: :/var/lib/grafana: empty section between
+  colons`. The same environment helper is now shared by the installer, the health
+  probes, cleanup and the Docker Manager.
+- **Down/Destroy never leave a stack behind**: when `docker compose` itself
+  fails, the project is still removed by its Docker labels (containers, networks
+  and — for Destroy — volumes) and the result says why compose failed.
+
 ## [2.38.2] - 2026-11-24
 
 ### Changed

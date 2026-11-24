@@ -477,16 +477,11 @@ def _compose_env(pkg_id: Optional[str] = None) -> dict:
     Compose interpolates `${VAR}` from this environment, so a manifest can run its
     container with the same uid/gid as EthOS (`PUID: "${ETHOS_SERVICE_UID}"`) and
     files it creates on /mnt or /media stay editable by the NAS and its accounts.
-    A package's user settings are added too: `${GF_SECURITY_ADMIN_PASSWORD}` in the
-    signed compose file resolves to the value stored with the package record.
+    A package's user settings and data folder are added too: `${GF_SECURITY_ADMIN_PASSWORD}`
+    and `${ETHOS_PACKAGE_DATA_DIR}` in the signed compose file resolve to the values
+    stored with the package record.
     """
-    env = dict(os.environ)
-    env.setdefault("ETHOS_SERVICE_UID", str(os.getuid()))
-    env.setdefault("ETHOS_SERVICE_GID", str(os.getgid()))
-    env.setdefault("ETHOS_DATA_DIR", str(settings.DATA_DIR))
-    if pkg_id:
-        env.update(package_env.compose_vars(packages_store.get_package(pkg_id)))
-    return env
+    return package_env.compose_env(pkg_id)
 
 
 def _run_compose(cmd: list[str], env: Optional[dict] = None):

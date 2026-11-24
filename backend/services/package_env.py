@@ -14,11 +14,38 @@ installer (which imports the cleanup module itself).
 """
 
 import logging
+import os
 from typing import Optional
 
+from backend.config import settings
 from backend.services import packages_store
 
 logger = logging.getLogger("ethos-nas.services.package_env")
+
+
+def compose_env(pkg_id: Optional[str] = None,
+                record: Optional[dict] = None) -> dict[str, str]:
+    """Environment for `docker compose`, including the EthOS service identity.
+
+    Compose interpolates `${VAR}` from this environment, so a manifest can run its
+    container with the same uid/gid as EthOS (`PUID: "${ETHOS_SERVICE_UID}"`) and
+    files it creates on /mnt or /media stay editable by the NAS and its accounts.
+    A package's settings and data folder are added too, so `${GF_SECURITY_ADMIN_PASSWORD}`
+    and `${ETHOS_PACKAGE_DATA_DIR}` in the signed compose file resolve for *every*
+    compose call — the installer, the health probes, the Docker Manager and cleanup.
+
+    Without this, `docker compose down` for a package that binds its data folder
+    dies with `invalid spec: :/var/lib/grafana: empty section between colons`.
+    """
+    env = dict(os.environ)
+    env.setdefault("ETHOS_SERVICE_UID", str(os.getuid()))
+    env.setdefault("ETHOS_SERVICE_GID", str(os.getgid()))
+    env.setdefault("ETHOS_DATA_DIR", str(settings.DATA_DIR))
+    if record is None and pkg_id:
+        record = packages_store.get_package(pkg_id)
+    if record:
+        env.update(compose_vars(record))
+    return env
 
 
 def compose_vars(record: Optional[dict]) -> dict[str, str]:
