@@ -72,6 +72,7 @@ removed distributions reappears — there is no pending allowlist any more.
 | `ethos-sticky-notes` | 8099 | per-account notes + native UI | its own window (`user_access: true`) |
 | `ethos-books` | 8089 | per-account library metadata, covers, progress + native UI | its own window (`user_access: true`); book bytes come from `/api/files/raw` and are saved with `/api/files/download` |
 | `influxdb` | 8086 | InfluxDB OSS 2.10.1 — buckets, Flux/InfluxQL, UI + HTTP API | its own window (`ui.expose: lan`, `auth: package`); data in package volumes |
+| `grafana` | 3010 | Grafana OSS 13.3.1 — dashboards, alerts, data sources | its own window (`ui.expose: lan`, `auth: package`); dashboards/users in a package volume |
 | `ethos-photos` | — | Photos desktop UI | core `/api/gallery` + `/api/moments` |
 | `ethos-music` | — | Music desktop UI | core `/api/music` (+ `ethos-music-engine`) |
 | `ethos-video` | — | Videos desktop UI | core `/api/videos` |
