@@ -546,7 +546,8 @@ function _settingsFields(pkg) {
         const saved = current[def.key];
         const value = secret ? '' : String(saved !== undefined && saved !== null ? saved : (def.default || ''));
         const hint = secret
-            ? (saved ? 'stored — leave blank to keep' : 'no value yet')
+            ? (saved ? 'stored — leave blank to keep'
+                : (def.default ? `default: ${def.default}` : 'no value yet'))
             : String(def.default || '');
         const limits = [def.min_length ? `min ${def.min_length}` : '',
             def.max_length ? `max ${def.max_length}` : ''].filter(Boolean).join(', ');
@@ -676,7 +677,11 @@ async function _openDetail(pkgId) {
     if (!pkg) return;
     let detail = pkg;
     try {
-        detail = { ...pkg, ...(await apiJsonFetch(`/api/packages/catalog/${encodeURIComponent(pkgId)}`)) };
+        const data = await apiJsonFetch(`/api/packages/catalog/${encodeURIComponent(pkgId)}`);
+        // The detail endpoint returns the manifest nested; flatten it so the
+        // dialog sees the same fields an installed record has (settings, ui…).
+        detail = { ...pkg, ...(data.manifest || {}), ...data };
+        delete detail.manifest;
     } catch (_) { /* card data is enough when the detail fetch fails */ }
     const canInstall = _pkg.isAdmin && !detail.installed && _blockedDeps(detail).length === 0;
     const canUpdate = _pkg.isAdmin && detail.update_available && _blockedDeps(detail).length === 0;

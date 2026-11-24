@@ -11,6 +11,14 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.34.1] - 2026-11-24
+
+### Fixed
+
+- **Packages → install dialog**: the manifest is nested in the catalog detail
+  response, so the new install-time settings fields (and the system-requirement
+  hints) were not rendered; the dialog now flattens the manifest first.
+
 ## [2.34.0] - 2026-11-24
 
 ### Added
