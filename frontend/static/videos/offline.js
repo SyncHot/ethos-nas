@@ -612,6 +612,72 @@ export function resumeServerErrors() {
     pumpDownloads();
 }
 
+// ── automatic resume ──────────────────────────────────────────────────────
+//
+// A NAS restart, a closed lid or a dropped Wi-Fi used to leave rows "failed"
+// until the user pressed "Resume all". They now come back on their own: when
+// the connection returns, the app becomes visible or the 2 s sync poll notices
+// the NAS answering again, every broken row is queued anew. A row gets two
+// automatic attempts — after that it waits for the user, so a broken source
+// cannot spam the render queue forever.
+const AUTO_RESUME_TRIES = 2;
+const AUTO_RESUME_GAP_MS = 15000;   // online + visible fire together; polls are 2 s
+let _lastAutoResume = 0;
+let _autoResuming = false;
+
+/** Downloads that should retry themselves (not done, not a paused transfer). */
+export function autoResumableRows() {
+    return _downloads.filter((row) => (row.status === 'failed' || row.status === 'waiting')
+        && !_paused.has(row.id)
+        && (Number(row.autoTries) || 0) < AUTO_RESUME_TRIES);
+}
+
+/**
+ * Queue every broken download again — no button needed.
+ *
+ * Cheap to call often: throttled, the backoff rows are flipped in place, and a
+ * row that already burned its automatic attempts is left to the user.
+ */
+export async function autoResumeDownloads({ force = false } = {}) {
+    if (navigator.onLine === false || _autoResuming) return 0;
+    const rows = autoResumableRows();
+    if (!rows.length) return 0;
+    const now = Date.now();
+    if (!force && now - _lastAutoResume < AUTO_RESUME_GAP_MS) return 0;
+    _lastAutoResume = now;
+    _autoResuming = true;
+    // Rows already waiting on a backoff timer need no new NAS job.
+    resumeServerErrors();
+    let queued = 0;
+    try {
+        for (const row of rows) {
+            if (row.status !== 'failed') continue;
+            const tries = (Number(row.autoTries) || 0) + 1;
+            upsert({ ...row, autoTries: tries });
+            await persistRow(row.id).catch(() => {});
+            try {
+                const next = await retryDownload(row.id);
+                if (!next) continue;
+                queued += 1;
+                if (next.id !== row.id) {
+                    // A fresh job id starts a new row: keep the budget with it.
+                    upsert({ ...next, autoTries: tries });
+                    await persistRow(next.id).catch(() => {});
+                }
+            } catch (error) {
+                logWarn('Could not resume a download', `${row.path}: ${error?.message || error}`);
+            }
+        }
+    } finally {
+        _autoResuming = false;
+    }
+    if (queued) {
+        toast(`${queued} download${queued === 1 ? '' : 's'} resumed`, 'info');
+        pumpDownloads();
+    }
+    return queued;
+}
+
 function downloadUrlFor(row) {
     return row.download_url || `/api/videos/exports/${encodeURIComponent(row.id)}/download`;
 }
@@ -735,6 +801,8 @@ async function transferRow(row) {
         const paused = noteAttempt(row.id, progressed) >= 2;
         upsert({
             ...current,
+            // The NAS answered and sent bytes: the automatic budget starts over.
+            autoTries: progressed ? 0 : current.autoTries,
             status: 'failed',
             error: paused ? `${message} — tap Retry to resume` : message,
         });
@@ -771,6 +839,7 @@ async function completeTransfer(row, size, task) {
         error: '',
         bg_tag: '',
         retry: false,
+        autoTries: 0,
     });
     await persistRow(row.id);
     await storePoster(row, row.item || {});

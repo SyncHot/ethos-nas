@@ -196,11 +196,17 @@ after a reload; nothing outside the caller's scope is ever returned.
   `waiting` and retries automatically with a 5 s → 2 min backoff (partial
   `?part=` entries resume with `Range`); `online` and returning to the tab retry
   immediately. Only a permanent 4xx asks for **Retry**.
-- **Wznów wszystkie**: the Downloads view has one button that re-queues every
-  `failed`/`waiting` row. It calls `retryDownload()` per title, which asks the
-  NAS for the same export (deduplicated) or a fresh one when the old job
-  expired — useful for rows that failed before the auto-retry release or after
-  the export TTL.
+- **Automatic resume**: no button is needed after an outage. When the connection
+  returns, the app becomes visible or the 2 s sync poll sees the NAS answering
+  again, every `failed`/`waiting` row is queued anew with `retryDownload()`
+  (`autoResumeDownloads()` in `offline.js`, throttled to one batch per 15 s).
+  A row gets `AUTO_RESUME_TRIES` (2) automatic attempts — a transfer that makes
+  progress resets the budget, a row that keeps failing without moving a byte is
+  paused (`_paused`) and stays for the user.
+- **Wznów wszystkie**: the Downloads view keeps one button as a manual escape
+  hatch (rows that burned their automatic attempts, downloads that failed before
+  this release). It calls `retryDownload()` per title, which asks the NAS for the
+  same export (deduplicated) or a fresh one when the old job expired.
 
 ## Files
 

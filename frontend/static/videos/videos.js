@@ -20,6 +20,7 @@ import {
     cancelDownload, retryDownload, deleteDownload, localMediaUrl, storageInfo,
     refreshStorage, localSubtitle, srtToVtt, saveLocalResume, clearLocalResume,
     allLocalResumes, resumeServerErrors, serverExports, adoptExport, hevcSupported,
+    autoResumeDownloads,
 } from './offline.js';
 
 setLogContext({ app: 'videos' });
@@ -1154,6 +1155,9 @@ async function syncDownloadState() {
         updateDownloadsBadge();
         if (!els.downloads.hidden) renderDownloads();
         pumpDownloads();
+        // The NAS may have come back while this page stayed open: broken rows
+        // re-queue themselves (throttled), so the button is only a fallback.
+        autoResumeDownloads();
     } catch (error) {
         logWarn('Download sync failed', String(error));
     }
@@ -1162,7 +1166,10 @@ async function syncDownloadState() {
 function startDownloadPolling() {
     if (state.downloadTimer) return;
     state.downloadTimer = setInterval(() => {
-        const busy = state.downloads.some((d) => ['queued', 'rendering', 'ready', 'downloading'].includes(d.status));
+        // `waiting` rows are a NAS-outage retry in flight: keep polling so the
+        // resume happens even with the Downloads sheet closed.
+        const busy = state.downloads.some(
+            (d) => ['queued', 'rendering', 'ready', 'downloading', 'waiting'].includes(d.status));
         if (!busy && els.downloads.hidden) return;
         if (document.visibilityState === 'hidden' && els.downloads.hidden) return;
         syncDownloadState();
@@ -2127,6 +2134,7 @@ function bindEvents() {
         if (document.visibilityState === 'visible') {
             resumeServerErrors();
             syncDownloadState();
+            autoResumeDownloads();
         }
     });
     window.addEventListener('pagehide', () => {
@@ -2159,6 +2167,8 @@ function bindEvents() {
         // Coming back from an offline-only library, re-read the real one.
         if (state.localOnly) { state.localOnly = false; boot(); return; }
         resumeServerErrors();
+        // No "Resume all" tap: everything broken comes back by itself.
+        autoResumeDownloads();
         syncResume();
         flushLocalResumes();
     });

@@ -311,6 +311,54 @@ def main() -> int:
                     "async (id) => { const m = await import('/static/videos/offline.js');"
                     " await m.deleteDownload(id); }", fake_id)
 
+            # ── A broken row comes back by itself (no "Resume all" tap) ────
+            # Seed the state a NAS restart leaves behind: a stored row that
+            # failed because its job vanished, then just open the app.
+            movie_path = str(MEDIA / "Some.Movie.2024.mkv")
+            page.evaluate("""async (path) => {
+              const db = await new Promise((resolve, reject) => {
+                const req = indexedDB.open('ethos-videos-db', 2);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+              });
+              await new Promise((resolve, reject) => {
+                const tx = db.transaction('downloads', 'readwrite');
+                tx.objectStore('downloads').put({
+                  id: 'e2e-auto-resume', path, title: 'Some.Movie.2024',
+                  status: 'failed', bytesDone: 0, bytesTotal: 0, parts: [],
+                  error: 'The NAS no longer has this download — queue it again',
+                  created_at: Date.now(), item: { path, title: 'Some.Movie.2024' },
+                });
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+              });
+              return true;
+            }""", movie_path)
+            page.reload()
+            page.wait_for_selector("#vd-app:not([hidden])", timeout=30000)
+            requeued = None
+            for _ in range(40):
+                _, auto_exports = api(base, token, "GET", "/api/videos/exports")
+                requeued = next((job for job in auto_exports.get("jobs", [])
+                                 if job["path"] == movie_path and job["id"] != "e2e-auto-resume"),
+                                None)
+                if requeued:
+                    break
+                page.wait_for_timeout(250)
+            check("a broken row requeues itself when the app opens",
+                  requeued is not None, str(requeued and requeued.get("id")))
+            replaced = False
+            for _ in range(20):
+                replaced = page.evaluate(
+                    "async (id) => { const m = await import('/static/videos/offline.js');"
+                    " const rows = m.downloadsSnapshot();"
+                    " return !rows.some((r) => r.id === 'e2e-auto-resume')"
+                    "   && rows.some((r) => r.id === id); }", requeued["id"] if requeued else "")
+                if replaced:
+                    break
+                page.wait_for_timeout(250)
+            check("the stale row is replaced by the new job", replaced, str(replaced))
+
             # Trip mode: no token, no network — downloads must still play.
             page.evaluate("() => localStorage.removeItem('token')")
             context.set_offline(True)

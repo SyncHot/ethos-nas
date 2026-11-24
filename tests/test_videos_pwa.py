@@ -120,6 +120,13 @@ def main() -> int:
           "function tabsHtml(" in videos and "state.tabs === 'mylist'" in videos)
 
     check("markup has the settings entry", 'id="vd-settings-btn"' in page)
+    check("broken downloads resume without a button",
+          "export async function autoResumeDownloads" in offline
+          and "AUTO_RESUME_TRIES" in offline
+          and "autoResumeDownloads()" in videos)
+    check("auto resume runs on reconnect, on focus and in the sync poll",
+          videos.count("autoResumeDownloads()") >= 3
+          and "window.addEventListener('online'" in videos)
     check("markup has the download version group", 'id="vd-quality-options"' in page)
     check("markup has the queue summary", 'id="vd-downloads-summary"' in page)
     check("markup has the multi-select bar",

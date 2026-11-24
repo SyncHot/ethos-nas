@@ -11,6 +11,17 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.39.2] - 2026-11-24
+
+### Changed
+
+- **Videos: downloads resume by themselves** — no more tapping **Wznów
+  wszystkie**. When the connection comes back, the app regains focus or the NAS
+  answers again, every failed/paused download is queued anew automatically
+  (a row gets two automatic attempts; a transfer that moves bytes resets that
+  budget, one that keeps failing waits for you). The button stays as a manual
+  escape hatch.
+
 ## [2.39.1] - 2026-11-24
 
 ### Changed
