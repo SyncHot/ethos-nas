@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T21:43:27+00:00",
+  "generated_at": "2026-11-24T21:48:38+00:00",
   "latest": {
-    "version": "2.38.3",
-    "git_sha": "6176faa",
-    "git_sha_full": "6176faaaf531c6eb9d738daf007d61a842a7169d",
-    "build": 289,
-    "released_at": "2026-11-24T21:43:27+00:00",
-    "notes": "Docker Manager: compose down/up for package stacks gets the package environment; failed removals fall back to label teardown."
+    "version": "2.38.4",
+    "git_sha": "4b2510b",
+    "git_sha_full": "4b2510b36828e24ada47270ac312fa1706c1f661",
+    "build": 291,
+    "released_at": "2026-11-24T21:48:38+00:00",
+    "notes": "Books: fill missing metadata and covers from Open Library (package 1.5.0 — Fetch metadata button plus automatic lookup after a scan); phone covers refresh when the artwork changes."
   },
   "releases": [
+    {
+      "version": "2.38.4",
+      "git_sha": "4b2510b",
+      "git_sha_full": "4b2510b36828e24ada47270ac312fa1706c1f661",
+      "build": 291,
+      "released_at": "2026-11-24T21:48:38+00:00",
+      "notes": "Books: fill missing metadata and covers from Open Library (package 1.5.0 — Fetch metadata button plus automatic lookup after a scan); phone covers refresh when the artwork changes."
+    },
     {
       "version": "2.38.3",
       "git_sha": "6176faa",
@@ -201,14 +209,6 @@
       "build": 226,
       "released_at": "2026-11-22T22:11:03+00:00",
       "notes": "Downloads: queue order and retry timing extracted into a service (no behaviour change)"
-    },
-    {
-      "version": "2.29.5",
-      "git_sha": "f8c88da",
-      "git_sha_full": "f8c88da595255ac642fdcd29c562313d3946ac72",
-      "build": 224,
-      "released_at": "2026-11-22T22:04:08+00:00",
-      "notes": "Downloads: watch-folder scan pass extracted into a service (no behaviour change)"
     }
   ]
 }
