@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T21:38:00+00:00",
+  "generated_at": "2026-11-24T21:43:27+00:00",
   "latest": {
-    "version": "2.38.2",
-    "git_sha": "f12cf46",
-    "git_sha_full": "f12cf46a12dfb6fc62b35c6710449ec3079c3a26",
-    "build": 286,
-    "released_at": "2026-11-24T21:38:00+00:00",
-    "notes": "Books: every title shows whether it is on the phone (Offline / downloading % / Online) with a new Na telefonie filter and book-jacket covers; update the Books package to 1.4.0 to scan cover.jpg/folder.jpg from your folders."
+    "version": "2.38.3",
+    "git_sha": "6176faa",
+    "git_sha_full": "6176faaaf531c6eb9d738daf007d61a842a7169d",
+    "build": 289,
+    "released_at": "2026-11-24T21:43:27+00:00",
+    "notes": "Docker Manager: compose down/up for package stacks gets the package environment; failed removals fall back to label teardown."
   },
   "releases": [
+    {
+      "version": "2.38.3",
+      "git_sha": "6176faa",
+      "git_sha_full": "6176faaaf531c6eb9d738daf007d61a842a7169d",
+      "build": 289,
+      "released_at": "2026-11-24T21:43:27+00:00",
+      "notes": "Docker Manager: compose down/up for package stacks gets the package environment; failed removals fall back to label teardown."
+    },
     {
       "version": "2.38.2",
       "git_sha": "f12cf46",
@@ -201,14 +209,6 @@
       "build": 224,
       "released_at": "2026-11-22T22:04:08+00:00",
       "notes": "Downloads: watch-folder scan pass extracted into a service (no behaviour change)"
-    },
-    {
-      "version": "2.29.4",
-      "git_sha": "04a8e28",
-      "git_sha_full": "04a8e28575f02f14f3f4e3be88d3b316e4261e7e",
-      "build": 222,
-      "released_at": "2026-11-22T21:54:14+00:00",
-      "notes": "Downloads: transfer window and retry policy extracted into services (no behaviour change)"
     }
   ]
 }
