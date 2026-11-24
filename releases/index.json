@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-23T11:55:29+00:00",
+  "generated_at": "2026-11-24T16:09:02+00:00",
   "latest": {
-    "version": "2.33.0",
-    "git_sha": "b36e4d3",
-    "git_sha_full": "b36e4d33e60809f030851ba1fa9f58d4693e8f98",
-    "build": 261,
-    "released_at": "2026-11-23T11:55:29+00:00",
-    "notes": "Files: Move to Trash on a data disk is now an instant rename into <mount>/.@Recycle instead of copying onto the system SSD"
+    "version": "2.34.0",
+    "git_sha": "e68c165",
+    "git_sha_full": "e68c165188ed2ebd529b525f71cadc006064205a",
+    "build": 267,
+    "released_at": "2026-11-24T16:09:02+00:00",
+    "notes": "Packages: install-time settings — set a package's admin login and password in the install dialog or under Installed → Settings; Grafana 1.1.0 uses them for its administrator account."
   },
   "releases": [
+    {
+      "version": "2.34.0",
+      "git_sha": "e68c165",
+      "git_sha_full": "e68c165188ed2ebd529b525f71cadc006064205a",
+      "build": 267,
+      "released_at": "2026-11-24T16:09:02+00:00",
+      "notes": "Packages: install-time settings — set a package's admin login and password in the install dialog or under Installed → Settings; Grafana 1.1.0 uses them for its administrator account."
+    },
     {
       "version": "2.33.0",
       "git_sha": "b36e4d3",
@@ -201,14 +209,6 @@
       "build": 188,
       "released_at": "2026-11-22T17:33:59+00:00",
       "notes": "Installer: allow installing inside an image build chroot (port check skipped)"
-    },
-    {
-      "version": "2.28.3",
-      "git_sha": "795039e",
-      "git_sha_full": "795039ee040bd5d6cf768ac39ce24b0215a00144",
-      "build": 185,
-      "released_at": "2026-11-22T17:29:26+00:00",
-      "notes": "Packages: a stopped package service now says 'start it in Package Center' instead of showing a Python connection error; new cross-package QA sweep (docs/packages-qa.md)."
     }
   ]
 }
