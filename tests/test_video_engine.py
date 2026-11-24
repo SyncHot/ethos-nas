@@ -55,14 +55,14 @@ def test_modes() -> None:
 
 
 def test_bitrate() -> None:
-    check("4K downscaled to 720p gets 4M",
-          ve.bitrate_for(3840, 2160, 720) == "4M")
-    check("1080p target gets 6M",
-          ve.bitrate_for(3840, 2160, 1080) == "6M")
-    check("480p target gets 2.5M",
-          ve.bitrate_for(1920, 1080, 480) == "2.5M")
-    check("360p target gets 1.5M",
-          ve.bitrate_for(640, 360, 0) == "1.5M")
+    check("4K downscaled to 720p gets 2.8M",
+          ve.bitrate_for(3840, 2160, 720) == "2.8M")
+    check("1080p target gets 5M",
+          ve.bitrate_for(3840, 2160, 1080) == "5M")
+    check("480p target gets 1.5M",
+          ve.bitrate_for(1920, 1080, 480) == "1.5M")
+    check("360p target gets 1.2M",
+          ve.bitrate_for(640, 360, 0) == "1.2M")
 
 
 def test_video_args() -> None:
@@ -241,8 +241,12 @@ def test_download_mode() -> None:
     check("original MKV remuxes the video", mode == "remux", mode)
 
     mode, note = ve.download_mode(HEVC, "original", ".mkv")
-    check("original falls back for HEVC", mode == "transcode", mode)
+    check("original falls back for HEVC without client support", mode == "transcode", mode)
     check("fallback says it re-encodes", "1080p" in note, note)
+
+    mode, note = ve.download_mode(HEVC, "original", ".mkv", allow_hevc=True)
+    check("HEVC-capable clients get a copy, not an encode", mode == "remux", mode)
+    check("HEVC copy explains itself", "HEVC" in note, note)
 
     mode, _ = ve.download_mode(H264_10BIT, "original", ".mkv")
     check("10-bit is never copied", mode == "transcode", mode)
@@ -255,7 +259,7 @@ def test_download_mode() -> None:
     check("480p is an export quality", "tiny" in ve.EXPORT_QUALITIES,
           str(ve.EXPORT_QUALITIES))
     _pre, _video, filters = ve.build_video_args(H264, "transcode", None, "tiny")
-    check("480p downscales to 480", filters == ["scale=-2:480"], str(filters))
+    check("480p downscales to 480", filters == ["scale=-2:480", "format=yuv420p"], str(filters))
 
     cmd = ve.build_render_cmd(
         "ffmpeg", "/x/movie.mkv", H264_AC3, None, 0, "original", "192k",

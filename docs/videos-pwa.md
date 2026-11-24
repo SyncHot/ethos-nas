@@ -48,8 +48,10 @@ icon can be pinned.
    time** and `queue_position` drives the UI.
 2. `original` is the fast path: an H.264 4:2:0 source is copied (MKV → MP4
    remux) or served as is when it already is a phone-playable MP4
-   (`mode=passthrough`); HEVC/10-bit sources fall back to a 1080p encode with a
-   visible `note`. `fast`/`balanced`/`tiny` always re-encode (720p/1080p/480p).
+   (`mode=passthrough`). A HEVC source is copied too when the phone declares
+   HEVC support (iPhone/Safari); otherwise — and for 10-bit/4:2:2 H.264 — it
+   falls back to a 1080p encode with a visible `note`.
+   `fast`/`balanced`/`tiny` always re-encode (720p/1080p/480p).
 3. The page polls `GET /api/videos/exports` (2 s while the sheet is open or a
    job is active) and **reconciles on every start**: a render that continued
    while the app was closed reappears with its stage and position instead of
@@ -81,6 +83,27 @@ icon can be pinned.
 6. Playback uses `localMediaUrl(id)` → `/__media/<id>`; the service worker
    answers it **with Range support** (synthesised `206`/`416` slices of the
    cached Blob) so seeking works offline.
+
+**Encoding profile and sizes.** QSV/VAAPI run in constant-quality mode
+(`-global_quality`/`-qp`) with a max-rate cap instead of a fixed bitrate:
+480p ≈ 1.5 Mbps, 720p ≈ 2.8 Mbps, 1080p ≈ 5 Mbps (plus 128 kbps AAC). Sources
+above 30 fps are capped to 30, and HDR10/HLG is tone-mapped to 8-bit H.264
+(`zscale`/`tonemap`) so the download is not washed out. The phone's preflight
+size estimate reads those same caps from `/api/videos/download-settings`.
+
+**HEVC copies.** iPhone/Safari reports HEVC support; the PWA sends `hevc: true`
+with the export and the NAS then copies a HEVC stream (MKV → MP4 remux with the
+`hvc1` tag) instead of re-encoding it. Devices without HEVC still get H.264.
+
+**ETA and speed.** `ffmpeg -progress` writes `speed=`, the render job exposes
+`speed`/`eta_s`, and the downloads list shows `1.8× · ~4 min` next to the
+percentage.
+
+**Ready on the NAS.** A stored copy is no longer deleted by `consumed`; it stays
+for 7 days (rolling window of 8 files per account, 50 GiB area cap). The
+downloads sheet lists those exports under **Ready on the NAS** with one-tap
+**save to this device** or a NAS-side delete — a second phone or a cleared cache
+never triggers a re-encode.
 
 **Background Fetch.** When Chromium exposes
 `ServiceWorkerRegistration.backgroundFetch`, the transfer is handed to the
@@ -170,6 +193,11 @@ after a reload; nothing outside the caller's scope is ever returned.
   `waiting` and retries automatically with a 5 s → 2 min backoff (partial
   `?part=` entries resume with `Range`); `online` and returning to the tab retry
   immediately. Only a permanent 4xx asks for **Retry**.
+- **Wznów wszystkie**: the Downloads view has one button that re-queues every
+  `failed`/`waiting` row. It calls `retryDownload()` per title, which asks the
+  NAS for the same export (deduplicated) or a fresh one when the old job
+  expired — useful for rows that failed before the auto-retry release or after
+  the export TTL.
 
 ## Files
 

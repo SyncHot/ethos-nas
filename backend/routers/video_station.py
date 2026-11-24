@@ -550,12 +550,26 @@ def _ffprobe_sync(abs_path: str) -> dict:
         except (TypeError, ValueError):
             return None
 
+    def _rate(v):
+        try:
+            num, _, den = str(v or "").partition("/")
+            return round(float(num) / float(den or 1), 3)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return 0.0
+
     info = {
         "duration": _int(fmt.get("duration")),
         "width": _int((vstream or {}).get("width")),
         "height": _int((vstream or {}).get("height")),
+        "fps": _rate((vstream or {}).get("avg_frame_rate")
+                     or (vstream or {}).get("r_frame_rate")),
         "video_codec": (vstream or {}).get("codec_name"),
         "pix_fmt": (vstream or {}).get("pix_fmt"),
+        # HDR needs tone mapping before 8-bit H.264; interpolated transfer
+        # functions (smpte2084 = HDR10, arib-std-b67 = HLG) are the signal.
+        "color_transfer": (vstream or {}).get("color_transfer"),
+        "color_primaries": (vstream or {}).get("color_primaries"),
+        "color_space": (vstream or {}).get("color_space"),
         "audio_codec": (astream or {}).get("codec_name"),
         "bitrate": _int(fmt.get("bit_rate")),
         # Every audio stream, in file order — index is the position among
@@ -592,9 +606,9 @@ async def _probe(abs_path: str) -> dict:
     async with _info_cache_lock:
         cache = _load_info_cache()
         hit = cache.get(key)
-        # schema 3 added pix_fmt, schema 4 channel_layout; older entries are
-        # treated as misses.
-        if (hit and hit.get("schema") == 4 and hit.get("mtime") == st.st_mtime
+        # schema 3 added pix_fmt, schema 4 channel_layout, schema 5 fps/HDR
+        # metadata; older entries are treated as misses.
+        if (hit and hit.get("schema") == 5 and hit.get("mtime") == st.st_mtime
                 and hit.get("size") == st.st_size):
             return {k: v for k, v in hit.items() if k not in ("mtime", "size", "schema")}
 
@@ -608,7 +622,7 @@ async def _probe(abs_path: str) -> dict:
 
     async with _info_cache_lock:
         cache = _load_info_cache()
-        cache[key] = {"schema": 4, "mtime": st.st_mtime, "size": st.st_size,
+        cache[key] = {"schema": 5, "mtime": st.st_mtime, "size": st.st_size,
                       "checked_at": __import__("time").time(), **info}
         try:
             _save_info_cache(cache)
@@ -1098,6 +1112,9 @@ class RenderRequest(BaseModel):
     path: str
     q: str | None = None   # fast | balanced | original; omitted = the account default
     a: int = 0
+    # The phone declares HEVC support (iPhone/Safari): "original" may then copy
+    # the stream instead of re-encoding it for hours on the CPU.
+    hevc: bool = False
 
 
 class DownloadSettings(BaseModel):
@@ -1105,10 +1122,10 @@ class DownloadSettings(BaseModel):
 
 
 EXPORT_QUALITY_CHOICES = (
-    {"value": "original", "label": "Original · no re-encode"},
-    {"value": "balanced", "label": "1080p"},
-    {"value": "fast", "label": "720p · small"},
-    {"value": "tiny", "label": "480p · tiny"},
+    {"value": "original", "label": "Original · no re-encode", "bps": 0},
+    {"value": "balanced", "label": "1080p", "bps": 5_000_000},
+    {"value": "fast", "label": "720p · small", "bps": 2_800_000},
+    {"value": "tiny", "label": "480p · tiny", "bps": 1_500_000},
 )
 
 
@@ -1163,7 +1180,7 @@ async def create_export(payload: RenderRequest) -> dict:
     if requested not in EXPORT_QUALITIES:
         requested = "balanced"
     mode, note = video_engine.download_mode(
-        info, requested, os.path.splitext(abs_path)[1], payload.a)
+        info, requested, os.path.splitext(abs_path)[1], payload.a, payload.hevc)
     # "Original" on an unsupported source is honestly reported as a 1080p copy.
     quality = "balanced" if (requested == "original" and mode == "transcode") else requested
     audio_bitrate = cfg_options["audio_bitrate"]
@@ -1187,7 +1204,8 @@ async def create_export(payload: RenderRequest) -> dict:
 
     try:
         st = os.stat(abs_path)
-        source_key = f"{abs_path}|{st.st_size}|{int(st.st_mtime)}|{quality}|{payload.a}|{mode}"
+        source_key = (f"{abs_path}|{st.st_size}|{int(st.st_mtime)}|{quality}|"
+                      f"{payload.a}|{mode}|{1 if payload.hevc else 0}")
         job = await _RENDER.start(
             owner=user_data.current_username(), abs_path=abs_path, info=info,
             quality=quality, audio_idx=payload.a, source_key=source_key,

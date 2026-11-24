@@ -173,10 +173,11 @@ async def main() -> int:
         except module.RenderNotFound:
             check("rolling window reaps the oldest copy", True)
         consumed = windowed.consume(keeper2.id, "frank")
-        check("consume frees the NAS copy",
+        check("consume keeps the NAS copy for a re-download",
               consumed.status == "consumed"
-              and not (windowed.files_dir / f"{keeper2.id}.mp4").exists(), consumed.status)
-        check("consumed job has no download url", consumed.public()["download_url"] is None,
+              and (windowed.files_dir / f"{keeper2.id}.mp4").exists(), consumed.status)
+        check("consumed job keeps a download url",
+              consumed.public()["download_url"] is not None,
               str(consumed.public().get("download_url")))
 
         # ── passthrough (original MP4) ────────────────────────────────────

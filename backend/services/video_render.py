@@ -43,10 +43,10 @@ logger = logging.getLogger("ethos-nas.services.video_render")
 
 MAX_JOBS_PER_USER = 60          # rows kept per owner (history + queue)
 MAX_QUEUED_PER_USER = 40        # queued + rendering at any time
-PREPARED_WINDOW = 5             # finished files kept per owner
+PREPARED_WINDOW = 8             # finished files kept per owner (re-saveable)
 DELIVERED_GRACE = 2 * 3600      # never reap a file served in the last 2 h
 TTL_SECONDS = 7 * 86400
-CONSUMED_TTL = 86400            # "saved on device" rows drop after a day
+CONSUMED_TTL = 7 * 86400        # a stored copy stays re-downloadable for a week
 MAX_TOTAL_BYTES = 50 * 1024 ** 3  # 50 GiB of prepared downloads
 MIN_FREE_BYTES = 5 * 1024 ** 3    # refuse to start below 5 GiB free
 WORKER_TIMEOUT = 6 * 3600
@@ -87,6 +87,8 @@ class RenderJob:
     mode: str = "transcode"  # passthrough | remux | transcode
     note: str = ""
     percent: float = 0.0
+    speed: float = 0.0          # ffmpeg ``speed=1.8x`` during a render
+    eta_s: float = 0.0          # remaining seconds at the current speed
     duration: float = 0.0
     size: int = 0
     error: str = ""
@@ -125,6 +127,8 @@ class RenderJob:
             "audio_idx": self.audio_idx,
             "status": self.status,
             "percent": round(float(self.percent or 0.0), 1),
+            "speed": round(float(self.speed or 0.0), 2),
+            "eta_s": round(float(self.eta_s or 0.0), 1),
             "duration": self.duration,
             "size": self.size,
             "error": self.error,
@@ -132,7 +136,8 @@ class RenderJob:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
-            "download_url": f"/api/videos/exports/{self.id}/download" if self.status == "done" else None,
+            "download_url": (f"/api/videos/exports/{self.id}/download"
+                             if self.status in ("done", "consumed") else None),
         }
 
 
@@ -247,7 +252,7 @@ class RenderManager:
 
     def download_path(self, job_id: str, owner: str) -> Path:
         job = self.get(job_id, owner)
-        if job.status != "done":
+        if job.status not in ("done", "consumed"):
             raise RenderNotFound("The download is not ready")
         path = self._served_path(job)
         if not path.is_file():
@@ -290,9 +295,13 @@ class RenderManager:
         self._jobs.pop(job.id, None)
 
     def _reap_prepared_locked(self, owner: str) -> int:
-        """Keep only the newest ``prepared_window`` ready files for an owner."""
+        """Keep only the newest ``prepared_window`` ready/saved files for an owner.
+
+        A consumed copy is no longer deleted immediately: it stays re-downloadable
+        until the window or the byte cap evicts it.
+        """
         prepared = sorted((j for j in self._jobs.values()
-                           if j.owner == owner and j.status == "done"),
+                           if j.owner == owner and j.status in ("done", "consumed")),
                           key=lambda j: (j.created_at, j.id))
         removed = 0
         now = time.time()
@@ -324,7 +333,7 @@ class RenderManager:
                     continue
                 if job.active:
                     return job
-                if job.status == "done" and self._served_path(job).is_file():
+                if job.status in ("done", "consumed") and self._served_path(job).is_file():
                     return job
             queued = sum(1 for j in self._jobs.values() if j.owner == owner and j.active)
             if queued >= self.max_queued:
@@ -394,6 +403,8 @@ class RenderManager:
             cmd = cmd_factory(str(part))
             job.status = "rendering"
             job.started_at = time.time()
+            job.speed = 0.0
+            job.eta_s = 0.0
             logger.info("Render start | id=%s q=%s mode=%s input=%s",
                         job.id, job.quality, job.mode, abs_path)
             proc = await asyncio.create_subprocess_exec(
@@ -476,12 +487,19 @@ class RenderManager:
                 if not text or "=" not in text:
                     continue
                 key, _, value = text.partition("=")
-                if key in ("out_time_us", "out_time_ms") and duration > 0:
+                if key == "speed":
+                    try:
+                        job.speed = max(0.0, float(value.rstrip("x")))
+                    except ValueError:
+                        continue
+                elif key in ("out_time_us", "out_time_ms") and duration > 0:
                     try:
                         seconds = int(value) / 1_000_000
                     except ValueError:
                         continue
                     job.percent = max(0.0, min(99.9, seconds / duration * 100))
+                    if job.speed > 0:
+                        job.eta_s = max(0.0, (duration - seconds) / job.speed)
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive
@@ -556,17 +574,19 @@ class RenderManager:
         self._persist()
 
     def consume(self, job_id: str, owner: str) -> RenderJob:
-        """The device stored the file: free the NAS copy, keep a short history row."""
+        """The device stored the file: keep the NAS copy for a week.
+
+        Deleting it immediately made every re-download (a new phone, a freed
+        cache) a full re-encode. The copy is reaped by the rolling window, the
+        50 GiB area cap or ``CONSUMED_TTL`` instead.
+        """
         job = self.get(job_id, owner)
-        if job.status != "done":
+        if job.status not in ("done", "consumed"):
             raise RenderNotFound("The download is not ready")
         with contextlib.suppress(OSError):
             self._partial_path(job).unlink()
-        if not job.passthrough:
-            with contextlib.suppress(OSError):
-                self._output_path(job).unlink()
         job.status = "consumed"
-        job.consumed_at = time.time()
+        job.consumed_at = job.consumed_at or time.time()
         self._persist()
         logger.info("Render consumed | id=%s owner=%s mode=%s", job.id, owner, job.mode)
         return job

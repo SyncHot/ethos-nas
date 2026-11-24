@@ -54,11 +54,23 @@ COPY_SAFE_PIX_FMTS = {"yuv420p", "yuvj420p"}
 QUALITY_PRESETS = {
     # Tuned for a 4-core Celeron-class CPU (Intel N150): libx264 veryfast does
     # ~8 fps at 1440p, so downscaling is what keeps live playback watchable.
-    "tiny": {"preset": "ultrafast", "crf": 30, "max_height": 480},
-    "fast": {"preset": "ultrafast", "crf": 28, "max_height": 720},
-    "balanced": {"preset": "veryfast", "crf": 23, "max_height": 1080},
-    "high": {"preset": "veryfast", "crf": 20, "max_height": 0},  # 0 = source res
+    # ``qsv_q``/``va_qp`` switch the hardware encoders from a fixed bitrate to
+    # constant-quality mode (ICQ/QP); ``maxrate`` bounds the result so the
+    # phone's size estimate stays meaningful.
+    "tiny": {"preset": "ultrafast", "crf": 30, "max_height": 480, "qsv_q": 28, "va_qp": 30},
+    "fast": {"preset": "ultrafast", "crf": 28, "max_height": 720, "qsv_q": 26, "va_qp": 28},
+    "balanced": {"preset": "veryfast", "crf": 23, "max_height": 1080, "qsv_q": 24, "va_qp": 26},
+    "high": {"preset": "veryfast", "crf": 20, "max_height": 0, "qsv_q": 21, "va_qp": 23},
 }
+
+# HDR sources must be tone-mapped before 8-bit H.264, or the phone shows a
+# washed-out picture. The chain is the standard zscale/tonemap recipe.
+HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
+TONEMAP_FILTER = (
+    "zscale=t=linear:npl=100,format=gbrpf32le,"
+    "zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
+    "zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+)
 
 AUDIO_BITRATES = {"96k", "128k", "160k", "192k", "256k"}
 
@@ -70,11 +82,12 @@ DECODE_TIMEOUT = 20.0
 MAX_REASON = 600
 
 
-def copy_video_ok(info: dict) -> bool:
+def copy_video_ok(info: dict, allow_hevc: bool = False) -> bool:
     """True when the video stream can be remuxed into MP4 without re-encoding.
 
-    Conservative on purpose: only 8-bit H.264 4:2:0. A wrong guess would make
-    the offline file unplayable on the phone, which is worse than an encode.
+    Conservative on purpose: H.264 must be 8-bit 4:2:0. HEVC is copied only when
+    the client explicitly says it can play it (iPhone/Safari), because a wrong
+    guess would make the offline file unplayable on the phone.
     """
     codec = (info.get("video_codec") or "").lower()
     pix_fmt = (info.get("pix_fmt") or "").lower()
@@ -82,20 +95,27 @@ def copy_video_ok(info: dict) -> bool:
         height = int(info.get("height") or 0)
     except (TypeError, ValueError):
         height = 0
-    return codec == "h264" and pix_fmt in COPY_SAFE_PIX_FMTS and height > 0
+    if height <= 0:
+        return False
+    if codec == "h264":
+        return pix_fmt in COPY_SAFE_PIX_FMTS
+    return bool(allow_hevc and codec == "hevc")
 
 
-def download_mode(info: dict, quality: str, ext: str, audio_idx: int = 0) -> tuple[str, str]:
+def download_mode(info: dict, quality: str, ext: str, audio_idx: int = 0,
+                  allow_hevc: bool = False) -> tuple[str, str]:
     """Return ``(mode, note)`` for an offline export.
 
     passthrough — the source already is a phone-playable MP4: serve it as is
-    remux       — copy the H.264 video, convert only the audio (~seconds)
-    transcode   — full re-encode (HEVC/10-bit sources, or a downscaled preset)
+    remux       — copy the video, convert only the audio (~seconds)
+    transcode   — full re-encode (10-bit/4:2:2 H.264, HEVC without client
+                  support, or a downscaled preset)
     """
     if quality != "original":
         return "transcode", ""
-    if not copy_video_ok(info):
+    if not copy_video_ok(info, allow_hevc):
         return "transcode", "Original needs a re-encode for this source — saved as 1080p"
+    codec = (info.get("video_codec") or "").lower()
     tracks = info.get("audio_tracks") or []
     idx = min(max(0, int(audio_idx or 0)), max(0, len(tracks) - 1)) if tracks else 0
     track = tracks[idx] if idx < len(tracks) else {}
@@ -104,6 +124,8 @@ def download_mode(info: dict, quality: str, ext: str, audio_idx: int = 0) -> tup
     audio_copyable = audio_codec == "aac" and (not layout or layout in AAC_STANDARD_LAYOUTS)
     if ext.lower() in STREAMABLE_EXTS and audio_copyable:
         return "passthrough", "Original file — no conversion"
+    if codec == "hevc":
+        return "remux", "Original HEVC — audio converted to AAC"
     return "remux", "Original video — audio converted to AAC"
 
 
@@ -129,19 +151,25 @@ def select_playback_mode(info: dict, abs_path: str, *, ffmpeg_available: bool = 
 
 
 def bitrate_for(width: int, height: int, max_height: int = 0) -> str:
-    """Bitrate from the *output* height, not the source resolution.
+    """Bitrate cap from the *output* height, not the source resolution.
 
-    A 4K source downscaled to 720p must get the 720p bitrate; using the source
-    dimensions wasted bandwidth in the previous implementation.
+    A 4K source downscaled to 720p must get the 720p cap; using the source
+    dimensions wasted bandwidth in the previous implementation. The caps are
+    deliberately lower than the old fixed bitrates — the hardware encoders now
+    run in constant-quality mode, and this only bounds the result.
     """
     target_height = int(max_height or height or 0)
     if target_height >= 1080:
-        return "6M"
+        return "5M"
     if target_height >= 720:
-        return "4M"
+        return "2.8M"
     if target_height >= 480:
-        return "2.5M"
-    return "1.5M"
+        return "1.5M"
+    return "1.2M"
+
+
+def needs_tonemap(info: dict) -> bool:
+    return (str(info.get("color_transfer") or "").lower() in HDR_TRANSFERS)
 
 
 def build_video_args(
@@ -160,12 +188,34 @@ def build_video_args(
     max_height = int(preset.get("max_height") or 0)
     downscale = bool(max_height and height and height > max_height)
     bitrate = bitrate_for(width, height, max_height)
+    hdr = mode != "remux" and needs_tonemap(info)
+    if hdr:
+        # Tonemapping runs on CPU frames; a QSV/VAAPI surface cannot go through
+        # zscale. The encoder still runs on the GPU, only the decode is software.
+        decode_hw = False
+    try:
+        fps = float(info.get("fps") or 0)
+    except (TypeError, ValueError):
+        fps = 0.0
+    cap_fps = fps > 30.5
 
     pre: list[str] = []
     filters: list[str] = []
 
     if mode == "remux":
         return pre, ["-c:v", "copy"], filters
+
+    def software_filters(target: str) -> list[str]:
+        out: list[str] = []
+        if cap_fps:
+            out.append("fps=30")
+        if hdr:
+            out.append(TONEMAP_FILTER)
+        if downscale:
+            out.append(f"scale=-2:{max_height}")
+        if target != "yuv420p" or not hdr:
+            out.append(f"format={target}")
+        return out
 
     if encoder == "qsv":
         if device:
@@ -181,17 +231,18 @@ def build_video_args(
             else:
                 filters.append("scale_qsv=format=nv12")
         else:
-            if downscale:
-                filters.append(f"scale=-2:{max_height}")
-            filters.append("format=nv12")
+            filters.extend(software_filters("nv12"))
         # N150-class iGPUs expose only the low-power (VDEnc) encoder, but
         # ffmpeg's ``-low_power auto`` default picks the legacy path and the
         # oneVPL gen runtime rejects every frame with -22 (EINVAL). Do not
         # add ``-pix_fmt``: it makes ffmpeg insert an auto_scale that cannot
         # bridge QSV hardware frames; nv12 comes from the filters instead.
+        # ``-global_quality`` is ICQ (constant quality); ``-maxrate`` bounds
+        # the file so the phone's size preflight stays honest.
         video = [
             "-c:v", "h264_qsv", "-low_power", "1", "-preset", "veryfast",
-            "-b:v", bitrate, "-g", "30", "-bf", "0",
+            "-global_quality", str(preset["qsv_q"]),
+            "-maxrate", bitrate, "-bufsize", "16M", "-g", "30", "-bf", "0",
         ]
     elif encoder == "vaapi":
         if device:
@@ -206,10 +257,10 @@ def build_video_args(
             else:
                 filters.append("scale_vaapi=format=nv12")
         else:
-            if downscale:
-                filters.append(f"scale=-2:{max_height}")
-            filters += ["format=nv12", "hwupload"]
-        video = ["-c:v", "h264_vaapi", "-b:v", bitrate, "-g", "30", "-bf", "0"]
+            filters.extend(software_filters("nv12"))
+            filters.append("hwupload")
+        video = ["-c:v", "h264_vaapi", "-qp", str(preset["va_qp"]),
+                 "-maxrate", bitrate, "-bufsize", "16M", "-g", "30", "-bf", "0"]
     else:
         video = [
             "-c:v", "libx264", "-preset", preset["preset"], "-crf", str(preset["crf"]),
@@ -217,8 +268,7 @@ def build_video_args(
             # ~a minute to emit the first fragment of the live pipe.
             "-g", "30", "-maxrate", bitrate, "-bufsize", "16M", "-pix_fmt", "yuv420p",
         ]
-        if downscale:
-            filters.append(f"scale=-2:{max_height}")
+        filters.extend(software_filters("yuv420p"))
 
     return pre, video, filters
 
@@ -387,6 +437,10 @@ def build_render_cmd(
     cmd += [*pre, "-i", abs_path, "-map", "0:v:0", *video]
     if filters:
         cmd += ["-vf", ",".join(filters)]
+    if mode == "remux" and (info.get("video_codec") or "").lower() == "hevc":
+        # Safari needs the ``hvc1`` sample entry; ffmpeg otherwise writes
+        # ``hev1``, which QuickTime/iOS refuse to play.
+        cmd += ["-tag:v", "hvc1"]
     cmd += [*audio, "-sn", "-movflags", "+faststart", "-f", "mp4", out_path]
     return cmd
 

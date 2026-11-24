@@ -29,6 +29,7 @@ const RESUME_STORE = 'resume';
 
 let _db = null;
 let _downloads = [];
+let _exports = [];     // finished/consumed NAS copies that can be saved again
 let _onChange = null;
 let _storage = null;
 
@@ -317,8 +318,10 @@ function rowFromJob(job) {
         qualityLabel: job.quality_label || job.quality || '',
         mode: job.mode || '',
         note: job.note || '',
-        status: job.status === 'done' ? 'ready' : job.status,
+        status: (job.status === 'done' || job.status === 'consumed') ? 'ready' : job.status,
         percent: Number(job.percent) || 0,
+        speed: Number(job.speed) || 0,
+        etaS: Number(job.eta_s) || 0,
         bytesDone: 0,
         bytesTotal: Number(job.size) || 0,
         size: Number(job.size) || 0,
@@ -334,7 +337,8 @@ function rowFromJob(job) {
 
 function applyJob(row, job) {
     const snapshot = () => [row.status, row.percent, row.size, row.quality, row.qualityLabel,
-        row.mode, row.note, row.queuePosition, row.error, row.bytesTotal].join('|');
+        row.mode, row.note, row.queuePosition, row.error, row.bytesTotal,
+        row.speed, row.etaS].join('|');
     const before = snapshot();
     const previous = row.status;
     row.quality = job.quality || row.quality;
@@ -343,13 +347,22 @@ function applyJob(row, job) {
     row.note = job.note || row.note;
     row.queuePosition = Number(job.queue_position) || 0;
     row.duration = Number(job.duration) || row.duration || 0;
+    row.speed = Number(job.speed) || 0;
+    row.etaS = Number(job.eta_s) || 0;
     if (job.status === 'failed') {
         row.status = 'failed';
         row.error = job.error || 'The NAS could not prepare this download';
-    } else if (job.status === 'cancelled' || job.status === 'consumed') {
-        // Another device finished it, or the user cancelled it elsewhere.
+    } else if (job.status === 'cancelled') {
         row.status = previous === 'done' ? 'done' : 'failed';
         row.error = previous === 'done' ? '' : 'Removed on the server — queue it again';
+    } else if (job.status === 'consumed') {
+        // The copy stays on the NAS; another device saving it is not a failure.
+        row.size = Number(job.size) || row.size || 0;
+        row.bytesTotal = row.size;
+        if (previous !== 'downloading' && previous !== 'done') {
+            row.status = 'ready';
+            row.percent = 100;
+        }
     } else if (job.status === 'done') {
         row.size = Number(job.size) || row.size || 0;
         row.bytesTotal = row.size;
@@ -395,6 +408,8 @@ export async function syncDownloads() {
         return _downloads;
     }
     const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
+    _exports = jobs.filter((job) => job && job.download_url
+        && (job.status === 'done' || job.status === 'consumed'));
     const byId = new Map(jobs.map((job) => [job.id, job]));
     const touched = new Set();
     const orphaned = new Set();
@@ -465,6 +480,7 @@ export async function queueDownload(item, quality) {
     }
     const body = { path: item.path, a: 0 };
     if (quality) body.q = quality;
+    if (hevcSupported()) body.hevc = true;
     const startRes = await apiFetch('/api/videos/exports', {
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -488,6 +504,40 @@ export async function queueDownload(item, quality) {
     await refreshStorage();
     pumpDownloads();
     return _downloads.find((entry) => entry.id === job.id) || row;
+}
+
+/** Finished copies kept on the NAS (re-downloadable without a re-encode). */
+export function serverExports() {
+    return _exports.slice();
+}
+
+/** Turn a NAS export back into a device row and start saving it. */
+export async function adoptExport(job) {
+    if (!job?.id) return null;
+    let row = _downloads.find((entry) => entry.id === job.id);
+    if (!row) row = rowFromJob(job);
+    row.item = row.item || { path: job.path, title: job.name };
+    row.status = 'ready';
+    row.percent = 100;
+    row.bytesTotal = Number(job.size) || 0;
+    row.error = '';
+    upsert(row);
+    clearAttempts(job.id);
+    await persistRow(job.id);
+    storePoster(row, row.item).catch(() => {});
+    await refreshStorage();
+    pumpDownloads();
+    return row;
+}
+
+function hevcSupported() {
+    try {
+        const codec = 'video/mp4; codecs="hvc1.1.6.L93.B0"';
+        if (window.MediaSource?.isTypeSupported?.(codec)) return true;
+        return !!document.createElement('video').canPlayType(codec);
+    } catch {
+        return false;
+    }
 }
 
 /** Fill the device with ready files, one at a time. Safe to call repeatedly. */
@@ -839,6 +889,9 @@ export async function cancelDownload(id) {
 export async function retryDownload(id) {
     const row = _downloads.find((entry) => entry.id === id);
     if (!row) return null;
+    clearRetry(id);
+    _retryTries.delete(id);
+    _bgFailed.delete(id);
     clearAttempts(id);
     const item = row.item || { path: row.path, title: row.title };
     const next = await queueDownload(item, row.quality || undefined);

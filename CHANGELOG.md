@@ -11,6 +11,27 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.38.6] - 2026-11-24
+
+### Changed
+
+- **Videos: smaller and faster downloads**: hardware encoders now run in
+  constant-quality mode (QSV ICQ / VAAPI QP) with 5 / 2.8 / 1.5 Mbps caps for
+  1080p / 720p / 480p instead of fixed bitrates, sources above 30 fps are capped
+  at 30, and HDR10/HLG is tone-mapped to 8-bit H.264 instead of looking washed
+  out. The phone's download-size preflight now matches the server caps.
+- **Videos: HEVC copies for capable phones**: iPhone/Safari reports HEVC
+  support, so the NAS copies the HEVC stream (MKV → MP4 with the `hvc1` tag)
+  instead of spending CPU on a re-encode.
+
+### Added
+
+- **Videos: ETA and encoder speed** in the downloads list (for example
+  `1.8× · ~4 min`) next to the percentage.
+- **Videos: Ready on the NAS**: finished copies stay for 7 days (8 per
+  account, 50 GiB cap) and can be saved to another device with one tap — no
+  re-encode — or deleted from the NAS in the same sheet.
+
 ## [2.38.5] - 2026-11-24
 
 ### Added

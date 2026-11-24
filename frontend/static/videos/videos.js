@@ -13,12 +13,13 @@
 import { apiFetch, getToken, setToken, getCurrentClaims } from '../core/api.js';
 import { notify } from '../core/notification-center.js';
 import { logError, logInfo, logWarn, setLogContext } from '../core/logger.js';
+import { startTask } from '../core/progress.js';
 import '../core/error-reporter.js';
 import {
     initOffline, downloadsSnapshot, queueDownload, pumpDownloads, syncDownloads,
     cancelDownload, retryDownload, deleteDownload, localMediaUrl, storageInfo,
     refreshStorage, localSubtitle, srtToVtt, saveLocalResume, clearLocalResume,
-    allLocalResumes, resumeServerErrors,
+    allLocalResumes, resumeServerErrors, serverExports, adoptExport,
 } from './offline.js';
 
 setLogContext({ app: 'videos' });
@@ -47,6 +48,7 @@ const state = {
     downloads: [],
     downloadQuality: 'balanced',
     downloadQualities: [],
+    exports: [],
     downloadTimer: null,
     selectMode: false,
     selected: new Set(),
@@ -343,8 +345,13 @@ function isNearlyWatched(item) {
 
 // ── download size estimate (≈, from the source size/quality) ─────────────
 
-const QUALITY_BPS = { tiny: 1_200_000, fast: 2_500_000, balanced: 5_000_000 };
+const QUALITY_BPS = { tiny: 1_500_000, fast: 2_800_000, balanced: 5_000_000 };
 const SOURCE_BPS = { '480p': 1_500_000, '720p': 3_000_000, '1080p': 5_000_000, '2160p': 15_000_000, '4k': 16_000_000, '8k': 40_000_000 };
+
+function qualityBps(quality) {
+    const hit = (state.downloadQualities || []).find((entry) => entry.value === quality);
+    return Number(hit?.bps) || QUALITY_BPS[quality] || QUALITY_BPS.balanced;
+}
 
 function sourceBps(item) {
     const quality = String(item.quality || '').toLowerCase().replace(/\s+/g, '');
@@ -354,7 +361,7 @@ function sourceBps(item) {
 function estimateSize(item, quality) {
     if (!item) return 0;
     if (quality === 'original') return Number(item.size) || 0;
-    const bps = QUALITY_BPS[quality] || QUALITY_BPS.balanced;
+    const bps = qualityBps(quality);
     const size = Number(item.size) || 0;
     if (!size) return 0;
     return Math.round(size * (bps / sourceBps(item)));
@@ -886,6 +893,15 @@ function updateDownloadsBadge() {
     badge.dataset.tone = active ? 'active' : 'idle';
 }
 
+function formatEta(seconds) {
+    const total = Math.max(1, Math.round(Number(seconds) || 0));
+    if (total < 60) return '<1 min';
+    const minutes = Math.round(total / 60);
+    if (minutes < 60) return `${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours} h ${minutes % 60} min`;
+}
+
 function stageText(d) {
     const progress = d.bytesTotal
         ? Math.min(100, (d.bytesDone / d.bytesTotal) * 100)
@@ -893,7 +909,11 @@ function stageText(d) {
     if (d.status === 'queued') {
         return Number(d.queuePosition) > 1 ? `In the queue · #${d.queuePosition}` : 'In the queue';
     }
-    if (d.status === 'rendering') return `Preparing on the NAS… ${Math.round(Number(d.percent) || 0)}%`;
+    if (d.status === 'rendering') {
+        const speed = Number(d.speed) > 0 ? ` · ${Number(d.speed).toFixed(1)}×` : '';
+        const eta = Number(d.etaS) > 0 ? ` · ~${formatEta(d.etaS)}` : '';
+        return `Preparing on the NAS… ${Math.round(Number(d.percent) || 0)}%${speed}${eta}`;
+    }
     if (d.status === 'ready') return 'Ready on the NAS — saving to this device…';
     if (d.status === 'downloading') {
         return d.bytesTotal
@@ -916,6 +936,23 @@ function progressOf(d) {
     return d.bytesTotal
         ? Math.min(100, (d.bytesDone / d.bytesTotal) * 100)
         : (Number(d.percent) || 0);
+}
+
+function nasRowHtml(job) {
+    const item = findItem(job.path) || { path: job.path, title: job.name };
+    const version = job.quality_label || qualityLabel(job.quality);
+    return `<div class="vd-dl" data-testid="vd-nas-row" data-nas-id="${esc(job.id)}">
+        <div class="vd-dl-art"><img src="${esc(artUrl(item))}" alt="" loading="lazy" decoding="async"></div>
+        <div class="vd-dl-copy">
+            <b>${esc(displayTitle(item))}</b>
+            <span class="vd-dl-stage" data-tone="ok">On the NAS · ${esc(fmtBytes(job.size))}</span>
+            <span class="vd-dl-meta">${esc(version)}${job.mode === 'passthrough' ? ' · original' : ''}</span>
+        </div>
+        <div class="vd-dl-actions">
+            <button class="vd-icon-btn" type="button" data-action="adopt-export" data-id="${esc(job.id)}" aria-label="Save to this device">↓</button>
+            <button class="vd-icon-btn" type="button" data-action="delete-export" data-id="${esc(job.id)}" aria-label="Delete from the NAS">🗑</button>
+        </div>
+    </div>`;
 }
 
 function downloadRowHtml(d) {
@@ -945,7 +982,9 @@ function downloadRowHtml(d) {
 function downloadsSignature() {
     return state.downloads
         .map((d) => `${d.id}:${d.status}:${d.queuePosition || 0}:${d.error || ''}`)
-        .join('|') + `|batch:${state.batchErrors.map((e) => e.title).join(',')}`;
+        .join('|')
+        + `|nas:${(state.exports || []).map((job) => job.id).join(',')}`
+        + `|batch:${state.batchErrors.map((e) => e.title).join(',')}`;
 }
 
 function downloadsSummaryText() {
@@ -1009,6 +1048,10 @@ function renderDownloads(force = false) {
     const ready = state.downloads.filter((d) => d.status === 'ready');
     const done = state.downloads.filter((d) => d.status === 'done');
     const failed = state.downloads.filter((d) => d.status === 'failed');
+    const waiting = state.downloads.filter((d) => d.status === 'waiting');
+    const localIds = new Set(state.downloads.map((d) => d.id));
+    const nasReady = (state.exports || []).filter((job) => !localIds.has(job.id));
+    const resumable = failed.length + waiting.length;
     const section = (title, rows, hint = '') => (rows.length
         ? `<section class="vd-dl-group"><h3>${esc(title)}</h3>${hint ? `<p class="vd-dl-hint">${esc(hint)}</p>` : ''}
            ${rows.map((d) => downloadRowHtml(d)).join('')}</section>`
@@ -1021,8 +1064,14 @@ function renderDownloads(force = false) {
            </section>`
         : '';
     els.downloadsList.innerHTML = [
+        resumable ? `<div class="vd-dl-toolbar"><button class="vd-btn primary" type="button"
+            data-action="resume-all" data-testid="vd-resume-all">↻ Wznów wszystkie (${resumable})</button></div>` : '',
         section('Preparing', active, 'The NAS renders the next film while the previous one saves.'),
         section('Ready to save', ready),
+        section('Waiting for the NAS', waiting, 'Automatic retries in progress — this button skips the wait.'),
+        nasReady.length ? `<section class="vd-dl-group"><h3>Ready on the NAS</h3>
+            <p class="vd-dl-hint">Kept for a week — save again without re-encoding.</p>
+            ${nasReady.map((job) => nasRowHtml(job)).join('')}</section>` : '',
         section('On this device', done),
         section('Failed', failed),
         batchErrors,
@@ -1035,6 +1084,7 @@ async function syncDownloadState() {
     try {
         const list = await syncDownloads();
         state.downloads = list;
+        state.exports = serverExports();
         updateDownloadsBadge();
         if (!els.downloads.hidden) renderDownloads();
         pumpDownloads();
@@ -1101,6 +1151,74 @@ async function retryOne(id) {
     } catch (error) {
         toast(`Retry failed: ${apiError(error)}`, 'error');
     }
+}
+
+let _resumingAll = false;
+
+async function adoptNasExport(id) {
+    const job = (state.exports || []).find((entry) => entry.id === id);
+    if (!job) return;
+    try {
+        await adoptExport(job);
+        state.downloads = downloadsSnapshot();
+        state.exports = serverExports().filter((entry) => entry.id !== id);
+        updateDownloadsBadge();
+        renderDownloads(true);
+        render();
+        toast('Saving the copy from the NAS', 'success');
+    } catch (error) {
+        toast(`Could not save the NAS copy: ${apiError(error)}`, 'error');
+    }
+}
+
+async function deleteNasExport(id) {
+    try {
+        await apiFetch(`/api/videos/exports/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        await syncDownloadState();
+        toast('Deleted from the NAS', 'success');
+    } catch (error) {
+        toast(`Could not delete the NAS copy: ${apiError(error)}`, 'error');
+    }
+}
+
+/** One button for the aftermath of a NAS restart / an update from an older PWA. */
+async function resumeAll() {
+    if (_resumingAll) return;
+    const rows = downloadsSnapshot().filter((d) => ['failed', 'waiting'].includes(d.status));
+    if (!rows.length) {
+        pumpDownloads();
+        toast('Every download is already queued', 'info');
+        return;
+    }
+    _resumingAll = true;
+    const task = startTask({
+        appId: 'videos',
+        title: 'Resuming downloads',
+        total: rows.length,
+        detail: `0 of ${rows.length}`,
+        testIdPrefix: 'vd-resume',
+    });
+    let queued = 0;
+    for (let index = 0; index < rows.length; index += 1) {
+        try {
+            await retryDownload(rows[index].id);
+            queued += 1;
+        } catch (error) {
+            logWarn('Could not resume a download', `${rows[index].id}: ${apiError(error)}`);
+        }
+        task.update({
+            percent: Math.round(((index + 1) / rows.length) * 100),
+            detail: `${index + 1} of ${rows.length} · ${queued} queued`,
+        });
+    }
+    task.finish('done', { detail: `${queued} queued` });
+    state.downloads = downloadsSnapshot();
+    updateDownloadsBadge();
+    renderDownloads(true);
+    render();
+    pumpDownloads();
+    toast(`${queued} download${queued === 1 ? '' : 's'} queued`, 'success');
+    _resumingAll = false;
 }
 
 // ── settings ──────────────────────────────────────────────────────────────
@@ -1862,6 +1980,9 @@ function bindEvents() {
         if (action === 'delete-download') removeDownload(el.dataset.path, el.dataset.id);
         else if (action === 'cancel-download') cancelOne(el.dataset.id);
         else if (action === 'retry-download') retryOne(el.dataset.id);
+        else if (action === 'resume-all') resumeAll();
+        else if (action === 'adopt-export') adoptNasExport(el.dataset.id);
+        else if (action === 'delete-export') deleteNasExport(el.dataset.id);
         else if (action === 'play-local') {
             const item = findItem(el.dataset.path);
             if (item) { closeSheets(); openPlayer(item, { local: true }); }

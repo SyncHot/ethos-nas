@@ -337,7 +337,7 @@ def main() -> int:
                   code == 200 and consumed.get("status") == "consumed",
                   f"{code} {body[:200]}")
             code, _ = head(base, f"/api/videos/exports/{job_id}/download", admin)
-            check("consumed export can no longer be downloaded", code == 404, str(code))
+            check("consumed export stays downloadable for a week", code == 200, str(code))
 
             code, _ = call(base, "DELETE", f"/api/videos/exports/{job_id}", admin)
             check("export delete works", code == 200, str(code))
