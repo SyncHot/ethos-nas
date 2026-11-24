@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T22:25:38+00:00",
+  "generated_at": "2026-11-24T22:29:07+00:00",
   "latest": {
-    "version": "2.38.6",
-    "git_sha": "849a27c",
-    "git_sha_full": "849a27c07fab22eadcd46e266d68fda7d155c0bd",
-    "build": 295,
-    "released_at": "2026-11-24T22:25:38+00:00",
-    "notes": "Videos: ~2x smaller downloads (constant-quality QSV/VAAPI, 30 fps cap, HDR tone mapping), HEVC copies on iPhone, ETA/speed, and one-tap re-save from the NAS (7-day copies)."
+    "version": "2.38.7",
+    "git_sha": "96981f6",
+    "git_sha_full": "96981f6eeefc2635a797a452a6405452e1fbdd2b",
+    "build": 298,
+    "released_at": "2026-11-24T22:29:07+00:00",
+    "notes": "Downloads: premium hoster-link archives now auto-extract and remove their sources using the account's policy"
   },
   "releases": [
+    {
+      "version": "2.38.7",
+      "git_sha": "96981f6",
+      "git_sha_full": "96981f6eeefc2635a797a452a6405452e1fbdd2b",
+      "build": 298,
+      "released_at": "2026-11-24T22:29:07+00:00",
+      "notes": "Downloads: premium hoster-link archives now auto-extract and remove their sources using the account's policy"
+    },
     {
       "version": "2.38.6",
       "git_sha": "849a27c",
@@ -201,14 +209,6 @@
       "build": 238,
       "released_at": "2026-11-22T22:38:03+00:00",
       "notes": "Media pipeline moved out of the Files router: media_cache/thumbnails/transcode services; files.py 2133 → 1362 lines; no API or behaviour change."
-    },
-    {
-      "version": "2.29.9",
-      "git_sha": "b50c1f9",
-      "git_sha_full": "b50c1f9a39a3c35a7fa91c1617a372f082a522d3",
-      "build": 235,
-      "released_at": "2026-11-22T22:20:48+00:00",
-      "notes": "Downloads: URL/path guards extracted into a service (no behaviour change)"
     }
   ]
 }
