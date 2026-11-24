@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T22:29:07+00:00",
+  "generated_at": "2026-11-24T22:43:41+00:00",
   "latest": {
-    "version": "2.38.7",
-    "git_sha": "96981f6",
-    "git_sha_full": "96981f6eeefc2635a797a452a6405452e1fbdd2b",
-    "build": 298,
-    "released_at": "2026-11-24T22:29:07+00:00",
-    "notes": "Downloads: premium hoster-link archives now auto-extract and remove their sources using the account's policy"
+    "version": "2.39.0",
+    "git_sha": "e78fed8",
+    "git_sha_full": "e78fed83073353e3a4af0b27045d495721b1b1b3",
+    "build": 300,
+    "released_at": "2026-11-24T22:43:41+00:00",
+    "notes": "Books: the /books phone sheet shows narrator, series/volume, year, publisher, description and the metadata source; package ethos-books 2.0.0 parses real-world folder names and audio tags offline and fills missing metadata and covers from Apple Books, Google Books and Open Library, with a generated poster when nothing is found."
   },
   "releases": [
+    {
+      "version": "2.39.0",
+      "git_sha": "e78fed8",
+      "git_sha_full": "e78fed83073353e3a4af0b27045d495721b1b1b3",
+      "build": 300,
+      "released_at": "2026-11-24T22:43:41+00:00",
+      "notes": "Books: the /books phone sheet shows narrator, series/volume, year, publisher, description and the metadata source; package ethos-books 2.0.0 parses real-world folder names and audio tags offline and fills missing metadata and covers from Apple Books, Google Books and Open Library, with a generated poster when nothing is found."
+    },
     {
       "version": "2.38.7",
       "git_sha": "96981f6",
@@ -201,14 +209,6 @@
       "build": 240,
       "released_at": "2026-11-22T22:42:29+00:00",
       "notes": "Gallery Private vault moved into services/gallery_private.py (PIN, AES-GCM, ps sessions); same API; new vault unit test."
-    },
-    {
-      "version": "2.30.0",
-      "git_sha": "4a50446",
-      "git_sha_full": "4a50446aed97c4a7be8415100212021bc4edc16f",
-      "build": 238,
-      "released_at": "2026-11-22T22:38:03+00:00",
-      "notes": "Media pipeline moved out of the Files router: media_cache/thumbnails/transcode services; files.py 2133 → 1362 lines; no API or behaviour change."
     }
   ]
 }
