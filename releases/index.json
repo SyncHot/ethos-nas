@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T16:09:02+00:00",
+  "generated_at": "2026-11-24T16:10:38+00:00",
   "latest": {
-    "version": "2.34.0",
-    "git_sha": "e68c165",
-    "git_sha_full": "e68c165188ed2ebd529b525f71cadc006064205a",
-    "build": 267,
-    "released_at": "2026-11-24T16:09:02+00:00",
-    "notes": "Packages: install-time settings — set a package's admin login and password in the install dialog or under Installed → Settings; Grafana 1.1.0 uses them for its administrator account."
+    "version": "2.34.1",
+    "git_sha": "04a78a3",
+    "git_sha_full": "04a78a3f0a40cfef410c7cfe5c2a65a56da4dcab",
+    "build": 269,
+    "released_at": "2026-11-24T16:10:38+00:00",
+    "notes": "Packages: the install dialog now shows the package's settings fields (admin login, password) and system requirements."
   },
   "releases": [
+    {
+      "version": "2.34.1",
+      "git_sha": "04a78a3",
+      "git_sha_full": "04a78a3f0a40cfef410c7cfe5c2a65a56da4dcab",
+      "build": 269,
+      "released_at": "2026-11-24T16:10:38+00:00",
+      "notes": "Packages: the install dialog now shows the package's settings fields (admin login, password) and system requirements."
+    },
     {
       "version": "2.34.0",
       "git_sha": "e68c165",
@@ -201,14 +209,6 @@
       "build": 191,
       "released_at": "2026-11-22T17:37:51+00:00",
       "notes": "Packages install even when their port is already taken: the published host port is re-mapped to a free one and kept stable across updates."
-    },
-    {
-      "version": "2.28.4",
-      "git_sha": "b77ffbc",
-      "git_sha_full": "b77ffbcfe2eaba16082a7cdc0e317bf177a16ed4",
-      "build": 188,
-      "released_at": "2026-11-22T17:33:59+00:00",
-      "notes": "Installer: allow installing inside an image build chroot (port check skipped)"
     }
   ]
 }
