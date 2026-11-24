@@ -279,17 +279,22 @@ def main() -> int:
             code, body = call(base, "GET", "/api/videos/download-settings", admin)
             settings = json.loads(body) if code == 200 else {}
             check("download settings expose the default",
-                  code == 200 and settings.get("quality") == "tiny",
+                  code == 200 and settings.get("quality") == "auto",
                   f"{code} {body[:200]}")
             check("download settings list the versions",
                   [q["value"] for q in settings.get("qualities", [])]
-                  == ["original", "balanced", "fast", "tiny"], str(settings.get("qualities")))
+                  == ["auto", "original", "balanced", "fast", "tiny"],
+                  str(settings.get("qualities")))
             code, _ = call(base, "POST", "/api/videos/download-settings", admin,
                            {"quality": "original"})
             check("download default is saved", code == 200, str(code))
             code, _ = call(base, "POST", "/api/videos/download-settings", admin,
                            {"quality": "bogus"})
             check("unknown download version is rejected", code == 400, str(code))
+            code, body = call(base, "GET", "/api/videos/download-settings", admin)
+            kept = json.loads(body) if code == 200 else {}
+            check("an explicit download version survives the auto migration",
+                  kept.get("quality") == "original", str(kept.get("quality")))
 
             sample2 = share / "sample2.mkv"
             shutil.copyfile(sample, sample2)

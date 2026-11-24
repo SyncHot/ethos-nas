@@ -530,7 +530,7 @@ export async function adoptExport(job) {
     return row;
 }
 
-function hevcSupported() {
+export function hevcSupported() {
     try {
         const codec = 'video/mp4; codecs="hvc1.1.6.L93.B0"';
         if (window.MediaSource?.isTypeSupported?.(codec)) return true;

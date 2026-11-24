@@ -192,6 +192,35 @@ def main() -> int:
                   len(jobs) == 2 and all(job["quality"] == "tiny" for job in jobs),
                   str([(job["name"], job["quality"]) for job in jobs]))
 
+            # ── One tap: "auto" needs no version choice at all ─────────────
+            api(base, token, "POST", "/api/videos/download-settings", {"quality": "auto"})
+            page.reload()
+            page.wait_for_selector("#vd-content .vd-card", timeout=30000)
+            page.wait_for_selector('.vd-tab[data-tab="movies"]', timeout=10000)
+            page.click('[data-tab="movies"]')
+            page.wait_for_selector("#vd-content .vd-card", timeout=20000)
+            page.locator("#vd-content .vd-card").first.click()
+            page.wait_for_selector("#vd-sheet-title", timeout=10000)
+            page.wait_for_timeout(400)
+            check("quality stays out of the way in the sheet",
+                  page.locator("details.vd-quality-row > summary").count() == 1,
+                  str(page.locator("details.vd-quality-row").count()))
+            primary = page.locator('.vd-detail-actions [data-action="download"]')
+            label = primary.inner_text() if primary.count() else ""
+            check("one Download button carries no version suffix",
+                  primary.count() == 1 and "·" not in label, label)
+            primary.click()
+            page.wait_for_timeout(1500)
+            _, auto_listing = api(base, token, "GET", "/api/videos/exports")
+            movie_job = next((job for job in auto_listing.get("jobs", [])
+                              if job["name"] == "Some.Movie.2024.mkv"), None)
+            check("auto copies instead of encoding",
+                  movie_job is not None and movie_job["quality"] == "original"
+                  and movie_job["mode"] in ("remux", "passthrough"),
+                  str(movie_job and (movie_job["quality"], movie_job["mode"])))
+            page.locator("#vd-sheet > .vd-sheet-backdrop").click(position={"x": 10, "y": 10})
+            page.wait_for_selector("#vd-sheet", state="hidden", timeout=10000)
+
             page.click("#vd-downloads-btn")
             page.wait_for_selector("[data-action='play-local']", timeout=60000)
             watched = page.locator("[data-action='play-local']").first.get_attribute("data-path")

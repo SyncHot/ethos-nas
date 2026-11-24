@@ -159,10 +159,10 @@ DEFAULT_CONFIG = {
         # Decode with VA-API/QSV when the probe says the codec is supported;
         # falls back to software automatically per file.
         "hardware_decode": True,
-        # Default version for offline downloads ("Original" copies an H.264
-        # stream instead of re-encoding it, so it is usually the fastest).
-        # 480p keeps the most films on a phone for a trip.
-        "download_quality": "tiny",
+        # Default version for offline downloads. "auto" is the fastest safe
+        # path: copy the file when the phone can play it, otherwise a small fast
+        # encode (see video_engine.resolve_quality).
+        "download_quality": "auto",
     },
     # Metadata (Phase 6/9) — display-only metadata + locally cached artwork.
     # The section keeps its historical `tmdb` name for API compatibility, but
@@ -174,6 +174,9 @@ DEFAULT_CONFIG = {
 }
 
 QUALITY_PRESETS = video_engine.QUALITY_PRESETS
+
+# Per-user config schema. 2 = download_quality default moved from 480p to auto.
+CONFIG_SCHEMA = 2
 
 # Offline-export versions. "high" is playback-only (source-resolution encode).
 EXPORT_QUALITIES = video_engine.EXPORT_QUALITIES
@@ -250,12 +253,20 @@ def _load_config() -> dict:
     if not isinstance(data, dict) or not data:
         return json.loads(json.dumps(DEFAULT_CONFIG))
     roots = [r for r in (data.get("roots") or []) if isinstance(r, str) and _is_allowed(r)]
-    return {"roots": roots, "options": _sanitize_options(data.get("options") or {}),
-            "tmdb": _sanitize_tmdb(data.get("tmdb"))}
+    cfg = {"roots": roots, "options": _sanitize_options(data.get("options") or {}),
+           "tmdb": _sanitize_tmdb(data.get("tmdb"))}
+    # One-time: the old shipped download default was 480p. "auto" is strictly
+    # faster (a copy when the phone can play the file), so the default moves
+    # once; an explicit choice made after this migration is never touched.
+    if int(data.get("schema") or 1) < CONFIG_SCHEMA:
+        if cfg["options"].get("download_quality") == "tiny":
+            cfg["options"]["download_quality"] = "auto"
+        _save_config(cfg)
+    return cfg
 
 
 def _save_config(config: dict) -> None:
-    _config_store().save(config)
+    _config_store().save({**config, "schema": CONFIG_SCHEMA})
 
 
 def _is_allowed(abs_path: str) -> bool:
@@ -690,7 +701,10 @@ async def set_config(payload: VideoConfigRequest) -> dict:
         if os.path.isdir(root):
             roots.append(root)
     prev = _load_config()
-    cfg = {"roots": roots, "options": _sanitize_options(options_in),
+    # Partial patches keep the other settings: a client that only changes `sort`
+    # must not silently reset the download version or hardware decode.
+    merged_options = {**(prev.get("options") or {}), **(options_in or {})}
+    cfg = {"roots": roots, "options": _sanitize_options(merged_options),
            "tmdb": _sanitize_tmdb(payload.tmdb, prev.get("tmdb"))}
     _save_config(cfg)
     return {**cfg, "tmdb": _mask_tmdb(cfg["tmdb"])}
@@ -1122,6 +1136,7 @@ class DownloadSettings(BaseModel):
 
 
 EXPORT_QUALITY_CHOICES = (
+    {"value": "auto", "label": "Auto · fastest", "bps": 0},
     {"value": "original", "label": "Original · no re-encode", "bps": 0},
     {"value": "balanced", "label": "1080p", "bps": 5_000_000},
     {"value": "fast", "label": "720p · small", "bps": 2_800_000},
@@ -1134,7 +1149,7 @@ async def get_download_settings() -> dict:
     """Default offline-download version for this account (shared by both UIs)."""
     options = _load_config()["options"]
     return {
-        "quality": options.get("download_quality", "balanced"),
+        "quality": options.get("download_quality", "auto"),
         "qualities": list(EXPORT_QUALITY_CHOICES),
     }
 
@@ -1150,6 +1165,9 @@ async def set_download_settings(payload: DownloadSettings) -> dict:
             data = {}
         options = {**(data.get("options") or {}), "download_quality": quality}
         data["options"] = _sanitize_options(options)
+        # An explicit choice marks the config as migrated: the download default
+        # is never moved again after this point.
+        data["schema"] = CONFIG_SCHEMA
         return data["options"]
 
     options = _config_store().update(_apply)
@@ -1163,10 +1181,11 @@ async def set_download_settings(payload: DownloadSettings) -> dict:
 async def create_export(payload: RenderRequest) -> dict:
     """Queue a compact MP4 (H.264 + AAC) for offline playback on a phone.
 
-    ``q`` defaults to the account's ``download_quality``. "original" copies the
-    existing H.264 stream (passthrough/remux — seconds) and falls back to a
-    1080p encode for HEVC/10-bit sources. Many jobs may be queued: they render
-    one at a time and are reaped after the device stored them.
+    ``q`` defaults to the account's ``download_quality`` (now ``auto``: copy the
+    stream when the phone can play it, otherwise a small fast encode). "original"
+    copies the existing H.264 stream (passthrough/remux — seconds) and falls back
+    to a 1080p encode for HEVC/10-bit sources. Many jobs may be queued: they
+    render one at a time and are reaped after the device stored them.
     """
     abs_path = _sanitize_read(payload.path)
     if not os.path.isfile(abs_path):
@@ -1176,13 +1195,18 @@ async def create_export(payload: RenderRequest) -> dict:
 
     info = await _probe(abs_path)
     cfg_options = _load_config()["options"]
-    requested = (payload.q or cfg_options.get("download_quality") or "balanced").strip().lower()
+    requested = (payload.q or cfg_options.get("download_quality") or "auto").strip().lower()
     if requested not in EXPORT_QUALITIES:
-        requested = "balanced"
+        requested = "auto"
+    # "auto" collapses to a concrete preset before anything is queued, so the
+    # job (and its size estimate) is honest about what will be produced.
+    quality = video_engine.resolve_quality(info, requested, allow_hevc=payload.hevc)
     mode, note = video_engine.download_mode(
-        info, requested, os.path.splitext(abs_path)[1], payload.a, payload.hevc)
-    # "Original" on an unsupported source is honestly reported as a 1080p copy.
-    quality = "balanced" if (requested == "original" and mode == "transcode") else requested
+        info, quality, os.path.splitext(abs_path)[1], payload.a, payload.hevc)
+    # An explicit "Original" on a source that cannot be copied is honestly
+    # reported as a 1080p encode ("auto" never lands here: it picks 480/720p).
+    if requested == "original" and mode == "transcode":
+        quality = "balanced"
     audio_bitrate = cfg_options["audio_bitrate"]
     engine_status = await _ENGINE.status()
     encoder = engine_status.get("encoder")
@@ -1227,7 +1251,7 @@ async def list_exports() -> dict:
     options = _load_config()["options"]
     return {
         "jobs": [job.public() for job in _RENDER.list_for(user_data.current_username())],
-        "defaults": {"quality": options.get("download_quality", "balanced")},
+        "defaults": {"quality": options.get("download_quality", "auto")},
         "limits": {
             "queued": video_render.MAX_QUEUED_PER_USER,
             "window": video_render.PREPARED_WINDOW,

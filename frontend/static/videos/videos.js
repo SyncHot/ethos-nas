@@ -19,7 +19,7 @@ import {
     initOffline, downloadsSnapshot, queueDownload, pumpDownloads, syncDownloads,
     cancelDownload, retryDownload, deleteDownload, localMediaUrl, storageInfo,
     refreshStorage, localSubtitle, srtToVtt, saveLocalResume, clearLocalResume,
-    allLocalResumes, resumeServerErrors, serverExports, adoptExport,
+    allLocalResumes, resumeServerErrors, serverExports, adoptExport, hevcSupported,
 } from './offline.js';
 
 setLogContext({ app: 'videos' });
@@ -46,8 +46,11 @@ const state = {
     offlineUnlocked: false,
     batchErrors: [],
     downloads: [],
-    downloadQuality: 'balanced',
+    // "auto" = one tap: the NAS copies the file when it can, otherwise it makes
+    // a small fast encode. Explicit versions live behind the Quality toggle.
+    downloadQuality: 'auto',
     downloadQualities: [],
+    info: new Map(),      // path → /api/videos/info (probe, cached on the NAS)
     exports: [],
     downloadTimer: null,
     selectMode: false,
@@ -286,6 +289,7 @@ function pendingFor(path) {
 function qualityLabel(value) {
     const hit = (state.downloadQualities || []).find((q) => q.value === value);
     if (hit) return hit.label;
+    if (value === 'auto') return 'Auto';
     if (value === 'original') return 'Original';
     if (value === 'tiny') return '480p';
     return value === 'fast' ? '720p' : '1080p';
@@ -358,11 +362,35 @@ function sourceBps(item) {
     return SOURCE_BPS[quality] || 5_000_000;
 }
 
+// Mirrors video_engine.copy_video_ok(): can the NAS copy instead of encoding?
+const COPY_SAFE_PIX_FMTS = new Set(['yuv420p', 'yuvj420p']);
+
+function copyableSource(info) {
+    if (!info || !(Number(info.height) > 0)) return false;
+    const codec = String(info.video_codec || '').toLowerCase();
+    const pix = String(info.pix_fmt || '').toLowerCase();
+    if (codec === 'h264') return !pix || COPY_SAFE_PIX_FMTS.has(pix);
+    return codec === 'hevc' && hevcSupported();
+}
+
+/** Mirrors video_engine.resolve_quality("auto") for the size estimate/hint. */
+function autoPreset(info) {
+    if (copyableSource(info)) return 'original';
+    const height = Number(info?.height) || 0;
+    return height > 0 && height <= 480 ? 'tiny' : 'fast';
+}
+
+function sourceSize(item, info) {
+    return Number(info?.size) || Number(item?.size) || 0;
+}
+
 function estimateSize(item, quality) {
     if (!item) return 0;
-    if (quality === 'original') return Number(item.size) || 0;
-    const bps = qualityBps(quality);
-    const size = Number(item.size) || 0;
+    const info = state.info.get(item.path);
+    const preset = quality === 'auto' ? autoPreset(info) : quality;
+    if (preset === 'original') return sourceSize(item, info);
+    const bps = qualityBps(preset);
+    const size = sourceSize(item, info);
     if (!size) return 0;
     return Math.round(size * (bps / sourceBps(item)));
 }
@@ -370,6 +398,20 @@ function estimateSize(item, quality) {
 function estimateLabel(item, quality) {
     const bytes = estimateSize(item, quality);
     return bytes ? `≈ ${fmtBytes(bytes)}` : '';
+}
+
+/** One short line explaining what "Download" will actually do for this file. */
+function autoHint(item) {
+    const info = state.info.get(item.path);
+    if (info && copyableSource(info)) {
+        const size = estimateLabel(item, 'auto');
+        return `No conversion — the NAS copies the file${size ? ` (${size})` : ''}.`;
+    }
+    if (info) {
+        const size = estimateLabel(item, 'auto');
+        return `This source needs a re-encode — fast ${autoPreset(info) === 'tiny' ? '480p' : '720p'} copy${size ? ` (${size})` : ''}.`;
+    }
+    return 'Copy when the file allows it, otherwise a small fast encode — no settings needed.';
 }
 
 async function quotaAllows(needBytes) {
@@ -821,20 +863,26 @@ function openSheet(item) {
         ? `<button class="vd-btn" type="button" data-action="delete-download" data-path="${esc(item.path)}" data-id="${esc(dm.id)}">Delete download</button>`
         : pending
             ? `<button class="vd-btn" type="button" data-action="cancel-download" data-id="${esc(pending.id)}">Cancel · ${esc(stageText(pending))}</button>`
-            : `<button class="vd-btn primary" type="button" data-action="download" data-path="${esc(item.path)}">⬇ Download · ${esc(qualityLabel(state.downloadQuality))}</button>`;
+            : `<button class="vd-btn primary" type="button" data-action="download" data-path="${esc(item.path)}">⬇ Download</button>`;
     const choices = state.downloadQualities.length ? state.downloadQualities : [
+        { value: 'auto', label: 'Auto · fastest' },
         { value: 'original', label: 'Original · no re-encode' },
         { value: 'balanced', label: '1080p' },
         { value: 'fast', label: '720p · small' },
         { value: 'tiny', label: '480p · tiny' },
     ];
-    const versionRow = pending ? '' : `<div class="vd-quality-row" aria-label="${dm ? 'Replace download version' : 'Download version'}">
+    // Quality stays one tap away, not in the way: the primary button uses the
+    // account default and this shows the explicit versions with their sizes.
+    const versionRow = pending ? '' : `<details class="vd-quality-row">
+        <summary>${dm ? 'Replace download version' : 'Quality'} · ${esc(qualityLabel(state.downloadQuality))}</summary>
+        <div class="vd-quality-choices">
         ${choices.map((q) => {
-            const size = estimateLabel(item, q.value);
+            const size = q.value === 'auto' ? '' : estimateLabel(item, q.value);
             return `<button class="vd-btn small" type="button" data-action="${dm ? 'redownload-q' : 'download-q'}"
                 data-q="${esc(q.value)}" data-path="${esc(item.path)}">${esc(q.label)}${size ? ` · ${esc(size)}` : ''}</button>`;
         }).join('')}
-    </div>`;
+        </div>
+    </details>`;
     const episodeActions = item.kind === 'episode'
         ? `${next ? `<button class="vd-btn" type="button" data-action="play" data-path="${esc(next.path)}">Next episode</button>` : ''}
            <button class="vd-btn" type="button" data-action="show" data-show="${esc(item.show || '')}">Series</button>`
@@ -858,10 +906,28 @@ function openSheet(item) {
             ${downloadBlock}
             ${resume ? `<button class="vd-btn" type="button" data-action="remove-resume" data-path="${esc(item.path)}">Remove from Continue watching</button>` : ''}
         </div>
-        <p class="vd-hint">Downloads are prepared by the NAS (H.264 + AAC) and stored on this device. “Original” copies the video without re-encoding when the file allows it; sizes are approximate.</p>
+        <p class="vd-hint">${esc(autoHint(item))}</p>
         ${versionRow}
     </div>`;
+    els.sheet.dataset.path = item.path;
     els.sheet.hidden = false;
+    loadSheetInfo(item.path);
+}
+
+/** Probe once per item so the sheet can show the real size and what "auto" does. */
+async function loadSheetInfo(path) {
+    if (state.info.has(path)) return;
+    try {
+        const data = await apiJson(`/api/videos/info?path=${encodeURIComponent(path)}`);
+        if (!data?.info) return;
+        state.info.set(path, data.info);
+        if (!els.sheet.hidden && els.sheet.dataset.path === path) {
+            const item = findItem(path);
+            if (item) openSheet(item);
+        }
+    } catch (error) {
+        logWarn('Video info failed', `${path}: ${apiError(error)}`);
+    }
 }
 
 function closeSheets() {
@@ -1239,6 +1305,7 @@ async function loadDownloadSettings() {
 function renderSettings() {
     if (!els.qualityOptions) return;
     const choices = state.downloadQualities.length ? state.downloadQualities : [
+        { value: 'auto', label: 'Auto · fastest' },
         { value: 'original', label: 'Original · no re-encode' },
         { value: 'balanced', label: '1080p' },
         { value: 'fast', label: '720p · small' },

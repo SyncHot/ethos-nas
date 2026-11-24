@@ -43,9 +43,10 @@ _AAC_LAYOUT_BY_CHANNELS = {1: "mono", 2: "stereo", 3: "3.0", 4: "4.0", 5: "5.0",
 AUDIO_CODECS = ("aac", "opus", "none")
 
 # Download ("offline export") presets: the live-playback encoders plus
-# ``original`` — a stream copy when the source is already H.264 4:2:0 (seconds
-# instead of an hour on a Celeron). "high"/"source" stays playback-only.
-EXPORT_QUALITIES = ("tiny", "fast", "balanced", "original")
+# ``auto`` (fastest safe path — see resolve_quality) and ``original`` — a stream
+# copy when the source is already H.264 4:2:0 (seconds instead of an hour on a
+# Celeron). "high"/"source" stays playback-only.
+EXPORT_QUALITIES = ("auto", "tiny", "fast", "balanced", "original")
 
 # H.264 bitstreams an MP4 can carry unchanged. 10-bit / 4:2:2 / 4:4:4 would
 # play nowhere on phones, so those always re-encode.
@@ -100,6 +101,26 @@ def copy_video_ok(info: dict, allow_hevc: bool = False) -> bool:
     if codec == "h264":
         return pix_fmt in COPY_SAFE_PIX_FMTS
     return bool(allow_hevc and codec == "hevc")
+
+
+def resolve_quality(info: dict, quality: str, allow_hevc: bool = False) -> str:
+    """Concrete export preset for a request; ``auto`` is the fastest safe one.
+
+    A stream copy (``original``) finishes in seconds, so it always wins when the
+    source allows it. Otherwise the cheapest encode wins: 480p for small
+    sources, 720p for everything else — never the slow 1080p re-encode, which is
+    what made "just download it" feel like a render farm.
+    """
+    q = (quality or "auto").strip().lower()
+    if q != "auto":
+        return q
+    if copy_video_ok(info, allow_hevc):
+        return "original"
+    try:
+        height = int(info.get("height") or 0)
+    except (TypeError, ValueError):
+        height = 0
+    return "tiny" if 0 < height <= 480 else "fast"
 
 
 def download_mode(info: dict, quality: str, ext: str, audio_idx: int = 0,
@@ -743,6 +764,7 @@ __all__ = [
     "build_transcode_cmd",
     "build_video_args",
     "copy_video_ok",
+    "resolve_quality",
     "download_mode",
     "prune_decode_cache",
     "select_playback_mode",

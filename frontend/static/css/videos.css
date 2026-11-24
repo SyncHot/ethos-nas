@@ -407,8 +407,16 @@ button { cursor: pointer; }
 .vd-detail-tags .vd-pill { text-transform: none; letter-spacing: 0; font-size: 11px; }
 .vd-overview { margin: 0; color: var(--vd-muted); font-size: 13px; line-height: 1.55; }
 .vd-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.vd-quality-row { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0 2px; }
-.vd-quality-row .vd-btn { flex: 1 1 auto; }
+.vd-quality-row { padding: 10px 0 2px; }
+.vd-quality-row > summary {
+    cursor: pointer; font-size: 12.5px; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--vd-muted); padding: 6px 0; list-style: none;
+}
+.vd-quality-row > summary::-webkit-details-marker { display: none; }
+.vd-quality-row > summary::after { content: ' ⌄'; }
+.vd-quality-row[open] > summary::after { content: ' ⌃'; }
+.vd-quality-choices { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 6px; }
+.vd-quality-choices .vd-btn { flex: 1 1 auto; }
 
 .vd-downloads-list { display: flex; flex-direction: column; gap: 10px; }
 .vd-dl-summary {

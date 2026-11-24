@@ -254,6 +254,24 @@ def test_download_mode() -> None:
     mode, note = ve.download_mode(H264, "fast", ".mkv")
     check("a preset always encodes", mode == "transcode" and not note, mode)
 
+    # "auto" = one tap: copy when possible, otherwise the cheapest fast encode.
+    check("auto copies a playable source",
+          ve.resolve_quality(H264, "auto") == "original",
+          ve.resolve_quality(H264, "auto"))
+    check("auto copies HEVC only for capable clients",
+          ve.resolve_quality(HEVC, "auto") == "fast"
+          and ve.resolve_quality(HEVC, "auto", allow_hevc=True) == "original", "")
+    check("auto never picks the slow 1080p encode",
+          ve.resolve_quality(H264_10BIT, "auto") == "fast",
+          ve.resolve_quality(H264_10BIT, "auto"))
+    small = {**H264_10BIT, "height": 480}
+    check("auto keeps small sources small",
+          ve.resolve_quality(small, "auto") == "tiny",
+          ve.resolve_quality(small, "auto"))
+    check("an explicit version is passed through unchanged",
+          ve.resolve_quality(H264, "balanced") == "balanced"
+          and ve.resolve_quality(HEVC, "original") == "original", "")
+
     check("480p preset exists", ve.QUALITY_PRESETS["tiny"]["max_height"] == 480,
           str(ve.QUALITY_PRESETS.get("tiny")))
     check("480p is an export quality", "tiny" in ve.EXPORT_QUALITIES,
