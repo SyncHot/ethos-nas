@@ -152,6 +152,9 @@ def _persist_extract_defaults(username: str) -> None:
     def _apply(data):
         if not isinstance(data, dict):
             data = {}
+        elif data.get("_extract_defaults_v2") is True:
+            # A concurrent Settings save already recorded the user's choice.
+            return data
         data["auto_extract"] = True
         data["auto_extract_delete"] = True
         data["_extract_defaults_v2"] = True

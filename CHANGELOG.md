@@ -11,6 +11,14 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.38.1] - 2026-11-24
+
+### Fixed
+
+- **Download Station extraction defaults**: the one-time switch to
+  extract-and-remove can no longer overwrite an account that saves its extraction
+  switches at the same moment the migration runs.
+
 ## [2.38.0] - 2026-11-24
 
 ### Changed
