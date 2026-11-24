@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T16:17:26+00:00",
+  "generated_at": "2026-11-24T20:03:10+00:00",
   "latest": {
-    "version": "2.35.0",
-    "git_sha": "8f12ab9",
-    "git_sha_full": "8f12ab9c5ac3faafed3455e19128c377e533f568",
-    "build": 271,
-    "released_at": "2026-11-24T16:17:26+00:00",
-    "notes": "Packages: choose the folder a package keeps its data in (install dialog or Installed → Settings); defaults to a package-named folder under /home, /mnt or /media. Grafana 1.2.0 stores its database and dashboards there."
+    "version": "2.35.1",
+    "git_sha": "8e72f94",
+    "git_sha_full": "8e72f94aff6601f1437ee535e20a4125a823f511",
+    "build": 273,
+    "released_at": "2026-11-24T20:03:10+00:00",
+    "notes": "Packages: the data folder is granted to the container's own user (ACL), fixing Grafana's restart loop; Grafana 1.3.0 uses it."
   },
   "releases": [
+    {
+      "version": "2.35.1",
+      "git_sha": "8e72f94",
+      "git_sha_full": "8e72f94aff6601f1437ee535e20a4125a823f511",
+      "build": 273,
+      "released_at": "2026-11-24T20:03:10+00:00",
+      "notes": "Packages: the data folder is granted to the container's own user (ACL), fixing Grafana's restart loop; Grafana 1.3.0 uses it."
+    },
     {
       "version": "2.35.0",
       "git_sha": "8f12ab9",
@@ -201,14 +209,6 @@
       "build": 207,
       "released_at": "2026-11-22T19:09:58+00:00",
       "notes": "Core apps: Storage and SMART refresh themselves, Sharing can start a new share, Shared Links shows the public URL"
-    },
-    {
-      "version": "2.28.6",
-      "git_sha": "d25660c",
-      "git_sha_full": "d25660c05dd0d5a7e220d1fc40add9ddd76896d1",
-      "build": 194,
-      "released_at": "2026-11-22T17:45:56+00:00",
-      "notes": "Package Center shows when a package had to move to another port and can repair a port lost to another container."
     }
   ]
 }
