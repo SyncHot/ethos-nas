@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T22:43:41+00:00",
+  "generated_at": "2026-11-24T22:48:56+00:00",
   "latest": {
-    "version": "2.39.0",
-    "git_sha": "e78fed8",
-    "git_sha_full": "e78fed83073353e3a4af0b27045d495721b1b1b3",
-    "build": 300,
-    "released_at": "2026-11-24T22:43:41+00:00",
-    "notes": "Books: the /books phone sheet shows narrator, series/volume, year, publisher, description and the metadata source; package ethos-books 2.0.0 parses real-world folder names and audio tags offline and fills missing metadata and covers from Apple Books, Google Books and Open Library, with a generated poster when nothing is found."
+    "version": "2.39.1",
+    "git_sha": "41de72e",
+    "git_sha_full": "41de72e8ec4dc041965efd32367ca0fc12ec1c8f",
+    "build": 303,
+    "released_at": "2026-11-24T22:48:56+00:00",
+    "notes": "Videos: one-tap downloads on the fastest path (copy when the phone can play it, otherwise a quick 480p/720p copy), an Auto default and a cleaner sheet; saving settings no longer resets other options."
   },
   "releases": [
+    {
+      "version": "2.39.1",
+      "git_sha": "41de72e",
+      "git_sha_full": "41de72e8ec4dc041965efd32367ca0fc12ec1c8f",
+      "build": 303,
+      "released_at": "2026-11-24T22:48:56+00:00",
+      "notes": "Videos: one-tap downloads on the fastest path (copy when the phone can play it, otherwise a quick 480p/720p copy), an Auto default and a cleaner sheet; saving settings no longer resets other options."
+    },
     {
       "version": "2.39.0",
       "git_sha": "e78fed8",
@@ -201,14 +209,6 @@
       "build": 242,
       "released_at": "2026-11-22T22:45:12+00:00",
       "notes": "Download Station RSS scanner moved into services/download_rss.py; same API; new scanner test."
-    },
-    {
-      "version": "2.30.1",
-      "git_sha": "6d94a39",
-      "git_sha_full": "6d94a3950ec4951807b95314bdf941c7301e7759",
-      "build": 240,
-      "released_at": "2026-11-22T22:42:29+00:00",
-      "notes": "Gallery Private vault moved into services/gallery_private.py (PIN, AES-GCM, ps sessions); same API; new vault unit test."
     }
   ]
 }
