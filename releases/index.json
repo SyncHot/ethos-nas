@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T21:48:38+00:00",
+  "generated_at": "2026-11-24T22:03:03+00:00",
   "latest": {
-    "version": "2.38.4",
-    "git_sha": "4b2510b",
-    "git_sha_full": "4b2510b36828e24ada47270ac312fa1706c1f661",
-    "build": 291,
-    "released_at": "2026-11-24T21:48:38+00:00",
-    "notes": "Books: fill missing metadata and covers from Open Library (package 1.5.0 — Fetch metadata button plus automatic lookup after a scan); phone covers refresh when the artwork changes."
+    "version": "2.38.5",
+    "git_sha": "28ff6ab",
+    "git_sha_full": "28ff6abd4b928264e7e59245759dcd8c7395e224",
+    "build": 293,
+    "released_at": "2026-11-24T22:03:03+00:00",
+    "notes": "PWAs: downloads resume automatically after a NAS restart; /music and /notes stay usable offline with an expired session."
   },
   "releases": [
+    {
+      "version": "2.38.5",
+      "git_sha": "28ff6ab",
+      "git_sha_full": "28ff6abd4b928264e7e59245759dcd8c7395e224",
+      "build": 293,
+      "released_at": "2026-11-24T22:03:03+00:00",
+      "notes": "PWAs: downloads resume automatically after a NAS restart; /music and /notes stay usable offline with an expired session."
+    },
     {
       "version": "2.38.4",
       "git_sha": "4b2510b",
@@ -201,14 +209,6 @@
       "build": 231,
       "released_at": "2026-11-22T22:18:25+00:00",
       "notes": "Downloads: a second link provider (AllDebrid) now takes over when tb7.pl cannot unlock a hoster link"
-    },
-    {
-      "version": "2.29.6",
-      "git_sha": "ba431c0",
-      "git_sha_full": "ba431c03f538171ef4789584c76355bc57dbaf00",
-      "build": 226,
-      "released_at": "2026-11-22T22:11:03+00:00",
-      "notes": "Downloads: queue order and retry timing extracted into a service (no behaviour change)"
     }
   ]
 }
