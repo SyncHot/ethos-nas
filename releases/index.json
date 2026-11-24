@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T21:36:32+00:00",
+  "generated_at": "2026-11-24T21:38:00+00:00",
   "latest": {
-    "version": "2.38.1",
-    "git_sha": "2cee53c",
-    "git_sha_full": "2cee53c2b9766b3a19e94817131ac964070934f6",
-    "build": 284,
-    "released_at": "2026-11-24T21:36:32+00:00",
-    "notes": "Downloads: archive extraction and source cleanup stay on by default, without overwriting a settings save that races the one-time migration"
+    "version": "2.38.2",
+    "git_sha": "f12cf46",
+    "git_sha_full": "f12cf46a12dfb6fc62b35c6710449ec3079c3a26",
+    "build": 286,
+    "released_at": "2026-11-24T21:38:00+00:00",
+    "notes": "Books: every title shows whether it is on the phone (Offline / downloading % / Online) with a new Na telefonie filter and book-jacket covers; update the Books package to 1.4.0 to scan cover.jpg/folder.jpg from your folders."
   },
   "releases": [
+    {
+      "version": "2.38.2",
+      "git_sha": "f12cf46",
+      "git_sha_full": "f12cf46a12dfb6fc62b35c6710449ec3079c3a26",
+      "build": 286,
+      "released_at": "2026-11-24T21:38:00+00:00",
+      "notes": "Books: every title shows whether it is on the phone (Offline / downloading % / Online) with a new Na telefonie filter and book-jacket covers; update the Books package to 1.4.0 to scan cover.jpg/folder.jpg from your folders."
+    },
     {
       "version": "2.38.1",
       "git_sha": "2cee53c",
@@ -201,14 +209,6 @@
       "build": 222,
       "released_at": "2026-11-22T21:54:14+00:00",
       "notes": "Downloads: transfer window and retry policy extracted into services (no behaviour change)"
-    },
-    {
-      "version": "2.29.3",
-      "git_sha": "38bb2fa",
-      "git_sha_full": "38bb2fa26c35daa5ff42d64a4f083b5cbb2c2c79",
-      "build": 220,
-      "released_at": "2026-11-22T21:47:58+00:00",
-      "notes": "Packages: uninstalling a window-only package (Cameras) can now delete its configuration, and leftover core state is reclaimable under Unused package data"
     }
   ]
 }
