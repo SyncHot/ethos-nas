@@ -349,6 +349,24 @@ def _lint_manifest(pkg_dir: Path, manifest: dict) -> tuple[list[str], list[str]]
                     errors.append(f"{pkg_id}: {service}: restart policy is required (survives a reboot)")
                 if not spec.get("healthcheck"):
                     warnings.append(f"{pkg_id}: {service}: no healthcheck")
+                memory_limit = spec.get("mem_limit")
+                if not memory_limit:
+                    deploy = spec.get("deploy")
+                    resources = deploy.get("resources") if isinstance(deploy, dict) else None
+                    limits = resources.get("limits") if isinstance(resources, dict) else None
+                    memory_limit = limits.get("memory") if isinstance(limits, dict) else None
+                if not memory_limit:
+                    warnings.append(
+                        f"{pkg_id}: {service}: no memory limit — a runaway container can OOM the NAS")
+                logging_cfg = spec.get("logging")
+                logging_cfg = logging_cfg if isinstance(logging_cfg, dict) else {}
+                driver = str(logging_cfg.get("driver") or "json-file").lower()
+                log_opts = logging_cfg.get("options")
+                log_opts = log_opts if isinstance(log_opts, dict) else {}
+                if driver == "json-file" and not (
+                        log_opts.get("max-size") and log_opts.get("max-file")):
+                    warnings.append(
+                        f"{pkg_id}: {service}: no json-file log rotation (max-size/max-file) — logs can fill the disk")
     return errors, warnings
 
 

@@ -76,6 +76,19 @@ def main() -> int:
         run("build", "--repo", str(repo), "--base-url", "https://example.test/repo")
         clean = run("lint", "--repo", str(repo))
         check("lint passes a pinned, restarted service", clean.returncode == 0, clean.stderr)
+        check("lint warns about a missing memory limit",
+              "no memory limit" in clean.stdout, clean.stdout)
+
+        (pkg / "docker-compose.yml").write_text(
+            "services:\n  app:\n    image: nginx:1.27\n    restart: unless-stopped\n"
+            "    mem_limit: 256m\n    cpus: 0.5\n    pids_limit: 128\n"
+            "    logging:\n      driver: json-file\n      options:\n        max-size: \"10m\"\n        max-file: \"3\"\n"
+            "    healthcheck:\n      test: [\"CMD\", \"true\"]\n", encoding="utf-8")
+        run("build", "--repo", str(repo), "--base-url", "https://example.test/repo")
+        bounded = run("lint", "--repo", str(repo))
+        check("lint accepts a bounded service",
+              bounded.returncode == 0 and "no memory limit" not in bounded.stdout,
+              bounded.stdout)
 
         (pkg / "docker-compose.yml").write_text(
             "services:\n  app:\n    image: nginx:latest\n    restart: unless-stopped\n", encoding="utf-8")
