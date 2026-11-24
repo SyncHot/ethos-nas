@@ -14,6 +14,7 @@ import { skeletonRows, emptyState, errorState } from '../core/states.js';
 import { logError, logInfo } from '../core/logger.js';
 import { mountShell } from '../core/ui-shell.js';
 import { consumeContext } from '../core/app-links.js';
+import { pickFolder } from '../core/file-picker.js';
 import {
     fetchIncoming, fetchOutgoing, incomingTableHtml, outgoingTableHtml,
     wireSharingActions, openGrantApp,
@@ -1687,13 +1688,16 @@ async function renderPackagesConfig(isCurrent) {
                 (Grafana, databases, …). Installed packages keep the folder recorded at install — change it
                 per package in Package Center → Installed → Settings.</p>
                 <div class="ui-panel-body ui-list">
-                    <label style="display:block;font-size:12px;color:var(--text-2);">
+                    <div style="font-size:12px;color:var(--text-2);">
                         <span style="display:block;margin-bottom:4px;">Folder for new package data</span>
-                        <input class="ui-input" style="width:100%;" type="text" data-testid="pkg-data-root"
-                               value="${escapeAttr(custom ? current : '')}" placeholder="${escapeAttr(fallback)}"
-                               spellcheck="false" autocomplete="off">
-                        <span class="ui-muted" style="font-size:11px;">Absolute path under /home, /mnt or /media. Leave empty for the built-in location.</span>
-                    </label>
+                        <div class="ui-row" style="align-items:stretch;">
+                            <input class="ui-input" style="flex:1;min-width:0;" type="text" data-testid="pkg-data-root"
+                                   value="${escapeAttr(custom ? current : '')}" placeholder="${escapeAttr(fallback)}"
+                                   spellcheck="false" autocomplete="off">
+                            <button type="button" class="ui-btn small" data-action="pkg-data-browse" data-testid="pkg-data-browse">${uiIcon('folder', 12)} Choose…</button>
+                        </div>
+                        <span class="ui-muted" style="font-size:11px;">Pick any folder under /home, /mnt or /media, or type a path. Leave empty for the built-in location.</span>
+                    </div>
                     <div class="ui-row">
                         <button class="ui-btn small primary" data-action="pkg-data-save" data-testid="pkg-data-save"${admin ? '' : ' disabled'}>${uiIcon('check', 12)} Save</button>
                         <button class="ui-btn small" data-action="pkg-data-reset" data-testid="pkg-data-reset"${admin && custom ? '' : ' disabled'}>Reset to default</button>
@@ -1730,6 +1734,15 @@ async function renderPackagesConfig(isCurrent) {
     shell.view.querySelector('[data-action="pkg-data-save"]')?.addEventListener('click', () => {
         const input = shell.view.querySelector('[data-testid="pkg-data-root"]');
         save(input?.value?.trim() || '');
+    });
+    shell.view.querySelector('[data-action="pkg-data-browse"]')?.addEventListener('click', async () => {
+        const input = shell.view.querySelector('[data-testid="pkg-data-root"]');
+        const picked = await pickFolder({
+            title: 'Default folder for package data',
+            startPath: input?.value?.trim() || '/mnt',
+            roots: ['/home', '/mnt', '/media'],
+        });
+        if (picked && input) input.value = picked;
     });
     shell.view.querySelector('[data-action="pkg-data-reset"]')?.addEventListener('click', () => save(''));
     shell.setStatus(custom ? `Custom default: ${current}` : 'Built-in default folder', 'ok');

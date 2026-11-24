@@ -11,6 +11,15 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.36.1] - 2026-11-24
+
+### Changed
+
+- **Folder pickers for package data**: Settings → Packages and a package's
+  Installed → Settings now have a **Choose…** button next to the path field — the
+  shared file picker opens limited to `/home`, `/mnt` and `/media`, so the folder
+  can be picked instead of typed. The path stays editable for power users.
+
 ## [2.36.0] - 2026-11-24
 
 ### Added

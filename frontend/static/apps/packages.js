@@ -12,6 +12,7 @@ import { startTask } from '../core/progress.js';
 import { logError } from '../core/logger.js';
 import { uiIcon } from '../core/icons.js';
 import { mountShell } from '../core/ui-shell.js';
+import { pickFolder } from '../core/file-picker.js';
 import { openLogs } from './logs.js';
 
 const _pkg = {
@@ -550,12 +551,30 @@ function _dataDirField(pkg, current, defaultDir) {
     const value = current ? String(current) : '';
     const hint = defaultDir ? `default: ${defaultDir}` : 'default: a package folder in the EthOS data store';
     return `<div class="ui-panel" style="margin-top:10px;padding:10px 12px;">
-        <label style="display:block;font-size:12px;color:var(--text-2);">
+        <div style="font-size:12px;color:var(--text-2);">
             <span style="display:block;margin-bottom:4px;">${escapeHtml(label)}</span>
-            <input class="ui-input" style="width:100%;" type="text" name="pkg_data_dir"
-                   value="${escapeAttr(value)}" placeholder="${escapeAttr(hint)}" spellcheck="false">
-            <span class="ui-muted" style="font-size:11px;">Leave empty for the default folder. Changing it does not move existing files — the service starts with an empty folder.</span>
-        </label></div>`;
+            <div class="ui-row" style="align-items:stretch;">
+                <input class="ui-input" style="flex:1;min-width:0;" type="text" name="pkg_data_dir"
+                       data-testid="pkg-data-folder" value="${escapeAttr(value)}"
+                       placeholder="${escapeAttr(hint)}" spellcheck="false" autocomplete="off">
+                <button type="button" class="ui-btn small" data-testid="pkg-data-browse">${uiIcon('folder', 12)} Choose…</button>
+            </div>
+            <span class="ui-muted" style="font-size:11px;">Pick a folder under /home, /mnt or /media, or type a path. Leave empty for the default; changing it does not move existing files.</span>
+        </div></div>`;
+}
+
+function _wireDataDirPicker(root) {
+    const button = root?.querySelector('[data-testid="pkg-data-browse"]');
+    const input = root?.querySelector('[data-testid="pkg-data-folder"]');
+    if (!button || !input) return;
+    button.addEventListener('click', async () => {
+        const picked = await pickFolder({
+            title: 'Package data folder',
+            startPath: input.value.trim() || '/mnt',
+            roots: ['/home', '/mnt', '/media'],
+        });
+        if (picked) input.value = picked;
+    });
 }
 
 function _settingsFields(pkg) {
@@ -750,6 +769,7 @@ async function _openDetail(pkgId) {
             if (logsBtn) logsBtn.addEventListener('click', () => openLogs({ app: `pkg:${detail.id}` }));
             const repairBtn = modalBody?.querySelector('[data-testid="pkg-detail-repair-ports"]');
             if (repairBtn) repairBtn.addEventListener('click', () => _repairPorts(detail.id));
+            _wireDataDirPicker(modalBody);
         },
         onSubmit: canUpdate || canInstall || canUninstall
             ? async (values, { setError, close }) => {
@@ -829,6 +849,7 @@ async function _editSettings(pkgId) {
             width: '520px',
             confirmLabel: 'Save settings',
             bodyHtml: `<p class="ui-muted" style="font-size:12px;margin:0;">Changing a value recreates the service so it takes effect now.</p>${_settingsFields(view)}${_dataDirField(view, info.data_dir, info.default_data_dir)}`,
+            onReady: (body) => _wireDataDirPicker(body),
             onSubmit: async (values, { setError }) => {
                 try {
                     const payload = { values: _collectSettings(view, values) };
