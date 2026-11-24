@@ -396,6 +396,36 @@ def main() -> int:
         check("no .part file is left behind", not os.path.exists(final_path + ".part"))
         if dl_id:
             _call(base, "DELETE", f"/api/downloads/tasks/{dl_id}?delete_file=true", admin)
+
+        print("\nAuto-extract defaults")
+        import zipfile
+        zip_source = os.path.join(serve_dir, "bundle.zip")
+        with zipfile.ZipFile(zip_source, "w") as zf:
+            zf.writestr("inside.txt", "unpacked payload")
+        status, created, _h = _call(base, "POST", "/api/downloads/tasks", admin,
+                                    {"url": f"http://127.0.0.1:{port}/bundle.zip",
+                                     "folder": str(download_dir)})
+        zip_id = (created or {}).get("id") if isinstance(created, dict) else None
+        zip_final = (created or {}).get("path") if isinstance(created, dict) else ""
+        check("archive download created", status == 200 and bool(zip_id), f"HTTP {status}")
+        zip_state = None
+        deadline = time.time() + 25
+        while zip_id and time.time() < deadline:
+            _s, task, _h = _call(base, "GET", f"/api/downloads/tasks/{zip_id}", admin)
+            zip_state = task
+            if isinstance(task, dict) and task.get("extract_state") in ("done", "error"):
+                break
+            time.sleep(0.2)
+        check("archive extracts automatically",
+              isinstance(zip_state, dict) and zip_state.get("extract_state") == "done",
+              str((zip_state or {}).get("extract_error") or (zip_state or {}).get("extract_state")))
+        extracted = os.path.join(os.path.dirname(zip_final), "bundle", "inside.txt") if zip_final else ""
+        check("extracted file lands next to the archive",
+              bool(extracted) and os.path.isfile(extracted), extracted or "no zip path")
+        check("downloaded source archive is removed by default",
+              bool(zip_final) and not os.path.exists(zip_final), zip_final or "no zip path")
+        if zip_id:
+            _call(base, "DELETE", f"/api/downloads/tasks/{zip_id}?delete_file=true", admin)
         httpd.shutdown()
         shutil.rmtree(serve_dir, ignore_errors=True)
 
