@@ -11,6 +11,23 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.39.1] - 2026-11-24
+
+### Changed
+
+- **Videos: one tap to download** — the film sheet now has a single
+  **Download** button that always takes the fastest path: the NAS copies the
+  file when the phone can play it (seconds, no CPU), otherwise it makes a quick
+  480p/720p version — never the slow 1080p re-encode. The explicit versions
+  moved into a collapsed **Quality** line that shows the real size.
+- **Videos: the default download version is now “Auto · fastest”**; an existing
+  480p default is migrated once, and a version you pick yourself is kept.
+
+### Fixed
+
+- Saving any Videos setting no longer resets the other options (for example the
+  download version or hardware decode) back to their defaults.
+
 ## [2.39.0] - 2026-11-24
 
 ### Added
