@@ -28,12 +28,14 @@ BACKUP_DIR: Path = PACKAGES_ROOT / ".backup"
 DATA_DIR: Path = PACKAGES_ROOT / "data"
 
 INSTALLED_FILE = PACKAGES_ROOT / "installed.json"
+SETTINGS_FILE = PACKAGES_ROOT / "settings.json"
 SOURCES_FILE = PACKAGES_ROOT / "sources.json"
 OLD_SOURCES_FILE = PACKAGES_ROOT / "registry_sources.json"
 CACHE_FILE = PACKAGES_ROOT / "cache.json"
 OLD_CACHE_FILE = PACKAGES_ROOT / "registry_cache.json"
 
 _INSTALLED = json_store.get(INSTALLED_FILE, dict, version=1)
+_SETTINGS = json_store.get(SETTINGS_FILE, dict, version=1)
 _SOURCES = json_store.get(SOURCES_FILE, dict, version=1)
 _CACHE = json_store.get(CACHE_FILE, dict, version=1)
 
@@ -116,6 +118,43 @@ def data_dir(pkg_id: str) -> Path:
     """Per-package service state (`ETHOS_PACKAGE_DATA_DIR`); survives an uninstall."""
     check_pkg_id(pkg_id)
     return DATA_DIR / pkg_id
+
+
+# ── Global defaults ─────────────────────────────────────────────────────────
+
+def load_settings() -> dict:
+    data = _SETTINGS.load()
+    return data if isinstance(data, dict) else {}
+
+
+def data_root() -> Path:
+    """Default root for compose packages that declare a `data` folder.
+
+    `<DATA_DIR>/packages/data` unless an admin picked another folder in
+    Settings → Packages. Only *new* installs use it: an installed package keeps
+    the absolute `data_dir` recorded with it, so changing the default never
+    moves or hides existing data.
+    """
+    raw = str(load_settings().get("data_root") or "").strip()
+    if raw:
+        try:
+            return Path(raw)
+        except (OSError, ValueError):
+            logger.warning("Ignoring an invalid package data root: %r", raw)
+    return DATA_DIR
+
+
+def set_data_root(value: str) -> dict:
+    """Persist the admin's default data root ('' restores the built-in one)."""
+    text = str(value or "")
+
+    def _save(data: dict) -> dict:
+        # json_store.update writes the mutated payload back, so mutate in place.
+        data["data_root"] = text
+        return data
+
+    _SETTINGS.update(_save)
+    return load_settings()
 
 
 def dir_size(path: Path) -> int:

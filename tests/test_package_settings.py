@@ -221,6 +221,34 @@ errors, _warnings = lint_compose("""services:
 """, ["compose"], package_id="x")
 check("an absolute bind outside the roots is still rejected", bool(errors), str(errors))
 
+print("Default data root (Settings → Packages)")
+check("a folder under /mnt is accepted",
+      package_installer.validate_data_root("/mnt/SharedDrive/ethos-packages")
+      == "/mnt/SharedDrive/ethos-packages")
+check("an empty value means the built-in root", package_installer.validate_data_root("") == "")
+check("a relative root rejected",
+      rejects(lambda: package_installer.validate_data_root("mnt/packages")))
+check("a share root rejected",
+      rejects(lambda: package_installer.validate_data_root("/mnt")))
+check("a root outside the allowed trees rejected",
+      rejects(lambda: package_installer.validate_data_root("/etc/packages")))
+builtin_state = packages_store.data_dir("demo-pkg")
+packages_store.set_data_root("/mnt/SharedDrive/ethos-packages")
+check("data_root follows the setting",
+      packages_store.data_root() == Path("/mnt/SharedDrive/ethos-packages"))
+check("new data packages default under the custom root",
+      package_installer.default_data_dir("demo-pkg")
+      == Path("/mnt/SharedDrive/ethos-packages/demo-pkg"))
+check("the compose env uses the custom root",
+      package_env.compose_vars({"id": "demo-pkg", "data": DATA})
+      .get("ETHOS_PACKAGE_DATA_DIR")
+      == "/mnt/SharedDrive/ethos-packages/demo-pkg")
+check("state folders of other runtimes stay in the built-in tree",
+      packages_store.data_dir("demo-pkg") == builtin_state)
+packages_store.set_data_root("")
+check("reset restores the built-in root",
+      package_installer.default_data_dir("demo-pkg") == builtin_state)
+
 print("API response redaction")
 record = {
     "id": "grafana", "name": "Grafana", "settings": defs, "data": DATA,

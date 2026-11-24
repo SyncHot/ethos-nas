@@ -352,9 +352,41 @@ def validate_settings_values(definitions: list[dict], provided: Optional[dict], 
     return values
 
 
-def _default_data_dir(pkg_id: str) -> Path:
-    """Where a package's data lives when the admin did not pick a folder."""
-    return packages_store.data_dir(pkg_id)
+def default_data_dir(pkg_id: str) -> Path:
+    """Where a package's data lives when the admin did not pick a folder.
+
+    Follows Settings → Packages (`packages_store.data_root()`); existing
+    packages keep the absolute path recorded with them.
+    """
+    return packages_store.data_root() / pkg_id
+
+
+def _validate_host_folder(raw: str, field: str = "Data folder") -> Path:
+    """Shared checks for a folder an admin may pick on the NAS."""
+    if not isinstance(raw, str):
+        raise PackageError(f"{field} must be a path", 400)
+    text = raw.strip()
+    if not text:
+        raise PackageError(f"{field} must not be empty", 400)
+    if "\x00" in text:
+        raise PackageError(f"{field} contains an invalid character", 400)
+    candidate = Path(os.path.expanduser(text))
+    if not candidate.is_absolute():
+        raise PackageError(f"{field} must be an absolute path", 400)
+    resolved = candidate.resolve()
+    data_root = settings.DATA_DIR.resolve()
+    roots = (Path("/home"), Path("/mnt"), Path("/media"), data_root)
+    if not any(resolved == root or root in resolved.parents for root in roots):
+        raise PackageError(
+            f"{field} must be inside /home, /mnt, /media or the EthOS data folder", 400,
+        )
+    if resolved in (Path("/home"), Path("/mnt"), Path("/media"), data_root):
+        raise PackageError("Choose a folder below that path, not the root itself", 400)
+    packages_root = packages_store.PACKAGES_ROOT.resolve()
+    forbidden = (packages_root / "apps", packages_root / ".staging", packages_root / ".backup")
+    if any(resolved == item or item in resolved.parents for item in forbidden):
+        raise PackageError(f"{field} cannot be inside the package installation area", 400)
+    return resolved
 
 
 def validate_data_dir(pkg_id: str, value) -> Path:
@@ -362,35 +394,27 @@ def validate_data_dir(pkg_id: str, value) -> Path:
 
     Admins may pick any folder under /home, /mnt, /media or the EthOS data root,
     but never a root itself, the package installation area or a path outside
-    those trees. An empty value means the default (`packages/data/<id>`).
+    those trees. An empty value means the package's default folder.
     """
-    default = _default_data_dir(pkg_id)
+    default = default_data_dir(pkg_id)
     if value is None:
         return default
     if not isinstance(value, str):
         raise PackageError("Data folder must be a path", 400)
-    raw = value.strip()
-    if not raw:
+    if not value.strip():
         return default
-    if "\x00" in raw:
-        raise PackageError("Data folder contains an invalid character", 400)
-    candidate = Path(os.path.expanduser(raw))
-    if not candidate.is_absolute():
-        raise PackageError("Data folder must be an absolute path", 400)
-    resolved = candidate.resolve()
-    data_root = settings.DATA_DIR.resolve()
-    roots = (Path("/home"), Path("/mnt"), Path("/media"), data_root)
-    if not any(resolved == root or root in resolved.parents for root in roots):
-        raise PackageError(
-            "Data folder must be inside /home, /mnt, /media or the EthOS data folder", 400,
-        )
-    if resolved in (Path("/home"), Path("/mnt"), Path("/media"), data_root):
-        raise PackageError("Choose a folder below that path, not the root itself", 400)
-    packages_root = packages_store.PACKAGES_ROOT.resolve()
-    forbidden = (packages_root / "apps", packages_root / ".staging", packages_root / ".backup")
-    if any(resolved == item or item in resolved.parents for item in forbidden):
-        raise PackageError("Data folder cannot be inside the package installation area", 400)
-    return resolved
+    return _validate_host_folder(value, "Data folder")
+
+
+def validate_data_root(value) -> str:
+    """Validate the global default folder; '' restores the built-in root."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise PackageError("Default data folder must be a path", 400)
+    if not value.strip():
+        return ""
+    return str(_validate_host_folder(value, "Default data folder"))
 
 
 def ensure_data_dir(path: Path, data: Optional[dict] = None) -> None:
@@ -739,7 +763,7 @@ def _write_record(manifest: dict, entry: dict, source: dict,
         "settings_values": dict(settings or {}),
     }
     if manifest.get("data"):
-        record["data_dir"] = str(data_dir or _default_data_dir(record["id"]))
+        record["data_dir"] = str(data_dir or default_data_dir(record["id"]))
     return record
 
 
@@ -997,7 +1021,7 @@ async def update(pkg_id: str, job_id: str) -> None:
         except PackageError:
             logger.warning("Stored data folder for %s is not allowed any more; using the default",
                            pkg_id, exc_info=True)
-            data_folder = _default_data_dir(pkg_id)
+            data_folder = default_data_dir(pkg_id)
     record = _write_record(manifest, entry, source, preserved, data_folder)
     if compose_file(pkg_id):
         plan = _port_plan(pkg_id, manifest, target, previous=old.get("port_remap"))

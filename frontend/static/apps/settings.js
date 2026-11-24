@@ -31,6 +31,7 @@ const SECTIONS = [
     { id: 'overview', label: 'Health', title: 'System Health', subtitle: 'Health checks and system alerts at a glance.' },
     { id: 'updates', label: 'Updates', title: 'Updates', subtitle: 'Core releases and the phone apps.' },
     { id: 'system', label: 'System', title: 'System', subtitle: 'Ubuntu release, package updates and reboot state.' },
+    { id: 'packages', label: 'Packages', title: 'Packages', subtitle: 'Default data folder for apps that keep data in Docker.' },
     { id: 'maintenance', label: 'Maintenance', title: 'Maintenance', subtitle: 'Caches, health thresholds and the danger zone.' },
     { id: 'users', label: 'Users', title: 'User Accounts', subtitle: 'Create accounts, roles and passwords. Each account is a Linux user.' },
     { id: 'sharing', label: 'Sharing', title: 'Sharing', subtitle: 'Resources you share, and resources other accounts share with you.' },
@@ -1662,6 +1663,79 @@ function _tokenInfo() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Packages
+// ════════════════════════════════════════════════════════════════════════════
+
+async function renderPackagesConfig(isCurrent) {
+    const admin = _isAdmin();
+    const data = admin
+        ? await apiRequest('/api/packages/settings').catch((err) => {
+            logError('Settings: package defaults unavailable', err?.detail || err?.message);
+            return null;
+        })
+        : null;
+    if (!isCurrent()) return;
+
+    const current = data?.data_root || '';
+    const fallback = data?.default_data_root || '';
+    const custom = Boolean(data?.custom);
+    shell.view.innerHTML = `
+        <div class="ui-grid ui-grid-2">
+            <section class="ui-panel">
+                <h2>${uiIcon('folder', 13)} Default data folder</h2>
+                <p class="ui-muted">Used for <strong>new</strong> installs of packages that keep data in Docker
+                (Grafana, databases, …). Installed packages keep the folder recorded at install — change it
+                per package in Package Center → Installed → Settings.</p>
+                <div class="ui-panel-body ui-list">
+                    <label style="display:block;font-size:12px;color:var(--text-2);">
+                        <span style="display:block;margin-bottom:4px;">Folder for new package data</span>
+                        <input class="ui-input" style="width:100%;" type="text" data-testid="pkg-data-root"
+                               value="${escapeAttr(custom ? current : '')}" placeholder="${escapeAttr(fallback)}"
+                               spellcheck="false" autocomplete="off">
+                        <span class="ui-muted" style="font-size:11px;">Absolute path under /home, /mnt or /media. Leave empty for the built-in location.</span>
+                    </label>
+                    <div class="ui-row">
+                        <button class="ui-btn small primary" data-action="pkg-data-save" data-testid="pkg-data-save"${admin ? '' : ' disabled'}>${uiIcon('check', 12)} Save</button>
+                        <button class="ui-btn small" data-action="pkg-data-reset" data-testid="pkg-data-reset"${admin && custom ? '' : ' disabled'}>Reset to default</button>
+                    </div>
+                    <p class="ui-muted" style="font-size:12px;">Current default: <span class="mono">${escapeHtml(current || '—')}</span>${custom ? '' : ' (built-in)'}${data?.default_data_root ? ` · built-in: <span class="mono">${escapeHtml(data.default_data_root)}</span>` : ''}</p>
+                </div>
+            </section>
+            <section class="ui-panel">
+                <h2>${uiIcon('info', 13)} How it works</h2>
+                <p class="ui-muted">Every folder is a normal directory: it shows up in Files, can live on a data
+                disk and is included in backups you make of that location. Changing the default never moves data —
+                existing packages keep the folder they were installed with.</p>
+                <p class="ui-muted">A package that runs as a fixed user (for example Grafana as uid 472) gets a POSIX
+                ACL on its folder, so it can write there without the folder being world-writable.</p>
+                ${admin ? '' : '<span class="ui-tag">Admin required</span>'}
+            </section>
+        </div>`;
+
+    const save = async (value) => {
+        try {
+            const result = await apiRequest('/api/packages/settings', {
+                method: 'PUT',
+                body: { data_root: value },
+            });
+            notify({ kind: 'success', message: result.custom
+                ? `Default package data folder: ${result.data_root}`
+                : 'Default package data folder reset to the built-in location' });
+            renderSection('packages');
+        } catch (err) {
+            logError('Settings: could not save the package data folder', err?.detail || err?.message);
+            notify({ kind: 'error', title: 'Could not save', message: err?.detail || err?.message || 'Unknown error' });
+        }
+    };
+    shell.view.querySelector('[data-action="pkg-data-save"]')?.addEventListener('click', () => {
+        const input = shell.view.querySelector('[data-testid="pkg-data-root"]');
+        save(input?.value?.trim() || '');
+    });
+    shell.view.querySelector('[data-action="pkg-data-reset"]')?.addEventListener('click', () => save(''));
+    shell.setStatus(custom ? `Custom default: ${current}` : 'Built-in default folder', 'ok');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // Appearance
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -1896,6 +1970,7 @@ const RENDERERS = {
     overview: renderHealth,
     updates: renderUpdates,
     system: renderSystem,
+    packages: renderPackagesConfig,
     maintenance: renderMaintenance,
     users: renderUsers,
     sharing: renderSharing,

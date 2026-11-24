@@ -43,7 +43,9 @@ def compose_vars(record: Optional[dict]) -> dict[str, str]:
         chosen = str(record.get("data_dir") or "")
         if not chosen and pkg_id:
             try:
-                chosen = str(packages_store.data_dir(pkg_id))
+                # The same default the installer records: the admin's root from
+                # Settings → Packages (built-in <DATA_DIR>/packages/data).
+                chosen = str(packages_store.data_root() / pkg_id)
             except Exception:
                 logger.warning("Cannot resolve the default data folder for %s", pkg_id,
                                exc_info=True)

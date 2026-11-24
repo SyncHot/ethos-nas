@@ -128,6 +128,12 @@ class SettingsRequest(BaseModel):
     data_dir: Optional[str] = None
 
 
+class PackagesSettingsRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    # "" restores the built-in <DATA_DIR>/packages/data root.
+    data_root: str = ""
+
+
 # ── Installed packages / desktop icons ──────────────────────────────────────
 
 def _record_view(pkg: dict) -> dict:
@@ -181,6 +187,38 @@ async def desktop_icons() -> list[dict]:
 
 
 # ── Catalog / sources ───────────────────────────────────────────────────────
+
+def _packages_settings_view() -> dict:
+    data = packages_store.load_settings()
+    custom = bool(str(data.get("data_root") or "").strip())
+    return {
+        "data_root": str(packages_store.data_root()),
+        "custom": custom,
+        "default_data_root": str(packages_store.DATA_DIR),
+    }
+
+
+@router.get("/settings", dependencies=[Depends(require_admin)])
+async def get_packages_settings() -> dict:
+    """Global defaults for packages (Settings → Packages).
+
+    `data_root` is where *new* compose packages that declare a data folder get
+    their folder; installed packages keep the absolute `data_dir` in their
+    record, so changing this never moves existing data.
+    """
+    return _packages_settings_view()
+
+
+@router.put("/settings", dependencies=[Depends(require_admin)])
+async def update_packages_settings(req: PackagesSettingsRequest) -> dict:
+    try:
+        normalized = package_installer.validate_data_root(req.data_root)
+    except PackageError as exc:
+        raise _http_error(exc) from None
+    packages_store.set_data_root(normalized)
+    logger.info("Package default data root set to %s", normalized or "(built-in)")
+    return _packages_settings_view()
+
 
 @router.get("/registry/sources")
 async def list_registry_sources() -> dict:
@@ -730,7 +768,7 @@ async def get_package_settings(pkg_id: str) -> dict:
         for d in defs
     }
     data = record.get("data") or None
-    default_dir = str(packages_store.data_dir(pkg_id)) if data else None
+    default_dir = str(package_installer.default_data_dir(pkg_id)) if data else None
     return {
         "package": pkg_id,
         "settings": defs,

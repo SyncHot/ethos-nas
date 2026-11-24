@@ -11,6 +11,17 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.36.0] - 2026-11-24
+
+### Added
+
+- **Settings → Packages → default data folder**: admins can choose the root folder
+  for the data of *new* Docker-based packages (for example a folder on a data
+  disk under `/mnt`). Every new package gets `<root>/<package>`; installed
+  packages keep the folder recorded at install, so changing the default never
+  moves existing data. Leave the field empty to keep the built-in
+  package-named folder in the EthOS data store.
+
 ## [2.35.1] - 2026-11-24
 
 ### Fixed

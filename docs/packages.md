@@ -272,6 +272,11 @@ volumes:
   is how a package “resets” its data.
 - `GET /api/packages/{id}/settings` (admin) returns the effective folder and the default; the
   general `GET /api/packages` list never exposes host paths.
+- **Global default (Settings → Packages).** An admin can pick the root for *new* compose packages
+  that declare `data` (for example `/mnt/SharedDrive/ethos-packages`); each new package then gets
+  `<root>/<id>`. Installed packages keep the absolute `data_dir` recorded with them, so changing
+  the default never moves existing data. It is stored in `packages/settings.json` and served by
+  `GET`/`PUT /api/packages/settings` (admin). The built-in root stays `<DATA_DIR>/packages/data`.
 - Named volumes remain fine for scratch data; use `data` for the state a user cares about. A package
   migration from a named volume must document how to copy the old volume first (Grafana 1.2.0 does).
 - Images that run as a fixed non-root user cannot write to a folder owned by the EthOS service user.
