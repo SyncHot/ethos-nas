@@ -11,6 +11,18 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.37.0] - 2026-11-24
+
+### Added
+
+- **Phone PWAs: downloads keep running in the background**: `/videos`,
+  `/books` and `/music` hand a transfer to the browser (Chrome Background
+  Fetch on Android), so it continues after switching to another app — even
+  with the PWA closed — with a system progress notification. `sw.js` writes
+  the finished file into the right on-device store and the app reconciles its
+  download rows on the next start. iOS Safari, Firefox and a refused or
+  stalled browser job fall back to the existing in-page resumable transfer.
+
 ## [2.36.1] - 2026-11-24
 
 ### Changed

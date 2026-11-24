@@ -14,6 +14,11 @@ import { apiFetch } from '../core/api.js';
 import { startTask } from '../core/progress.js';
 import { notify } from '../core/notification-center.js';
 import { logError, logInfo, logWarn } from '../core/logger.js';
+import {
+    backgroundDownloadSupported, startBackgroundDownload, waitBackgroundDownload,
+    backgroundResult, backgroundDownloadState, clearBackgroundResult,
+    abortBackgroundDownload, sweepBackgroundResults,
+} from '../core/background-download.js';
 import { artUrl, downloadSrc, tkey } from './api.js';
 
 const DB_NAME = 'ethos-music-db';
@@ -49,6 +54,11 @@ let _lastProgress = new Map();
 const _cancelled = new Set();
 const _controllers = new Map();
 const _runIds = new Map();
+// Background Fetch bookkeeping: tags by key, live reattached transfers, and
+// keys whose browser-managed attempt failed (the next attempt transfers in-page).
+const _bgTags = new Map();
+const _bgWatchers = new Map();
+const _bgFailed = new Set();
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────
 
@@ -89,23 +99,65 @@ export async function initOffline(onChange) {
     _onChange = typeof onChange === 'function' ? onChange : null;
     let rows = [];
     try { rows = await dbAll(ROWS); } catch (error) { logWarn('Music offline store unavailable', String(error)); }
-    _rows = rows.map((row) => {
+    // Results written by sw.js while the app was closed (Background Fetch
+    // keeps running outside the page).
+    let bgResults = [];
+    try { bgResults = await sweepBackgroundResults('music'); } catch { bgResults = []; }
+    const byTag = new Map(bgResults.map((result) => [result.tag, result]));
+    const finished = [];
+    const reattach = [];
+    const touched = new Set();
+    _rows = [];
+    for (const row of rows) {
         const next = { ...row };
-        // A download interrupted by a reload has no partial file to resume from;
-        // put it back in the queue so the next start picks it up again.
-        if (next.status === 'downloading') {
+        if (next.status === 'downloading' && next.bg_tag) {
+            const result = byTag.get(next.bg_tag) || await backgroundResult(next.bg_tag, { waitMs: 2000 });
+            if (!result && await backgroundDownloadState(next.bg_tag)) {
+                reattach.push(next);
+                _rows.push(next);
+                continue;
+            }
+            const tag = next.bg_tag;
+            next.bg_tag = '';
+            touched.add(next.key);
+            const stored = result?.ok ? await dbGet(BLOBS, next.key).catch(() => null) : null;
+            if (stored?.audio) {
+                next.status = 'done';
+                next.bytes = stored.audio.size;
+                next.bytes_total = stored.audio.size;
+                next.parts = [];
+                next.error = '';
+                next.completed_at = Number(next.completed_at) || Date.now();
+                finished.push({ row: next, tag });
+            } else {
+                // The browser gave up (or its blob did not land) — fetch again.
+                _bgFailed.add(next.key);
+                next.status = 'queued';
+                next.error = '';
+            }
+        } else if (next.status === 'downloading') {
+            // A download interrupted by a reload has no partial file to resume
+            // from; put it back in the queue so the next start picks it up again.
             next.status = 'queued';
             next.error = '';
+            touched.add(next.key);
         }
-        return next;
-    }).sort((a, b) => (b.added_at || 0) - (a.added_at || 0));
-    for (const row of _rows) {
-        if (row.status === 'failed') await dbPut(ROWS, row).catch(() => {});
+        _rows.push(next);
     }
+    _rows.sort((a, b) => (b.added_at || 0) - (a.added_at || 0));
     reindex();
+    for (const key of touched) {
+        const row = _index.get(key);
+        if (row) await dbPut(ROWS, row).catch(() => {});
+    }
+    for (const { row, tag } of finished) {
+        clearBackgroundResult(tag).catch(() => {});
+        if (row.track) storeCover(row.key, row.track).catch(() => {});
+    }
     // Rows queued before the reload have no in-memory queue item yet.
     for (const row of _rows) {
-        if (row.status === 'queued' && row.track) {
+        if (row.status === 'queued' && row.track
+                && !_queue.some((item) => item.key === row.key)) {
             _queue.push({ key: row.key, track: row.track, kind: row.kind });
         }
     }
@@ -116,6 +168,7 @@ export async function initOffline(onChange) {
         }
     } catch { /* the quota manager may refuse */ }
     notifyChange();
+    for (const row of reattach) resumeBackgroundRow(row);
     if (_queue.length) pump();
     return _rows;
 }
@@ -341,6 +394,15 @@ async function quotaExceeded() {
     return storage.usage / storage.quota > QUOTA_STOP;
 }
 
+function canBackgroundTransfer(row) {
+    // Partial parts can only be resumed by Range requests in the page, and a
+    // browser-managed attempt that already failed sends the retry in-page.
+    return backgroundDownloadSupported()
+        && !_bgFailed.has(row.key)
+        && !(Array.isArray(row.parts) && row.parts.length)
+        && !(Number(row.bytes) > 0);
+}
+
 async function runDownload({ key, track, kind }) {
     const row = _index.get(key);
     if (!row || _cancelled.has(key)) return;
@@ -377,19 +439,85 @@ async function runDownload({ key, track, kind }) {
     _controllers.set(key, controller);
     _runIds.set(key, runId);
     try {
-        const { blob, type } = await downloadAudio(key, src, controller.signal, (done, total) => {
+        let blob = null;
+        let type = 'audio/mpeg';
+        let fromBackground = false;
+        let bgTag = null;
+        if (canBackgroundTransfer(row)) {
+            bgTag = await startBackgroundDownload({
+                app: 'music',
+                url: src,
+                idb: DB_NAME,
+                store: BLOBS,
+                key,
+                type,
+                title: `EthOS Music — ${track.title || 'Utwór'}`,
+            });
+        }
+        if (bgTag) {
+            _bgTags.set(key, bgTag);
+            const started = _index.get(key);
+            if (!started) {
+                await abortBackgroundDownload(bgTag);
+                _bgTags.delete(key);
+                return;
+            }
+            upsert({ ...started, bg_tag: bgTag });
+            await dbPut(ROWS, _index.get(key)).catch(() => {});
+            const result = await waitBackgroundDownload(bgTag, ({ downloaded, total }) => {
+                if (_cancelled.has(key)) return;
+                const now = Date.now();
+                if (now - (_lastProgress.get(key) || 0) < PROGRESS_MS) return;
+                _lastProgress.set(key, now);
+                upsert({
+                    ..._index.get(key),
+                    bytes: downloaded,
+                    bytes_total: total || _index.get(key)?.bytes_total || 0,
+                });
+            });
+            await clearBackgroundResult(bgTag);
+            _bgTags.delete(key);
+            bgTag = null;
+            const current = _index.get(key);
+            if (current) {
+                upsert({ ...current, bg_tag: '' });
+                await dbPut(ROWS, _index.get(key)).catch(() => {});
+            }
             if (_cancelled.has(key)) return;
-            // A 4 MB track yields ~64 chunks; painting the badges on every one
-            // of them keeps the main thread busy for no benefit.
-            const now = Date.now();
-            if (now - (_lastProgress.get(key) || 0) < PROGRESS_MS) return;
-            _lastProgress.set(key, now);
-            upsert({ ..._index.get(key), bytes: done, bytes_total: total || _index.get(key)?.bytes_total || 0 });
-        });
+            if (result.ok) {
+                // sw.js stored the audio record itself; only metadata is left.
+                const stored = await dbGet(BLOBS, key).catch(() => null);
+                if (stored?.audio) {
+                    blob = stored.audio;
+                    type = stored.type || type;
+                    fromBackground = true;
+                } else {
+                    // Marker said ok but no blob landed — transfer in the page.
+                    _bgFailed.add(key);
+                }
+            } else {
+                // The browser gave up (quota, killed job): retry in the page.
+                _bgFailed.add(key);
+                logWarn('Music background download fell back', `${key}: ${result.error || ''}`);
+            }
+        }
+        if (!fromBackground) {
+            const fetched = await downloadAudio(key, src, controller.signal, (done, total) => {
+                if (_cancelled.has(key)) return;
+                // A 4 MB track yields ~64 chunks; painting the badges on every
+                // one of them keeps the main thread busy for no benefit.
+                const now = Date.now();
+                if (now - (_lastProgress.get(key) || 0) < PROGRESS_MS) return;
+                _lastProgress.set(key, now);
+                upsert({ ..._index.get(key), bytes: done, bytes_total: total || _index.get(key)?.bytes_total || 0 });
+            });
+            blob = fetched.blob;
+            type = fetched.type;
+        }
         if (_cancelled.has(key)) return;          // deleted while the bytes streamed in
         // Audio first, cover later: the slot must be free for the next track
         // as soon as the bytes are stored, not after a thumbnail round-trip.
-        await dbPut(BLOBS, { key, audio: blob, thumb: null, type });
+        if (!fromBackground) await dbPut(BLOBS, { key, audio: blob, thumb: null, type });
         if (_cancelled.has(key)) return;          // deleted during the IDB write
         const done = upsert({
             ..._index.get(key),
@@ -676,6 +804,67 @@ function finishBatch() {
     _task = null;
 }
 
+function markBackgroundFailed(key) {
+    const row = _index.get(key);
+    if (!row) return;
+    upsert({ ...row, status: 'failed', bg_tag: '', error: 'Przerwane — pobierz ponownie' });
+    dbPut(ROWS, _index.get(key)).catch(() => {});
+    notifyChange();
+}
+
+/** Follow a Background Fetch that survived a reload or an app switch. */
+function resumeBackgroundRow(row) {
+    if (_bgWatchers.has(row.key) || !row.bg_tag) return;
+    const tag = row.bg_tag;
+    const run = (async () => {
+        const result = await waitBackgroundDownload(tag, ({ downloaded, total }) => {
+            const current = _index.get(row.key);
+            if (!current) return;
+            upsert({ ...current, bytes: downloaded, bytes_total: total || current.bytes_total || 0 });
+            if (_task) {
+                const percent = total ? Math.min(99, (downloaded / total) * 100) : 0;
+                _task.update({ percent, detail: total ? `${Math.round(percent)}%` : '' });
+            }
+        });
+        await clearBackgroundResult(tag);
+        const current = _index.get(row.key);
+        if (!current) return;
+        if (!result.ok) {
+            _bgFailed.add(row.key);
+            markBackgroundFailed(row.key);
+            return;
+        }
+        const stored = await dbGet(BLOBS, row.key).catch(() => null);
+        if (!stored?.audio) {
+            _bgFailed.add(row.key);
+            markBackgroundFailed(row.key);
+            return;
+        }
+        const done = upsert({
+            ..._index.get(row.key),
+            status: 'done',
+            bytes: stored.audio.size,
+            bytes_total: stored.audio.size,
+            parts: [],
+            error: '',
+            bg_tag: '',
+            completed_at: Date.now(),
+        });
+        await dbPut(ROWS, done);
+        _batchDone += 1;
+        taskProgress();
+        logInfo('Music download stored', `${row.key} ${stored.audio.size} B`);
+        storeCover(row.key, current.track).catch(() => {});
+        await refreshStorage();
+        notifyChange();
+    })().catch((error) => {
+        logWarn('Music background download reattach failed', `${row.key}: ${error?.message || error}`);
+        _bgFailed.add(row.key);
+        markBackgroundFailed(row.key);
+    }).finally(() => { _bgWatchers.delete(row.key); });
+    _bgWatchers.set(row.key, run);
+}
+
 // ── delete / retry ────────────────────────────────────────────────────────
 
 export async function deleteDownload(trackOrKey) {
@@ -685,12 +874,20 @@ export async function deleteDownload(trackOrKey) {
 
 async function removeRow(key, { silent = false } = {}) {
     // Stop a transfer that is still running; without this the finished fetch
-    // would re-insert the row a moment later.
+    // would re-insert the row a moment later. A Background Fetch keeps running
+    // in the browser, so it must be aborted explicitly as well.
     _cancelled.add(key);
     const controller = _controllers.get(key);
     if (controller) {
         try { controller.abort(); } catch { /* already finished */ }
     }
+    const bgTag = _bgTags.get(key) || _index.get(key)?.bg_tag;
+    if (bgTag) {
+        _bgTags.delete(key);
+        abortBackgroundDownload(bgTag).catch(() => {});
+        clearBackgroundResult(bgTag).catch(() => {});
+    }
+    _bgFailed.delete(key);
     _queue = _queue.filter((item) => item.key !== key);
     const index = _rows.findIndex((row) => row.key === key);
     if (index < 0) return;

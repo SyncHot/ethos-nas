@@ -54,9 +54,15 @@ updates in place while downloads run, and each row keeps its own `offline` tag.
 cover is stored afterwards, outside the queue — and the UI repaints at most
 four times a second per track instead of on every chunk. The NAS resolves and
 proxies every stream independently (the engine is a threaded loopback server),
-so a playlist is limited by the link, not by the client. Backgrounding the PWA
-may pause downloads: mobile browsers throttle background pages, hence the hint
-in the Downloads view.
+so a playlist is limited by the link, not by the client.
+
+**Background Fetch.** On Chromium the transfer is handed to the browser
+(`core/background-download.js`): it continues after the app is switched away or
+closed, shows a system progress notification, and `sw.js` writes the finished
+Blob into `ethos-music-db` (`blobs`) plus a result marker that `initOffline()`
+applies on the next start. iOS Safari and Firefox have no such API, and a
+refused or stalled job falls back to the in-page resumable transfer described
+below — hence the hint in the Downloads view.
 
 ### Liked is the playlist „Polubione”
 

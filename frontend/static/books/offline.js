@@ -21,6 +21,11 @@ import { startTask } from '../core/progress.js';
 import { notify } from '../core/notification-center.js';
 import { logError, logInfo, logWarn } from '../core/logger.js';
 import {
+    backgroundDownloadSupported, startBackgroundDownload, waitBackgroundDownload,
+    backgroundResult, backgroundDownloadState, clearBackgroundResult,
+    abortBackgroundDownload, sweepBackgroundResults,
+} from '../core/background-download.js';
+import {
     baseName, bookTracks, coverPath, fmtBytes, isAudiobook, localKey, putProgress, rawPath,
 } from './api.js';
 
@@ -53,6 +58,8 @@ let _flushTimer = null;
 let _flushing = false;
 const _aborts = new Map();
 let _batchFailed = 0;
+const _bgWatchers = new Map();  // key → live Background Fetch reattach
+const _bgFailed = new Set();    // keys whose browser-managed attempt failed
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────
 
@@ -97,19 +104,58 @@ export async function initOffline(onChange) {
     _onChange = typeof onChange === 'function' ? onChange : null;
     let rows = [];
     try { rows = await dbAll(ROWS); } catch (error) { logWarn('Books offline store unavailable', String(error)); }
-    _rows = rows.map((row) => {
+    // Results written by sw.js for transfers that finished while the app was
+    // closed (Background Fetch keeps running outside the page).
+    let bgResults = [];
+    try { bgResults = await sweepBackgroundResults('books'); } catch { bgResults = []; }
+    const byTag = new Map(bgResults.map((result) => [result.tag, result]));
+    const finished = [];
+    const reattach = [];
+    const touched = new Set();
+    _rows = [];
+    for (const row of rows) {
         const next = { ...row };
-        // An interrupted transfer cannot resume byte-for-byte; ask for a retry.
-        if (next.status === 'downloading' || next.status === 'queued') {
+        if ((next.status === 'downloading' || next.status === 'queued') && next.bg_tag) {
+            const result = byTag.get(next.bg_tag) || await backgroundResult(next.bg_tag, { waitMs: 2000 });
+            if (!result && await backgroundDownloadState(next.bg_tag)) {
+                next.status = 'downloading';
+                reattach.push(next);
+                _rows.push(next);
+                continue;
+            }
+            touched.add(next.key);
+            const tag = next.bg_tag;
+            next.bg_tag = '';
+            if (result?.ok) {
+                next.status = 'done';
+                next.bytes = Number(result.bytes) || Number(next.bytes_total) || 0;
+                next.bytes_total = next.bytes;
+                next.error = '';
+                next.completed_at = Number(next.completed_at) || Date.now();
+                finished.push({ row: next, tag });
+            } else {
+                _bgFailed.add(next.key);
+                next.status = 'failed';
+                next.error = 'Przerwane — pobierz ponownie';
+            }
+        } else if (next.status === 'downloading' || next.status === 'queued') {
+            // An interrupted transfer cannot resume byte-for-byte; ask for a retry.
             next.status = 'failed';
             next.error = 'Przerwane — pobierz ponownie';
+            touched.add(next.key);
         }
-        return next;
-    }).sort((a, b) => (b.added_at || 0) - (a.added_at || 0));
-    for (const row of _rows) {
-        if (row.status === 'failed') await dbPut(ROWS, row).catch(() => {});
+        _rows.push(next);
     }
+    _rows.sort((a, b) => (b.added_at || 0) - (a.added_at || 0));
     reindex();
+    for (const key of touched) {
+        const row = _index.get(key);
+        if (row) await dbPut(ROWS, row).catch(() => {});
+    }
+    for (const { row, tag } of finished) {
+        clearBackgroundResult(tag).catch(() => {});
+        if (row.trackIndex == null && row.book) coverUrl(row.book).catch(() => '');
+    }
     await refreshStorage();
     try {
         if (navigator.storage?.persist && !(await navigator.storage.persisted())) {
@@ -117,6 +163,7 @@ export async function initOffline(onChange) {
         }
     } catch { /* the quota manager may refuse; downloads still try */ }
     notifyChange();
+    for (const row of reattach) resumeBackgroundRow(row);
     return _rows;
 }
 
@@ -386,36 +433,91 @@ async function runDownload(item) {
     const controller = new AbortController();
     _aborts.set(item.key, controller);
     let cache = null;
+    let bgTag = null;
+    let fromBackground = false;
     try {
         cache = await caches.open(CACHE);
-        const res = await apiFetch(rawPath(item.path), { signal: controller.signal });
-        if (!res.ok) throw new Error(await errorDetail(res));
-        const total = Number(res.headers.get('content-length')) || Number(item.size) || 0;
-        const type = (res.headers.get('content-type') || 'application/octet-stream').split(';')[0];
         let done = 0;
+        let total = Number(item.size) || 0;
         let lastReport = 0;
         const report = () => {
+            if (!_index.has(item.key)) return;
             const percent = total ? Math.min(99.5, (done / total) * 100) : 0;
             upsert({ ..._index.get(item.key), bytes: done, bytes_total: total });
             _task?.update({ percent, detail: bytesText(done, total) });
         };
-        const headers = { 'Content-Type': type };
-        if (total) headers['Content-Length'] = String(total);
-        if (res.body && typeof TransformStream !== 'undefined') {
-            const counter = new TransformStream({
-                transform(chunk, controller) {
-                    done += chunk.byteLength;
-                    const now = Date.now();
-                    if (now - lastReport > 250) { lastReport = now; report(); }
-                    controller.enqueue(chunk);
-                },
-            }, undefined, { highWaterMark: 1 });
-            await cache.put(new Request(key), new Response(res.body.pipeThrough(counter), { headers }));
-        } else {
-            const buffer = await res.arrayBuffer();
-            done = buffer.byteLength;
-            report();
-            await cache.put(new Request(key), new Response(buffer, { headers }));
+        if (backgroundDownloadSupported() && !_bgFailed.has(item.key) && _index.has(item.key)) {
+            bgTag = await startBackgroundDownload({
+                app: 'books',
+                url: rawPath(item.path),
+                cache: CACHE,
+                key,
+                type: 'application/octet-stream',
+                title: `EthOS Books — ${item.title}`,
+            });
+        }
+        if (bgTag) {
+            const started = _index.get(item.key);
+            if (!started) {
+                await abortBackgroundDownload(bgTag);
+                throw new DOMException('Aborted', 'AbortError');
+            }
+            upsert({ ...started, bg_tag: bgTag });
+            await dbPut(ROWS, _index.get(item.key)).catch(() => {});
+            const result = await waitBackgroundDownload(bgTag, ({ downloaded, total: bgTotal }) => {
+                if (!_index.has(item.key)) return;
+                const now = Date.now();
+                if (now - lastReport < 250) return;
+                lastReport = now;
+                done = downloaded;
+                total = bgTotal || total;
+                report();
+            });
+            await clearBackgroundResult(bgTag);
+            bgTag = null;
+            const current = _index.get(item.key);
+            if (current) {
+                upsert({ ...current, bg_tag: '' });
+                await dbPut(ROWS, _index.get(item.key)).catch(() => {});
+            }
+            if (!current) throw new DOMException('Aborted', 'AbortError');
+            if (result.ok) {
+                // sw.js already streamed the response into the cache.
+                done = Number(result.bytes) || done;
+                total = done || total;
+                report();
+                fromBackground = true;
+            } else {
+                // The browser gave up (quota, killed job): transfer in-page.
+                _bgFailed.add(item.key);
+                done = 0;
+                total = Number(item.size) || 0;
+                logWarn('Books background download fell back', `${item.key}: ${result.error || ''}`);
+            }
+        }
+        if (!fromBackground) {
+            const res = await apiFetch(rawPath(item.path), { signal: controller.signal });
+            if (!res.ok) throw new Error(await errorDetail(res));
+            total = Number(res.headers.get('content-length')) || total;
+            const type = (res.headers.get('content-type') || 'application/octet-stream').split(';')[0];
+            const headers = { 'Content-Type': type };
+            if (total) headers['Content-Length'] = String(total);
+            if (res.body && typeof TransformStream !== 'undefined') {
+                const counter = new TransformStream({
+                    transform(chunk, controller) {
+                        done += chunk.byteLength;
+                        const now = Date.now();
+                        if (now - lastReport > 250) { lastReport = now; report(); }
+                        controller.enqueue(chunk);
+                    },
+                }, undefined, { highWaterMark: 1 });
+                await cache.put(new Request(key), new Response(res.body.pipeThrough(counter), { headers }));
+            } else {
+                const buffer = await res.arrayBuffer();
+                done = buffer.byteLength;
+                report();
+                await cache.put(new Request(key), new Response(buffer, { headers }));
+            }
         }
         const stored = await cache.match(new Request(key));
         if (!stored) throw new Error('Nie udało się zapisać pliku na urządzeniu');
@@ -423,21 +525,7 @@ async function runDownload(item) {
         if (total && size && Math.abs(size - total) > 1) {
             throw new Error('Pobranie niekompletne');
         }
-        const finished = upsert({
-            ..._index.get(item.key),
-            status: 'done',
-            bytes: size,
-            bytes_total: size,
-            error: '',
-            completed_at: Date.now(),
-        });
-        await dbPut(ROWS, finished);
-        _batchDone += 1;
-        taskProgress();
-        logInfo('Books download stored', `${key} ${size} B`);
-        await refreshStorage();
-        // Cache the cover once, so offline cards keep their artwork.
-        if (item.trackIndex == null) await coverUrl(item.book).catch(() => '');
+        await completeRow(item.key, size);
     } catch (error) {
         if (error?.name === 'AbortError') {
             // Cancelled by the user: the row is already gone, keep the cache clean.
@@ -484,6 +572,70 @@ function failRow(key, message) {
     upsert({ ...row, status: 'failed', error: message });
     dbPut(ROWS, _index.get(key)).catch(() => {});
     notifyChange();
+}
+
+/** Mark one file as stored (used by the in-page stream and the bg watcher). */
+async function completeRow(key, size) {
+    const row = _index.get(key);
+    if (!row) return null;
+    _bgFailed.delete(key);
+    const finished = upsert({
+        ...row,
+        status: 'done',
+        bytes: size,
+        bytes_total: size,
+        error: '',
+        bg_tag: '',
+        completed_at: Date.now(),
+    });
+    await dbPut(ROWS, finished).catch(() => {});
+    _batchDone += 1;
+    taskProgress();
+    logInfo('Books download stored', `${key} ${size} B`);
+    await refreshStorage();
+    // Cache the cover once, so offline cards keep their artwork.
+    if (finished.trackIndex == null && finished.book) await coverUrl(finished.book).catch(() => '');
+    notifyChange();
+    return finished;
+}
+
+function markBackgroundFailed(key) {
+    const row = _index.get(key);
+    if (!row) return;
+    _bgFailed.add(key);
+    upsert({ ...row, status: 'failed', bg_tag: '', error: 'Przerwane — pobierz ponownie' });
+    dbPut(ROWS, _index.get(key)).catch(() => {});
+    notifyChange();
+}
+
+/** Follow a Background Fetch that survived a reload or an app switch. */
+function resumeBackgroundRow(row) {
+    if (_bgWatchers.has(row.key) || !row.bg_tag) return;
+    const tag = row.bg_tag;
+    const run = (async () => {
+        const result = await waitBackgroundDownload(tag, ({ downloaded, total }) => {
+            const current = _index.get(row.key);
+            if (!current) return;
+            upsert({ ...current, bg_tag: tag, bytes: downloaded, bytes_total: total || current.bytes_total || 0 });
+            if (_task) {
+                const percent = total ? Math.min(99, (downloaded / total) * 100) : 0;
+                _task.update({ percent, detail: bytesText(downloaded, total) });
+            }
+        });
+        await clearBackgroundResult(tag);
+        const current = _index.get(row.key);
+        if (!current) return;
+        if (!result.ok) {
+            markBackgroundFailed(row.key);
+            return;
+        }
+        const size = Number(result.bytes) || Number(current.bytes_total) || 0;
+        await completeRow(row.key, size);
+    })().catch((error) => {
+        logWarn('Books background download reattach failed', `${row.key}: ${error?.message || error}`);
+        markBackgroundFailed(row.key);
+    }).finally(() => { _bgWatchers.delete(row.key); });
+    _bgWatchers.set(row.key, run);
 }
 
 function ensureTask() {
@@ -572,6 +724,12 @@ export async function cancelBook(book) {
 async function removeRow(key, { silent = false } = {}) {
     _queue = _queue.filter((item) => item.key !== key);
     const row = _index.get(key);
+    if (row?.bg_tag) {
+        // The browser keeps running a Background Fetch without the page.
+        abortBackgroundDownload(row.bg_tag).catch(() => {});
+        clearBackgroundResult(row.bg_tag).catch(() => {});
+    }
+    _bgFailed.delete(key);
     if (row) {
         try {
             const cache = await caches.open(CACHE);

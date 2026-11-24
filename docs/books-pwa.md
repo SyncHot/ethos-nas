@@ -88,6 +88,11 @@ Two stores, mirroring `/videos`:
 
 - A download streams through a `TransformStream` straight into Cache Storage, so a 1 GB audiobook is
   never held in RAM as one Blob.
+- **Background Fetch** (`core/background-download.js`): on Chromium the transfer is browser-managed,
+  continues with the app switched away or closed, and `sw.js` copies the finished response into
+  `ethos-books-v1` plus a result marker (`ethos-bg-downloads`) that the row reconciles from on the
+  next start. iOS Safari/Firefox (no API), a refused registration or a stalled first byte fall back
+  to the in-page stream below; the retry then stays in-page.
 - `sw.js` answers `/__books/…` from that cache and synthesises `206`/`416` slices for `Range`, so
   seeking works offline; a missing entry answers `404` and the player falls back to the NAS once.
 - One file at a time; a full device pauses the queue at 92 % usage (persistent storage requested),

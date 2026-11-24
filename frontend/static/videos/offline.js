@@ -14,6 +14,11 @@ import { apiFetch, getToken } from '../core/api.js';
 import { startTask } from '../core/progress.js';
 import { notify } from '../core/notification-center.js';
 import { logError, logInfo, logWarn } from '../core/logger.js';
+import {
+    backgroundDownloadSupported, startBackgroundDownload, waitBackgroundDownload,
+    backgroundResult, backgroundDownloadState, clearBackgroundResult,
+    abortBackgroundDownload, sweepBackgroundResults,
+} from '../core/background-download.js';
 
 const MEDIA_CACHE = 'ethos-media-v1';
 const MEDIA_PREFIX = '/__media/';
@@ -33,6 +38,7 @@ let _storage = null;
 // user taps Retry or the app is reopened.
 const _stalled = new Map();   // id → consecutive attempts without progress
 const _paused = new Set();    // id → gave up, do not auto-retry
+const _bgWatchers = new Map(); // id → live Background Fetch reattach
 
 function noteAttempt(id, progressed) {
     const count = progressed ? 0 : (_stalled.get(id) || 0) + 1;
@@ -167,17 +173,55 @@ export async function initOffline(onChange) {
     _onChange = typeof onChange === 'function' ? onChange : null;
     let rows = [];
     try { rows = await dbAll(); } catch (error) { logWarn('Offline store unavailable', String(error)); }
-    // A transfer interrupted by a reload cannot be resumed byte-for-byte, but
-    // the NAS-side render keeps running. Reconcile with the server instead of
-    // declaring the download lost — `syncDownloads()` decides the real state.
-    _downloads = rows.map((row) => {
+    // Results written by sw.js while the app was closed (Background Fetch
+    // keeps running outside the page).
+    let bgResults = [];
+    try { bgResults = await sweepBackgroundResults('videos'); } catch { bgResults = []; }
+    const byTag = new Map(bgResults.map((result) => [result.tag, result]));
+    const reattach = [];
+    const finished = [];
+    const touched = new Set();
+    _downloads = [];
+    for (const row of rows) {
         const next = { ...row };
-        if (next.status === 'downloading') {
+        if (next.status === 'downloading' && next.bg_tag) {
+            const result = byTag.get(next.bg_tag) || await backgroundResult(next.bg_tag, { waitMs: 2000 });
+            if (!result && await backgroundDownloadState(next.bg_tag)) {
+                // The browser is still transferring this file: keep the row and
+                // follow it again instead of starting a second transfer.
+                reattach.push(next);
+                if (next.posterBlob && !next.posterUrl) {
+                    try { next.posterUrl = URL.createObjectURL(next.posterBlob); } catch { /* ignore */ }
+                }
+                _downloads.push(next);
+                continue;
+            }
+            touched.add(next.id);
+            next.bg_tag = '';
+            if (result?.ok) {
+                finished.push({ row: next, result });
+                next.status = 'done';
+                next.percent = 100;
+                next.bytesDone = Number(result.bytes) || Number(next.bytesTotal) || 0;
+                next.bytesTotal = next.bytesDone;
+                next.parts = [];
+                next.finished_at = Number(next.finished_at) || Date.now();
+                next.error = '';
+            } else {
+                // The browser gave up while the app was away — queue it again.
+                next.status = 'ready';
+                next.percent = 0;
+                next.bytesDone = 0;
+                next.parts = [];
+                next.error = '';
+            }
+        } else if (next.status === 'downloading') {
             // Interrupted transfer: keep `bytesDone`/`parts` so the next
             // attempt resumes with `Range: bytes=<done>-` instead of starting
             // a multi-GB film from zero.
             next.status = 'ready';
             next.error = '';
+            touched.add(next.id);
         } else if (next.status === 'rendering') {
             // The NAS-side render was cut by the reload and keeps running
             // there — the local byte counters mean nothing yet.
@@ -186,12 +230,20 @@ export async function initOffline(onChange) {
             next.percent = 0;
             next.parts = [];
             next.error = '';
+            touched.add(next.id);
         }
         if (next.posterBlob && !next.posterUrl) {
             try { next.posterUrl = URL.createObjectURL(next.posterBlob); } catch { /* ignore */ }
         }
-        return next;
-    }).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+        _downloads.push(next);
+    }
+    _downloads.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    for (const id of touched) await persistRow(id);
+    for (const { row, result } of finished) {
+        clearBackgroundResult(result.tag).catch(() => {});
+        acknowledgeDownload(row.id);
+        storeSubtitle(row);
+    }
     await refreshStorage();
     try {
         if (navigator.storage?.persist && !(await navigator.storage.persisted())) {
@@ -199,6 +251,7 @@ export async function initOffline(onChange) {
         }
     } catch { /* quota manager may refuse */ }
     notifyChange();
+    for (const row of reattach) resumeBackgroundRow(row);
     return _downloads;
 }
 
@@ -440,6 +493,20 @@ export async function pumpDownloads() {
     }
 }
 
+function canBackgroundTransfer(row) {
+    // A previous Background Fetch failure falls back to the in-page transfer
+    // (`_stalled` is bumped so the next attempt skips the browser queue), and
+    // partial bytes can only be resumed by the page's Range logic.
+    return backgroundDownloadSupported()
+        && !(_stalled.get(row.id) >= 1)
+        && !(Array.isArray(row.parts) && row.parts.length)
+        && !(Number(row.bytesDone) > 0);
+}
+
+function downloadUrlFor(row) {
+    return row.download_url || `/api/videos/exports/${encodeURIComponent(row.id)}/download`;
+}
+
 async function transferRow(row) {
     const title = row.item?.tmdb?.title || row.title || row.path;
     const resumeFrom = Number(row.bytesDone) || 0;
@@ -457,45 +524,92 @@ async function transferRow(row) {
         testIdPrefix: 'vd-download',
     });
     try {
-        const size = await downloadToCache(row, task);
-        clearAttempts(row.id);
-        const current = _downloads.find((entry) => entry.id === row.id);
-        if (!current) {
-            // The user deleted/cancelled the row while the file was streaming.
-            await discardLocalMedia(row.id);
-            task.finish('cancelled', { detail: 'Cancelled' });
-            setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1000);
-            return;
+        let size = 0;
+        let bgTag = null;
+        if (canBackgroundTransfer(row)) {
+            bgTag = await startBackgroundDownload({
+                app: 'videos',
+                url: downloadUrlFor(row),
+                cache: MEDIA_CACHE,
+                key: mediaKey(row.id),
+                type: 'video/mp4',
+                title: `EthOS Videos — ${title}`,
+            });
         }
-        upsert({
-            ...current,
-            status: 'done',
-            percent: 100,
-            size,
-            bytesDone: size,
-            bytesTotal: size,
-            parts: [],
-            finished_at: Date.now(),
-            error: '',
-        });
-        await persistRow(row.id);
-        await storePoster(row, row.item || {});
-        await storeSubtitle(row);
-        task.finish('done', { percent: 100, detail: 'Ready offline' });
-        // The Downloads sheet is the lasting record on a phone; one finished
-        // global task row would otherwise linger as “Tasks 1” on the home page.
-        setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 3000);
-        logInfo('Download stored', `${row.id} ${formatBytes(size)}`);
-        await acknowledgeDownload(row.id);
-        await refreshStorage();
-        const stillBusy = _downloads.some((entry) => ACTIVE_STATUSES.has(entry.status));
-        if (!stillBusy) toast(`${title} is ready offline`, 'success');
+        if (bgTag) {
+            const started = _downloads.find((entry) => entry.id === row.id);
+            if (!started) {
+                // Deleted while the browser was being asked to take the job.
+                await abortBackgroundDownload(bgTag);
+                task.finish('cancelled', { detail: 'Cancelled' });
+                setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1000);
+                return;
+            }
+            upsert({ ...started, bg_tag: bgTag });
+            await persistRow(row.id);
+            const result = await waitBackgroundDownload(bgTag, ({ downloaded, total: bgTotal }) => {
+                const current = _downloads.find((entry) => entry.id === row.id);
+                if (!current) return;                       // deleted while away
+                const live = bgTotal ? Math.min(99, (downloaded / bgTotal) * 100) : 0;
+                upsert({
+                    ...current,
+                    bg_tag: bgTag,
+                    bytesDone: downloaded,
+                    bytesTotal: bgTotal || current.bytesTotal || 0,
+                    percent: live,
+                });
+                task.update({ percent: live, bytesDone: downloaded, bytesTotal: bgTotal });
+            });
+            await clearBackgroundResult(bgTag);
+            if (!result.ok) {
+                const error = new Error(result.error || 'Background download failed');
+                error.background = true;
+                throw error;
+            }
+            const current = _downloads.find((entry) => entry.id === row.id) || row;
+            upsert({ ...current, bg_tag: '' });
+            await persistRow(row.id);
+            size = Number(result.bytes) || Number(current.bytesTotal) || 0;
+            if (!size) {
+                try {
+                    const cache = await caches.open(MEDIA_CACHE);
+                    const hit = await cache.match(new Request(mediaKey(row.id)));
+                    if (hit) size = (await hit.blob()).size;
+                } catch { /* size falls back to zero */ }
+            }
+        } else {
+            size = await downloadToCache(row, task);
+        }
+        await completeTransfer(row, size, task);
     } catch (error) {
         const message = error?.detail || error?.message || 'Download failed';
         const current = _downloads.find((entry) => entry.id === row.id);
         if (!current) {
             task.finish('cancelled', { detail: 'Cancelled' });
             setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1000);
+            return;
+        }
+        if (error?.background) {
+            // Chromium refused or lost the background transfer — retry in the
+            // page. `noteAttempt` makes the next `pumpDownloads()` skip the
+            // browser queue; a second failure pauses the row as usual.
+            noteAttempt(row.id, false);
+            const paused = _paused.has(row.id);
+            upsert({
+                ...current,
+                status: paused ? 'failed' : 'ready',
+                bg_tag: '',
+                percent: 0,
+                bytesDone: 0,
+                parts: [],
+                error: paused ? `${message} — tap Retry` : '',
+            });
+            await persistRow(row.id);
+            task.finish(paused ? 'failed' : 'cancelled', {
+                detail: paused ? message : 'Background download unavailable — retrying in the app',
+            });
+            if (!paused) setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1500);
+            logWarn('Background download fell back', `${row.path}: ${message}`);
             return;
         }
         // Partial bytes that did reach Cache Storage stay on the row, so a
@@ -514,6 +628,113 @@ async function transferRow(row) {
     }
 }
 
+async function completeTransfer(row, size, task) {
+    clearAttempts(row.id);
+    const current = _downloads.find((entry) => entry.id === row.id);
+    if (!current) {
+        // The user deleted/cancelled the row while the file was streaming.
+        await discardLocalMedia(row.id);
+        task.finish('cancelled', { detail: 'Cancelled' });
+        setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1000);
+        return;
+    }
+    const title = row.item?.tmdb?.title || row.title || row.path;
+    upsert({
+        ...current,
+        status: 'done',
+        percent: 100,
+        size,
+        bytesDone: size,
+        bytesTotal: size,
+        parts: [],
+        finished_at: Date.now(),
+        error: '',
+        bg_tag: '',
+    });
+    await persistRow(row.id);
+    await storePoster(row, row.item || {});
+    await storeSubtitle(row);
+    task.finish('done', { percent: 100, detail: 'Ready offline' });
+    // The Downloads sheet is the lasting record on a phone; one finished
+    // global task row would otherwise linger as “Tasks 1” on the home page.
+    setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 3000);
+    logInfo('Download stored', `${row.id} ${formatBytes(size)}`);
+    await acknowledgeDownload(row.id);
+    await refreshStorage();
+    const stillBusy = _downloads.some((entry) => ACTIVE_STATUSES.has(entry.status));
+    if (!stillBusy) toast(`${title} is ready offline`, 'success');
+}
+
+/** Follow a Background Fetch that survived a reload or an app switch. */
+function resumeBackgroundRow(row) {
+    if (_bgWatchers.has(row.id) || !row.bg_tag) return;
+    const title = row.item?.tmdb?.title || row.title || row.path;
+    const run = (async () => {
+        const task = startTask({
+            appId: 'videos',
+            title: `Saving · ${title}`,
+            detail: 'Background download',
+            percent: Number(row.percent) || 0,
+            testIdPrefix: 'vd-download',
+        });
+        const tag = row.bg_tag;
+        const result = await waitBackgroundDownload(tag, ({ downloaded, total }) => {
+            const current = _downloads.find((entry) => entry.id === row.id);
+            if (!current) return;
+            const percent = total ? Math.min(99, (downloaded / total) * 100) : 0;
+            upsert({
+                ...current,
+                bg_tag: tag,
+                bytesDone: downloaded,
+                bytesTotal: total || current.bytesTotal || 0,
+                percent,
+            });
+            task.update({ percent, bytesDone: downloaded, bytesTotal: total });
+        });
+        await clearBackgroundResult(tag);
+        const current = _downloads.find((entry) => entry.id === row.id);
+        if (!current) { task.finish('cancelled', { detail: 'Cancelled' }); return; }
+        if (!result.ok) {
+            noteAttempt(row.id, false);
+            const paused = _paused.has(row.id);
+            upsert({
+                ...current,
+                status: paused ? 'failed' : 'ready',
+                bg_tag: '',
+                percent: 0,
+                bytesDone: 0,
+                parts: [],
+                error: paused ? `${result.error || 'Background download failed'} — tap Retry` : '',
+            });
+            await persistRow(row.id);
+            task.finish(paused ? 'failed' : 'cancelled', {
+                detail: result.error || 'Background download stopped',
+            });
+            if (!paused) pumpDownloads();
+            return;
+        }
+        const size = Number(result.bytes) || Number(current.bytesTotal) || 0;
+        await completeTransfer(current, size, task);
+    })().catch((error) => {
+        logWarn('Background download reattach failed', `${row.path}: ${error?.message || error}`);
+        const current = _downloads.find((entry) => entry.id === row.id);
+        if (current) {
+            upsert({ ...current, status: 'ready', bg_tag: '', percent: 0, bytesDone: 0, parts: [], error: '' });
+            persistRow(row.id).catch(() => {});
+            pumpDownloads();
+        }
+    }).finally(() => { _bgWatchers.delete(row.id); });
+    _bgWatchers.set(row.id, run);
+}
+
+/** Stop a browser-managed transfer when the user deletes its row. */
+function stopBackground(row) {
+    const tag = row?.bg_tag;
+    if (!tag) return;
+    abortBackgroundDownload(tag).catch(() => {});
+    clearBackgroundResult(tag).catch(() => {});
+}
+
 async function acknowledgeDownload(id) {
     try {
         await apiFetch(`/api/videos/exports/${encodeURIComponent(id)}/consumed`, { method: 'POST' });
@@ -530,6 +751,7 @@ export async function cancelDownload(id) {
     const index = _downloads.findIndex((entry) => entry.id === id);
     if (index >= 0) {
         const [row] = _downloads.splice(index, 1);
+        stopBackground(row);
         if (row?.posterUrl) { try { URL.revokeObjectURL(row.posterUrl); } catch { /* ignore */ } }
         notifyChange();
     }
@@ -835,6 +1057,7 @@ export function srtToVtt(srt) {
 
 export async function deleteDownload(id) {
     const row = _downloads.find((entry) => entry.id === id);
+    stopBackground(row);
     await discardLocalMedia(id);
     try { await dbDelete(id); } catch { /* ignore */ }
     clearAttempts(id);

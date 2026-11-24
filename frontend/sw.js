@@ -24,11 +24,22 @@
  * activate.
  */
 
-const CACHE_VERSION = 'ethos-shell-v9';
+const CACHE_VERSION = 'ethos-shell-v10';
 const MEDIA_CACHE = 'ethos-media-v1';
 const MEDIA_PREFIX = '/__media/';
 const BOOKS_CACHE = 'ethos-books-v1';
 const BOOKS_PREFIX = '/__books/';
+
+// Background Fetch results. The page hands a download to the browser
+// (core/background-download.js); on `backgroundfetchsuccess` this worker writes
+// the bytes into the target store and records the outcome here, so an app that
+// was closed (or killed) can reconcile its rows on the next start.
+const BG_RESULTS_DB = 'ethos-bg-downloads';
+const BG_RESULTS_STORE = 'results';
+const BG_RESULT_CAP = 200;
+const BG_CACHES = new Set([MEDIA_CACHE, BOOKS_CACHE]);
+const BG_IDB = new Map([['ethos-music-db', new Set(['blobs'])]]);
+const BG_PATHS = { videos: '/videos', books: '/books', music: '/music' };
 const SHELL_URLS = [
     '/',
     '/manifest.webmanifest',
@@ -76,6 +87,7 @@ const SHELL_URLS = [
     '/static/core/api.js',
     '/static/core/logger.js',
     '/static/core/error-reporter.js',
+    '/static/core/background-download.js',
     '/static/core/notification-center.js',
     '/static/core/progress.js',
     '/static/css/progress.css',
@@ -236,6 +248,173 @@ async function serveMedia(request, url, cacheName, fallbackType) {
         },
     });
 }
+
+// ── Background Fetch (background downloads for /videos, /books, /music) ──────
+// The page registers `backgroundFetch.fetch(tag, [request])` with
+// `__ethos_bg_*` query params. Chromium runs the transfer while the app is in
+// the background or closed; the success event copies the response into the
+// allowlisted target and stores a result marker for the page.
+
+let _bgDbPromise = null;
+
+function bgDb() {
+    if (!_bgDbPromise) {
+        _bgDbPromise = new Promise((resolve, reject) => {
+            const request = indexedDB.open(BG_RESULTS_DB, 1);
+            request.onupgradeneeded = () => {
+                const db = request.result;
+                if (!db.objectStoreNames.contains(BG_RESULTS_STORE)) {
+                    db.createObjectStore(BG_RESULTS_STORE, { keyPath: 'tag' });
+                }
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('Background results store failed'));
+        }).catch((error) => { _bgDbPromise = null; throw error; });
+    }
+    return _bgDbPromise;
+}
+
+function bgPutResult(record) {
+    return bgDb().then((db) => new Promise((resolve, reject) => {
+        const tx = db.transaction(BG_RESULTS_STORE, 'readwrite');
+        const store = tx.objectStore(BG_RESULTS_STORE);
+        store.put(record);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+        // Keep the marker table bounded: the app consumes rows, but a wiped
+        // PWA could leave markers behind forever.
+        const count = store.count();
+        count.onsuccess = () => {
+            if (count.result <= BG_RESULT_CAP) return;
+            const all = store.getAllKeys();
+            all.onsuccess = () => {
+                const extra = count.result - BG_RESULT_CAP;
+                for (const key of all.result.slice(0, extra)) store.delete(key);
+            };
+        };
+    }));
+}
+
+function bgIdbWrite(dbName, storeName, value) {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(dbName);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains(storeName)) {
+                db.createObjectStore(storeName, { keyPath: 'key' });
+            }
+        };
+        request.onsuccess = () => {
+            const db = request.result;
+            try {
+                const tx = db.transaction(storeName, 'readwrite');
+                tx.objectStore(storeName).put(value);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+                tx.onabort = () => reject(tx.error);
+            } catch (error) {
+                reject(error);
+            }
+        };
+        request.onerror = () => reject(request.error);
+    });
+}
+
+function bgKeyAllowed(cacheName, key) {
+    if (cacheName === MEDIA_CACHE) return key.startsWith(MEDIA_PREFIX);
+    if (cacheName === BOOKS_CACHE) return key.startsWith(BOOKS_PREFIX);
+    return false;
+}
+
+async function bgStoreResponse(url, response) {
+    const cacheName = url.searchParams.get('__ethos_bg_cache') || '';
+    const key = url.searchParams.get('__ethos_bg_key') || '';
+    const idbName = url.searchParams.get('__ethos_bg_idb') || '';
+    const storeName = url.searchParams.get('__ethos_bg_store') || '';
+    const type = (response.headers.get('content-type')
+        || url.searchParams.get('__ethos_bg_type') || '').split(';')[0];
+    const declared = Number(response.headers.get('content-length')) || 0;
+    if (cacheName && key && BG_CACHES.has(cacheName) && bgKeyAllowed(cacheName, key)) {
+        const cache = await caches.open(cacheName);
+        await cache.put(new Request(new URL(key, self.location.origin).href), response);
+        return { bytes: declared, type };
+    }
+    if (idbName && storeName && key && BG_IDB.get(idbName)?.has(storeName)) {
+        const blob = await response.blob();
+        await bgIdbWrite(idbName, storeName, { key, audio: blob, thumb: null, type: type || 'audio/mpeg' });
+        return { bytes: blob.size, type };
+    }
+    throw new Error('Unknown background download target');
+}
+
+function bgAppFromTag(tag) {
+    const match = /^ethos-(videos|books|music)-/.exec(String(tag || ''));
+    return match ? match[1] : '';
+}
+
+self.addEventListener('backgroundfetchsuccess', (event) => {
+    event.waitUntil((async () => {
+        const tag = event.registration.id;
+        let app = bgAppFromTag(tag);
+        try {
+            const records = await event.registration.matchAll();
+            for (const record of records) {
+                const url = new URL(record.request.url);
+                app = url.searchParams.get('__ethos_bg_app') || app;
+                const response = await record.responseReady;
+                if (!response || !response.ok) {
+                    throw new Error(`HTTP ${response ? response.status : 'no response'}`);
+                }
+                const stored = await bgStoreResponse(url, response);
+                await bgPutResult({
+                    tag,
+                    app,
+                    ok: true,
+                    key: url.searchParams.get('__ethos_bg_key') || '',
+                    cache: url.searchParams.get('__ethos_bg_cache') || '',
+                    db: url.searchParams.get('__ethos_bg_idb') || '',
+                    store: url.searchParams.get('__ethos_bg_store') || '',
+                    type: stored.type,
+                    bytes: stored.bytes,
+                    at: Date.now(),
+                });
+            }
+            try { await event.updateUI({ title: 'Pobrano — zapisano na urządzeniu' }); } catch { /* older Chrome */ }
+        } catch (error) {
+            await bgPutResult({
+                tag, app, ok: false, error: String(error?.message || error), at: Date.now(),
+            }).catch(() => {});
+        }
+    })());
+});
+
+self.addEventListener('backgroundfetchfail', (event) => {
+    const tag = event.registration.id;
+    event.waitUntil(bgPutResult({
+        tag, app: bgAppFromTag(tag), ok: false, error: 'Background download failed', at: Date.now(),
+    }).catch(() => {}));
+});
+
+self.addEventListener('backgroundfetchabort', (event) => {
+    const tag = event.registration.id;
+    event.waitUntil(bgPutResult({
+        tag, app: bgAppFromTag(tag), ok: false, error: 'Background download aborted', at: Date.now(),
+    }).catch(() => {}));
+});
+
+self.addEventListener('backgroundfetchclick', (event) => {
+    const app = bgAppFromTag(event.registration.id);
+    const target = BG_PATHS[app] || '/';
+    event.waitUntil((async () => {
+        const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        const client = windows.find((entry) => {
+            try { return new URL(entry.url).pathname.startsWith(target); } catch { return false; }
+        });
+        if (client) { await client.focus(); return; }
+        if (self.clients.openWindow) await self.clients.openWindow(target);
+    })());
+});
 
 // ── Web Push (Sticky Notes reminders) ───────────────────────────────────────
 // The package service sends `{title, body, tag, url, note_id, …}`. Show one

@@ -82,6 +82,19 @@ icon can be pinned.
    answers it **with Range support** (synthesised `206`/`416` slices of the
    cached Blob) so seeking works offline.
 
+**Background Fetch.** When Chromium exposes
+`ServiceWorkerRegistration.backgroundFetch`, the transfer is handed to the
+browser (`core/background-download.js`) instead of running in the page: it
+continues after the app is switched away or closed, shows a system progress
+notification, and `sw.js` copies the finished response into `ethos-media-v1`
+and writes a result marker (`ethos-bg-downloads`) that `initOffline()`
+reconciles on the next start. While the page is open it follows the live
+`downloaded`/`downloadTotal` counters and reattaches by tag after a reload. A
+browser that accepts the job but never starts it, iOS Safari and Firefox (no
+API) fall back to the resumable in-page transfer above; that attempt also
+skips the browser queue. Automation (`navigator.webdriver`) always uses the
+in-page path so the Playwright request mocks stay authoritative.
+
 Server-side rules (`services/video_render.py`, `services/video_engine.py`):
 
 | Limit | Value |

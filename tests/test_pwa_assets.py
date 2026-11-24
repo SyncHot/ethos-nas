@@ -202,6 +202,27 @@ def main() -> int:
     check("videos shell cache version was bumped",
           bool(shell_versions) and max(shell_versions) >= 6, str(shell_versions))
 
+    # ── Background Fetch downloads (Chromium, /videos · /books · /music) ────
+    bg_module = FRONTEND / "static" / "core" / "background-download.js"
+    check("background download helper exists", bg_module.is_file())
+    bg_js = bg_module.read_text() if bg_module.is_file() else ""
+    check("helper exposes the Background Fetch entry points",
+          "backgroundDownloadSupported" in bg_js
+          and "startBackgroundDownload" in bg_js
+          and "waitBackgroundDownload" in bg_js)
+    check("worker handles background fetch results",
+          "backgroundfetchsuccess" in sw and "backgroundfetchfail" in sw
+          and "backgroundfetchabort" in sw)
+    check("worker precaches the background download helper",
+          "/static/core/background-download.js" in sw)
+    check("worker only stores allowlisted background targets",
+          "BG_CACHES" in sw and "BG_IDB" in sw and "bgKeyAllowed" in sw)
+    for module in ("videos", "books", "music"):
+        offline_js = (FRONTEND / "static" / module / "offline.js").read_text()
+        check(f"{module} downloads fall back to Background Fetch",
+              "../core/background-download.js" in offline_js
+              and "startBackgroundDownload" in offline_js)
+
     # ── Music PWA (`/music`) — the phone client that replaced the APK ───────
     music_manifest_path = FRONTEND / "manifest-music.webmanifest"
     check("music manifest exists", music_manifest_path.is_file())
