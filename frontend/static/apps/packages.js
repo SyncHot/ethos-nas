@@ -537,6 +537,27 @@ function _settingDefs(pkg) {
         : [];
 }
 
+function _hasSettings(pkg) {
+    return _settingDefs(pkg).length > 0 || !!(pkg && pkg.data);
+}
+
+// The folder a compose service keeps its data in. EthOS mounts it at the
+// manifest's `data.mount`; the default is a package-named folder in the data
+// store, and the admin may pick another path under /home, /mnt or /media.
+function _dataDirField(pkg, current, defaultDir) {
+    if (!pkg || !pkg.data) return '';
+    const label = pkg.data.label || 'Data folder';
+    const value = current ? String(current) : '';
+    const hint = defaultDir ? `default: ${defaultDir}` : 'default: a package folder in the EthOS data store';
+    return `<div class="ui-panel" style="margin-top:10px;padding:10px 12px;">
+        <label style="display:block;font-size:12px;color:var(--text-2);">
+            <span style="display:block;margin-bottom:4px;">${escapeHtml(label)}</span>
+            <input class="ui-input" style="width:100%;" type="text" name="pkg_data_dir"
+                   value="${escapeAttr(value)}" placeholder="${escapeAttr(hint)}" spellcheck="false">
+            <span class="ui-muted" style="font-size:11px;">Leave empty for the default folder. Changing it does not move existing files — the service starts with an empty folder.</span>
+        </label></div>`;
+}
+
 function _settingsFields(pkg) {
     const defs = _settingDefs(pkg);
     if (!defs.length) return '';
@@ -660,7 +681,7 @@ function _installedRow(pkg) {
         ? `<button class="ui-btn small" data-open-ui="${escapeAttr(pkg.id)}">Open UI</button>` : '';
     const openLogsBtn = _pkg.isAdmin
         ? `<button class="ui-btn small" data-open-logs="${escapeAttr(pkg.id)}" data-testid="pkg-logs-${escapeAttr(pkg.id)}" title="Open the unified Logs app filtered to this package">Logs</button>` : '';
-    const settingsBtn = _pkg.isAdmin && _settingDefs(pkg).length
+    const settingsBtn = _pkg.isAdmin && _hasSettings(pkg)
         ? `<button class="ui-btn small" data-settings="${escapeAttr(pkg.id)}" data-testid="pkg-settings-${escapeAttr(pkg.id)}"${disabled}>Settings</button>` : '';
     return `
         <tr data-testid="pkg-row-${escapeAttr(pkg.id)}">
@@ -715,6 +736,7 @@ async function _openDetail(pkgId) {
         </label>` : ''}
         ${_pythonRequires(detail).length ? `<div style="font-size:12px;margin-top:6px;">Package environment: ${_pythonRequires(detail).map(escapeHtml).join(', ')} — installed into a private virtualenv from bundled wheels, offline.</div>` : ''}
         ${canInstall ? _settingsFields(detail) : ''}
+        ${canInstall ? _dataDirField(detail, '', '') : ''}
         ${(detail.screenshots || []).length ? `<div style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;">${detail.screenshots.map((url) => `<a href="${escapeAttr(url)}" target="_blank" rel="noopener"><img src="${escapeAttr(url)}" alt="" style="height:90px;border-radius:8px;"></a>`).join('')}</div>` : ''}
         ${detail.installed && _pkg.isAdmin ? `<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn-ghost" data-testid="pkg-detail-logs" style="font-size:12px;padding:4px 10px;">📋 Open logs for ${escapeHtml(detail.name)}</button>${detail.runtime === 'compose' && detail.ui && detail.ui.port ? `<button class="btn-ghost" data-testid="pkg-detail-repair-ports" style="font-size:12px;padding:4px 10px;" title="Re-publish this package on a free port when another service took its port">🔌 Repair ports</button>` : ''}</div>` : ''}`;
     await showFormModal({
@@ -743,7 +765,8 @@ async function _openDetail(pkgId) {
                         return false;
                     }
                     await _startJob(canUpdate ? 'update' : 'install', detail,
-                        canInstall ? _collectSettings(detail, values) : null);
+                        canInstall ? _collectSettings(detail, values) : null,
+                        canInstall ? String(values.pkg_data_dir || '').trim() : null);
                     return true;
                 } catch (err) {
                     setError(err.detail || err.message);
@@ -785,18 +808,35 @@ async function _editSettings(pkgId) {
     const pkg = _pkg.installed.find((item) => item.id === pkgId)
         || _pkg.catalog.find((item) => item.id === pkgId);
     if (!pkg) return;
+    let info = null;
+    try {
+        // The admin-only endpoint carries the effective host folder, which the
+        // general package list deliberately never exposes.
+        info = await apiJsonFetch(`/api/packages/${encodeURIComponent(pkg.id)}/settings`);
+    } catch (err) {
+        addNotification(err.detail || err.message, 'error');
+        return;
+    }
+    const view = {
+        ...pkg,
+        settings: info.settings || pkg.settings || [],
+        settings_values: info.values || pkg.settings_values || {},
+        data: info.data || pkg.data || null,
+    };
     try {
         await showFormModal({
             title: `Settings — ${pkg.name}`,
             width: '520px',
             confirmLabel: 'Save settings',
-            bodyHtml: `<p class="ui-muted" style="font-size:12px;margin:0;">Changing a value recreates the service so it takes effect now.</p>${_settingsFields(pkg)}`,
+            bodyHtml: `<p class="ui-muted" style="font-size:12px;margin:0;">Changing a value recreates the service so it takes effect now.</p>${_settingsFields(view)}${_dataDirField(view, info.data_dir, info.default_data_dir)}`,
             onSubmit: async (values, { setError }) => {
                 try {
+                    const payload = { values: _collectSettings(view, values) };
+                    if (view.data) payload.data_dir = String(values.pkg_data_dir || '').trim();
                     const result = await apiJsonFetch(`/api/packages/${encodeURIComponent(pkg.id)}/settings`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ values: _collectSettings(pkg, values) }),
+                        body: JSON.stringify(payload),
                     });
                     addNotification(result.changed
                         ? `${pkg.name} settings saved${result.recreated ? ' — service recreated' : ''}`
@@ -868,13 +908,15 @@ async function _updateAll() {
     }
 }
 
-async function _startJob(kind, pkg, settings) {
+async function _startJob(kind, pkg, settings, dataDir) {
     if (_pkg.job) {
         const current = JOB_TITLES[_pkg.job.kind] || 'Operation';
         throw new Error(`${current} ${_pkg.job.name} is still running`);
     }
     const installBody = { package_id: pkg.id, source: pkg.source };
     if (settings && Object.keys(settings).length) installBody.settings = settings;
+    const folder = String(dataDir || '').trim();
+    if (folder) installBody.data_dir = folder;
     const response = kind === 'install'
         ? await apiJsonFetch('/api/packages/install', {
             method: 'POST',

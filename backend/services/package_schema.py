@@ -324,6 +324,28 @@ def _validate_settings(value: Any) -> list[dict]:
     return out
 
 
+# ── Data folder (optional, compose packages) ───────────────────────────────
+# A package may declare the container path its data lives in. EthOS mounts a
+# host folder there (`${ETHOS_PACKAGE_DATA_DIR}`): by default
+# `<DATA_DIR>/packages/data/<id>`, but the admin can pick any folder under
+# /home, /mnt, /media or the EthOS data root at install time and later.
+def _validate_data(value: Any) -> Optional[dict]:
+    if value in (None, {}):
+        return None
+    if not isinstance(value, dict):
+        raise PackageError("data must be an object with a mount path", 400)
+    unknown = sorted(set(value) - {"mount", "label"})
+    if unknown:
+        raise PackageError(f"unknown data field: {unknown[0]}", 400)
+    mount = str(value.get("mount") or "").strip()
+    if not mount.startswith("/") or ".." in PurePosixPath(mount).parts:
+        raise PackageError("data.mount must be an absolute path inside the container", 400)
+    return {
+        "mount": mount[:200],
+        "label": str(value.get("label") or "Data folder").strip()[:80] or "Data folder",
+    }
+
+
 def _validate_requirement(value: Any, field: str) -> str:
     text = str(value or "").strip()
     if not _REQUIREMENT_RE.fullmatch(text):
@@ -492,6 +514,9 @@ def validate_manifest(manifest: Any, *, allow_legacy: bool = False) -> dict:
         # Settings exist to feed compose interpolation; a files-only package has
         # nowhere to receive them.
         raise PackageError("settings require a compose service", 400)
+    data = _validate_data(manifest.get("data"))
+    if data and not (compose or legacy_compose):
+        raise PackageError("data requires a compose service", 400)
 
     normalized = {
         "schema": 2,
@@ -519,6 +544,7 @@ def validate_manifest(manifest: Any, *, allow_legacy: bool = False) -> dict:
         "files": files,
         "python": python,
         "settings": settings,
+        "data": data,
         "ui": _validate_ui(manifest.get("ui")),
         "healthcheck": _validate_ui(manifest.get("healthcheck")),
     }

@@ -247,6 +247,34 @@ environment:
   rewrite an existing database; it can still be reset in the app itself.
 - Updates keep stored values for keys the new manifest still declares and drop the rest.
 
+### Data folder (`data`)
+
+A compose package can let the admin choose where its data lives. Declare the container path and
+mount `${ETHOS_PACKAGE_DATA_DIR}` there instead of a named volume:
+
+```json
+"data": {"mount": "/var/lib/grafana", "label": "Grafana data folder"}
+```
+
+```yaml
+volumes:
+  - "${ETHOS_PACKAGE_DATA_DIR}:/var/lib/grafana"
+```
+
+- EthOS always sets `ETHOS_PACKAGE_DATA_DIR` for a package that declares `data`. The default is
+  `<DATA_DIR>/packages/data/<id>` — a folder named after the package — and it survives an uninstall
+  unless the operator ticks “delete package data”.
+- The install dialog and **Installed → Settings** offer a folder field. The chosen path is stored as
+  `data_dir` in the package record and must be absolute, under `/home`, `/mnt`, `/media` or the
+  EthOS data root, and never a root itself, `DATA_DIR` itself or the package installation area.
+- Changing the folder recreates the service on the new path and **does not move files**: stop the
+  package, move its files with the Files app, then change the folder. Starting with an empty folder
+  is how a package “resets” its data.
+- `GET /api/packages/{id}/settings` (admin) returns the effective folder and the default; the
+  general `GET /api/packages` list never exposes host paths.
+- Named volumes remain fine for scratch data; use `data` for the state a user cares about. A package
+  migration from a named volume must document how to copy the old volume first (Grafana 1.2.0 does).
+
 ## Runtimes: compose, venv and files
 
 A package declares one runtime; it is inferred when omitted (compose file → `compose`, otherwise

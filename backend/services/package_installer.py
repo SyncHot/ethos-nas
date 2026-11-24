@@ -20,8 +20,8 @@ import yaml
 
 from backend.config import APP_VERSION, settings
 from backend.services import (
-    package_cleanup, package_jobs, package_ports, package_repo, package_runtime,
-    package_state, package_wheels, packages_store, system_deps,
+    package_cleanup, package_env, package_jobs, package_ports, package_repo,
+    package_runtime, package_state, package_wheels, packages_store, system_deps,
 )
 from backend.services.compose_policy import enforce_compose
 from backend.services.notifications_service import emit_event
@@ -352,16 +352,62 @@ def validate_settings_values(definitions: list[dict], provided: Optional[dict], 
     return values
 
 
-def settings_env(record: Optional[dict]) -> dict:
-    """Stored settings as compose interpolation variables (never logged)."""
-    definitions = _settings_defs(record)
-    if not definitions:
-        return {}
-    values = validate_settings_values(
-        definitions, None, base=(record or {}).get("settings_values") or {},
-        enforce_required=False,
-    )
-    return {str(d["env"]): values.get(str(d["key"]), "") for d in definitions}
+def _default_data_dir(pkg_id: str) -> Path:
+    """Where a package's data lives when the admin did not pick a folder."""
+    return packages_store.data_dir(pkg_id)
+
+
+def validate_data_dir(pkg_id: str, value) -> Path:
+    """Resolve the host folder a package may keep its data in.
+
+    Admins may pick any folder under /home, /mnt, /media or the EthOS data root,
+    but never a root itself, the package installation area or a path outside
+    those trees. An empty value means the default (`packages/data/<id>`).
+    """
+    default = _default_data_dir(pkg_id)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise PackageError("Data folder must be a path", 400)
+    raw = value.strip()
+    if not raw:
+        return default
+    if "\x00" in raw:
+        raise PackageError("Data folder contains an invalid character", 400)
+    candidate = Path(os.path.expanduser(raw))
+    if not candidate.is_absolute():
+        raise PackageError("Data folder must be an absolute path", 400)
+    resolved = candidate.resolve()
+    data_root = settings.DATA_DIR.resolve()
+    roots = (Path("/home"), Path("/mnt"), Path("/media"), data_root)
+    if not any(resolved == root or root in resolved.parents for root in roots):
+        raise PackageError(
+            "Data folder must be inside /home, /mnt, /media or the EthOS data folder", 400,
+        )
+    if resolved in (Path("/home"), Path("/mnt"), Path("/media"), data_root):
+        raise PackageError("Choose a folder below that path, not the root itself", 400)
+    packages_root = packages_store.PACKAGES_ROOT.resolve()
+    forbidden = (packages_root / "apps", packages_root / ".staging", packages_root / ".backup")
+    if any(resolved == item or item in resolved.parents for item in forbidden):
+        raise PackageError("Data folder cannot be inside the package installation area", 400)
+    return resolved
+
+
+def ensure_data_dir(path: Path) -> None:
+    """Create the data folder; the container's entrypoint fixes ownership."""
+    created = not path.exists()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise PackageError(
+            f"Cannot create the data folder {path}: {exc.strerror or exc}", 400,
+        ) from exc
+    if created:
+        try:
+            path.chmod(0o775)
+        except OSError:
+            logger.warning("Could not set permissions on the data folder %s", path,
+                           exc_info=True)
 
 
 def _compose_env(pkg_id: Optional[str] = None) -> dict:
@@ -378,7 +424,7 @@ def _compose_env(pkg_id: Optional[str] = None) -> dict:
     env.setdefault("ETHOS_SERVICE_GID", str(os.getgid()))
     env.setdefault("ETHOS_DATA_DIR", str(settings.DATA_DIR))
     if pkg_id:
-        env.update(settings_env(packages_store.get_package(pkg_id)))
+        env.update(package_env.compose_vars(packages_store.get_package(pkg_id)))
     return env
 
 
@@ -581,28 +627,42 @@ async def compose_action(pkg_id: str, action: str) -> dict:
     return {"ok": True, "package": pkg_id, "action": action, "status": status}
 
 
-async def apply_settings(pkg_id: str, provided: Optional[dict]) -> dict:
+async def apply_settings(pkg_id: str, provided: Optional[dict],
+                         data_dir: Optional[str] = None) -> dict:
     """Store new settings for an installed package and recreate its service.
 
     The compose file is signed and fixed; the values reach it through the
     environment as `${VAR}`. A compose package is force-recreated so a changed
     value takes effect immediately (`restart` alone keeps the old environment).
+    `data_dir` is `None` when the caller did not touch the folder, an empty
+    string to go back to the default, and a path to move to it. Files are not
+    moved: the service starts on the new folder with an empty data set.
     """
     check_pkg_id(pkg_id)
     record = packages_store.get_package(pkg_id)
     if not record:
         raise PackageError(f"Package {pkg_id!r} not found", 404)
     definitions = _settings_defs(record)
-    if not definitions:
+    if not definitions and not record.get("data"):
         raise PackageError("This package has no configurable settings", 400)
     values = validate_settings_values(
         definitions, provided, base=record.get("settings_values") or {},
     )
-    if values == (record.get("settings_values") or {}):
-        return {"ok": True, "package": pkg_id, "changed": False, "recreated": False}
-    packages_store.replace_package({
+    current_dir = str(record.get("data_dir") or "") if record.get("data") else ""
+    new_dir = current_dir
+    if record.get("data") and data_dir is not None:
+        new_dir = str(validate_data_dir(pkg_id, data_dir))
+    if values == (record.get("settings_values") or {}) and new_dir == current_dir:
+        return {"ok": True, "package": pkg_id, "changed": False, "recreated": False,
+                "data_dir": new_dir or None}
+    updated = {
         **record, "settings_values": values, "settings_updated_at": _now_iso(),
-    })
+    }
+    if record.get("data"):
+        updated["data_dir"] = new_dir
+    packages_store.replace_package(updated)
+    if record.get("data") and new_dir != current_dir:
+        await asyncio.to_thread(ensure_data_dir, Path(new_dir))
     recreated = False
     path = compose_file(pkg_id)
     if _runtime(record) == "compose" and path is not None:
@@ -611,13 +671,15 @@ async def apply_settings(pkg_id: str, provided: Optional[dict]) -> dict:
     emit_event("info", f"Package {record.get('name') or pkg_id} settings updated",
                "Service recreated with the new settings" if recreated
                else "Settings stored", source="packages")
-    logger.info("Package %s: settings updated (%d field(s), recreated=%s)",
-                pkg_id, len(values), recreated)
-    return {"ok": True, "package": pkg_id, "changed": True, "recreated": recreated}
+    logger.info("Package %s: settings updated (%d field(s), data folder changed=%s, recreated=%s)",
+                pkg_id, len(values), new_dir != current_dir, recreated)
+    return {"ok": True, "package": pkg_id, "changed": True, "recreated": recreated,
+            "data_dir": new_dir or None}
 
 
 def _write_record(manifest: dict, entry: dict, source: dict,
-                  settings: Optional[dict] = None) -> dict:
+                  settings: Optional[dict] = None,
+                  data_dir: Optional[Path] = None) -> dict:
     record = {
         **manifest,
         "runtime": manifest.get("runtime") or "compose",
@@ -631,6 +693,8 @@ def _write_record(manifest: dict, entry: dict, source: dict,
         "updated_at": _now_iso(),
         "settings_values": dict(settings or {}),
     }
+    if manifest.get("data"):
+        record["data_dir"] = str(data_dir or _default_data_dir(record["id"]))
     return record
 
 
@@ -747,7 +811,8 @@ async def _stage_package(entry: dict, job_id: str, manifest: Optional[dict] = No
     return manifest, staging
 
 
-async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = None) -> None:
+async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = None,
+                  data_dir: Optional[str] = None) -> None:
     pkg_id = entry["id"]
     if packages_store.get_package(pkg_id):
         raise PackageError(f"Package {pkg_id!r} is already installed", 409)
@@ -757,6 +822,9 @@ async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = 
     # Reject bad values before a byte is downloaded; defaults apply for fields
     # the install form left untouched.
     provided_settings = validate_settings_values(_settings_defs(manifest), provided_settings)
+    data_folder: Optional[Path] = None
+    if manifest.get("data"):
+        data_folder = validate_data_dir(pkg_id, data_dir)
     _preflight_disk(pkg_id)
     # A compose package can be re-mapped to a free port (`_port_plan`); a venv or
     # native one cannot — EthOS starts that process on the exact port itself.
@@ -790,7 +858,7 @@ async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = 
     shutil.move(str(staging), str(target))
 
     source = next((s for s in packages_store.load_sources() if s.get("url") == entry.get("source")), {})
-    record = _write_record(manifest, entry, source, provided_settings)
+    record = _write_record(manifest, entry, source, provided_settings, data_folder)
     if compose_file(pkg_id):
         plan = _port_plan(pkg_id, manifest, target)
         record = _apply_port_plan(record, plan)
@@ -800,6 +868,9 @@ async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = 
                 f"host port {next(iter(plan['remap']))} is busy — "
                 f"publishing on {plan['ui']} instead",
             )
+    if data_folder is not None:
+        await asyncio.to_thread(ensure_data_dir, data_folder)
+        package_jobs.log(job_id, f"data folder ready: {data_folder}")
     packages_store.add_package(record)
     package_jobs.log(job_id, "files deployed")
 
@@ -872,7 +943,17 @@ async def update(pkg_id: str, job_id: str) -> None:
         _settings_defs(manifest), None,
         base=(old or {}).get("settings_values") or {}, enforce_required=False,
     )
-    record = _write_record(manifest, entry, source, preserved)
+    data_folder: Optional[Path] = None
+    if manifest.get("data"):
+        # A folder chosen before the update stays in use; a stored path that is
+        # no longer allowed falls back to the default instead of failing.
+        try:
+            data_folder = validate_data_dir(pkg_id, old.get("data_dir"))
+        except PackageError:
+            logger.warning("Stored data folder for %s is not allowed any more; using the default",
+                           pkg_id, exc_info=True)
+            data_folder = _default_data_dir(pkg_id)
+    record = _write_record(manifest, entry, source, preserved, data_folder)
     if compose_file(pkg_id):
         plan = _port_plan(pkg_id, manifest, target, previous=old.get("port_remap"))
         record = _apply_port_plan(record, plan)
@@ -882,6 +963,9 @@ async def update(pkg_id: str, job_id: str) -> None:
                 f"host port {next(iter(plan['remap']))} is busy — "
                 f"publishing on {plan['ui']} instead",
             )
+    if data_folder is not None:
+        await asyncio.to_thread(ensure_data_dir, data_folder)
+        package_jobs.log(job_id, f"data folder ready: {data_folder}")
     packages_store.replace_package(record)
     package_jobs.log(job_id, f"deployed v{manifest['version']}")
 
@@ -971,6 +1055,15 @@ async def uninstall(pkg_id: str, job_id: str, remove_volumes: bool = False,
     if remove_data:
         package_jobs.set_step(job_id, "data")
         state_dir = packages_store.data_dir(pkg_id)
+        if record.get("data") and record.get("data_dir"):
+            # A package can keep its data outside the default tree; re-validate
+            # before deleting anything so a corrupt record cannot point at /
+            # or a shared root.
+            try:
+                state_dir = validate_data_dir(pkg_id, str(record["data_dir"]))
+            except PackageError:
+                logger.warning("Kept data folder %s for %s: path is no longer allowed",
+                               record.get("data_dir"), pkg_id)
         freed = packages_store.dir_size(state_dir)
         shutil.rmtree(state_dir, ignore_errors=True)
         if state_dir.exists():

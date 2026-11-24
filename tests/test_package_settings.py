@@ -16,7 +16,8 @@ os.environ["ETHOS_DATA_DIR"] = str(TMP / "data")
 sys.path.insert(0, str(ROOT))
 
 from backend.routers import packages as packages_router  # noqa: E402
-from backend.services import package_installer, packages_store  # noqa: E402
+from backend.services import package_env, package_installer, packages_store  # noqa: E402
+from backend.services.compose_policy import lint_compose  # noqa: E402
 from backend.services.package_schema import PackageError, validate_manifest  # noqa: E402
 
 results = []
@@ -114,8 +115,8 @@ print("Compose environment")
 defs_only = [{"key": "admin_user", "env": "GF_SECURITY_ADMIN_USER", "default": "admin"},
              {"key": "admin_password", "env": "GF_SECURITY_ADMIN_PASSWORD",
               "type": "password", "default": "secret"}]
-env = package_installer.settings_env({"settings": defs_only,
-                                      "settings_values": {"admin_user": "boss"}})
+env = package_env.compose_vars({"settings": defs_only,
+                                "settings_values": {"admin_user": "boss"}})
 check("settings map to env names", env == {"GF_SECURITY_ADMIN_USER": "boss",
                                            "GF_SECURITY_ADMIN_PASSWORD": "secret"})
 original_get = packages_store.get_package
@@ -135,14 +136,72 @@ try:
 finally:
     packages_store.get_package = original_get
 
+print("Data folder")
+DATA = {"mount": "/var/lib/grafana", "label": "Grafana data folder"}
+check("data block normalized", validate_manifest({**BASE, "data": DATA})["data"]["mount"]
+      == "/var/lib/grafana")
+check("no data block is None", validate_manifest(dict(BASE))["data"] is None)
+check("relative mount rejected",
+      rejects(lambda: validate_manifest({**BASE, "data": {"mount": "var/lib"}})))
+check("missing mount rejected",
+      rejects(lambda: validate_manifest({**BASE, "data": {"label": "x"}})))
+check("unknown data field rejected",
+      rejects(lambda: validate_manifest({**BASE, "data": {"mount": "/data", "mode": "rw"}})))
+check("data on a files-only package rejected",
+      rejects(lambda: validate_manifest({
+          **BASE, "compose": None, "data": DATA,
+          "files": [{"url": "https://example.test/a.txt", "sha256": HEX, "path": "a.txt"}],
+      })))
+default_dir = package_installer.validate_data_dir("grafana", None)
+check("empty value means the default folder",
+      default_dir == packages_store.data_dir("grafana")
+      and package_installer.validate_data_dir("grafana", "") == default_dir)
+check("a folder under /mnt is accepted",
+      str(package_installer.validate_data_dir("grafana", "/mnt/SharedDrive/grafana"))
+      == "/mnt/SharedDrive/grafana")
+check("relative path rejected",
+      rejects(lambda: package_installer.validate_data_dir("grafana", "mnt/grafana")))
+check("a share root rejected",
+      rejects(lambda: package_installer.validate_data_dir("grafana", "/mnt")))
+check("path outside the allowed roots rejected",
+      rejects(lambda: package_installer.validate_data_dir("grafana", "/etc/grafana")))
+check("the package installation area rejected",
+      rejects(lambda: package_installer.validate_data_dir(
+          "grafana", str(packages_store.PACKAGES_ROOT / "apps" / "grafana"))))
+check("the data folder reaches compose as ETHOS_PACKAGE_DATA_DIR",
+      package_env.compose_vars({"id": "grafana", "data": DATA,
+                                "data_dir": "/mnt/SharedDrive/grafana"})
+      .get("ETHOS_PACKAGE_DATA_DIR") == "/mnt/SharedDrive/grafana")
+check("the default data folder is package-named",
+      package_env.compose_vars({"id": "grafana", "data": DATA})
+      .get("ETHOS_PACKAGE_DATA_DIR", "").endswith("/data/grafana"))
+
+text = """services:
+  grafana:
+    image: grafana/grafana:13.3.1
+    volumes:
+      - "${ETHOS_PACKAGE_DATA_DIR}:/var/lib/grafana"
+"""
+errors, _warnings = lint_compose(text, ["compose"], package_id="grafana")
+check("compose policy accepts the data folder variable", not errors, str(errors))
+errors, _warnings = lint_compose("""services:
+  x:
+    image: alpine
+    volumes:
+      - "/etc:/data"
+""", ["compose"], package_id="x")
+check("an absolute bind outside the roots is still rejected", bool(errors), str(errors))
+
 print("API response redaction")
 record = {
-    "id": "grafana", "name": "Grafana", "settings": defs,
+    "id": "grafana", "name": "Grafana", "settings": defs, "data": DATA,
+    "data_dir": "/mnt/SharedDrive/grafana",
     "settings_values": {"admin_user": "boss", "admin_password": "hunter22"},
 }
 view = packages_router._record_view(record)
 check("password never leaves the NAS", view["settings_values"]["admin_password"] == "")
 check("text value is available to the form", view["settings_values"]["admin_user"] == "boss")
+check("host data folder stays out of the package list", "data_dir" not in view)
 check("the stored record is not mutated",
       record["settings_values"]["admin_password"] == "hunter22")
 

@@ -86,6 +86,8 @@ class InstallRequest(BaseModel):
     source: Optional[str] = None
     # Values for the manifest's optional `settings` fields (admin login, etc.).
     settings: dict[str, str] = {}
+    # Host folder for the package's data; empty/None means the default.
+    data_dir: Optional[str] = None
 
 
 class AddSourceRequest(BaseModel):
@@ -122,6 +124,8 @@ class SettingsRequest(BaseModel):
     model_config = {"extra": "forbid"}
     # Only the keys the user edited; omitted fields keep their stored value.
     values: dict[str, str] = {}
+    # None = leave the folder alone, "" = back to the default, a path = move.
+    data_dir: Optional[str] = None
 
 
 # ── Installed packages / desktop icons ──────────────────────────────────────
@@ -139,7 +143,11 @@ def _record_view(pkg: dict) -> dict:
         str(d["key"]): "" if d.get("type") == "password" else str(values.get(str(d["key"]), ""))
         for d in defs if isinstance(d, dict) and d.get("key")
     }
-    return {**pkg, "settings_values": masked}
+    view = {**pkg, "settings_values": masked}
+    # Absolute host paths (and the DATA_DIR default) are not user-facing; the
+    # admin-only settings endpoint returns them for the folder form.
+    view.pop("data_dir", None)
+    return view
 
 
 @router.get("")
@@ -260,13 +268,21 @@ async def list_updates() -> dict:
 
 
 def _data_inventory(pkg_id: str) -> dict:
-    """Size of the state a package keeps under `<DATA_DIR>`.
+    """Size of the state a package keeps on the NAS.
 
-    That is `<DATA_DIR>/packages/data/<id>` for every runtime, plus the core
-    state owned by a UI-only package (Cameras stores its cameras and settings in
-    the core — see `services/package_state.py`). `remove_data=1` deletes both.
+    That is `<DATA_DIR>/packages/data/<id>` for every runtime — or the folder
+    the admin chose for a compose package (`data_dir`) — plus the core state
+    owned by a UI-only package (Cameras stores its cameras and settings in the
+    core — see `services/package_state.py`). `remove_data=1` deletes both.
     """
     path = packages_store.data_dir(pkg_id)
+    record = packages_store.get_package(pkg_id) or {}
+    if record.get("data") and record.get("data_dir"):
+        try:
+            path = package_installer.validate_data_dir(pkg_id, str(record["data_dir"]))
+        except PackageError:
+            logger.warning("Ignoring an invalid data folder for %s: %s",
+                           pkg_id, record.get("data_dir"))
     package_exists = path.exists()
     inventory = {"path": str(path), "paths": [str(path)], "exists": package_exists,
                  "size_bytes": packages_store.dir_size(path),
@@ -378,7 +394,8 @@ async def install_package(req: InstallRequest) -> dict:
     except PackageError as exc:
         raise _http_error(exc) from None
     return _start_job("install", req.package_id,
-                      lambda job_id: package_installer.install(entry, job_id, req.settings))
+                      lambda job_id: package_installer.install(
+                          entry, job_id, req.settings, req.data_dir))
 
 
 @router.get("/jobs")
@@ -690,15 +707,51 @@ async def repair_package_ports(pkg_id: str) -> dict:
         raise _http_error(exc) from None
 
 
-@router.post("/{pkg_id}/settings", dependencies=[Depends(require_admin)])
-async def update_package_settings(pkg_id: str, req: SettingsRequest) -> dict:
-    """Change an installed package's install-time settings (login, password, …).
+@router.get("/{pkg_id}/settings", dependencies=[Depends(require_admin)])
+async def get_package_settings(pkg_id: str) -> dict:
+    """Settings and data folder of an installed package (admin only).
 
-    The service is recreated so the new values take effect now; values the form
-    omits keep their stored value (that is how a password stays secret).
+    `settings_values` masks every password; `data_dir` is the effective host
+    folder and `default_data_dir` the one an empty value falls back to. Host
+    paths stay out of the general package list, so the form reads them here.
     """
     try:
-        return await package_installer.apply_settings(pkg_id, req.values)
+        check_pkg_id(pkg_id)
+        record = packages_store.get_package(pkg_id)
+        if not record:
+            raise PackageError(f"Package {pkg_id!r} not found", 404)
+    except PackageError as exc:
+        raise _http_error(exc) from None
+    defs = [d for d in (record.get("settings") or [])
+            if isinstance(d, dict) and d.get("key")]
+    values = record.get("settings_values") or {}
+    masked = {
+        str(d["key"]): "" if d.get("type") == "password" else str(values.get(str(d["key"]), ""))
+        for d in defs
+    }
+    data = record.get("data") or None
+    default_dir = str(packages_store.data_dir(pkg_id)) if data else None
+    return {
+        "package": pkg_id,
+        "settings": defs,
+        "values": masked,
+        "data": data,
+        "data_dir": (str(record.get("data_dir") or default_dir) if data else None),
+        "default_data_dir": default_dir,
+    }
+
+
+@router.post("/{pkg_id}/settings", dependencies=[Depends(require_admin)])
+async def update_package_settings(pkg_id: str, req: SettingsRequest) -> dict:
+    """Change an installed package's install-time settings (login, password, …)
+    and/or its data folder.
+
+    The service is recreated so the new values take effect now; values the form
+    omits keep their stored value (that is how a password stays secret). A new
+    data folder is mounted empty — files are not moved automatically.
+    """
+    try:
+        return await package_installer.apply_settings(pkg_id, req.values, req.data_dir)
     except PackageError as exc:
         raise _http_error(exc) from None
 

@@ -11,6 +11,20 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.35.0] - 2026-11-24
+
+### Added
+
+- **Packages → data folder**: a package can declare where its data lives and
+  EthOS mounts a host folder there instead of a hidden Docker volume. The
+  install dialog and **Installed → Settings** let you pick any folder under
+  `/home`, `/mnt` or `/media` (default: a package-named folder in the EthOS data
+  store), so app data can live on a data disk and be handled by Files. Changing
+  the folder recreates the service and does not move files; uninstall's “delete
+  package data” honours the chosen folder. Host paths and passwords stay out of
+  the general package list. Grafana 1.2.0 keeps its database and dashboards
+  there.
+
 ## [2.34.1] - 2026-11-24
 
 ### Fixed

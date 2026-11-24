@@ -15,10 +15,12 @@ those act on the whole host and would delete unrelated stacks on a NAS.
 
 import asyncio
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Iterable, Optional
 
+from backend.services import package_env, packages_store
 from backend.services.package_schema import PackageError
 
 logger = logging.getLogger("ethos-nas.services.package_cleanup")
@@ -27,15 +29,16 @@ TIMEOUT = 60
 _PROJECT_LABEL = "com.docker.compose.project"
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT)
+def _run(cmd: list[str], env: Optional[dict] = None) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT, env=env)
 
 
-async def _output(cmd: list[str], *, strict: bool = False) -> str:
+async def _output(cmd: list[str], *, strict: bool = False,
+                  env: Optional[dict] = None) -> str:
     """Run a read-only docker command and return stdout ('' on a tolerated failure)."""
     label = " ".join(cmd[1:3])
     try:
-        proc = await asyncio.to_thread(_run, cmd)
+        proc = await asyncio.to_thread(_run, cmd, env)
     except FileNotFoundError:
         raise PackageError("docker is not available on this system", 503) from None
     except subprocess.TimeoutExpired:
@@ -76,9 +79,12 @@ async def project_volumes(pkg_id: str) -> list[str]:
 
 async def package_image_refs(compose_path: Path, pkg_id: str) -> list[str]:
     """Images referenced by the package's compose file (works while it exists)."""
+    # Data folders/settings reach the compose file as `${VAR}`; without them
+    # `docker compose config` fails on a blank bind source.
+    env = {**os.environ, **package_env.compose_vars(packages_store.get_package(pkg_id))}
     out = await _output([
         "docker", "compose", "-f", str(compose_path), "-p", pkg_id, "config", "--images",
-    ])
+    ], env=env)
     return sorted(set(_lines(out)))
 
 
