@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T20:35:14+00:00",
+  "generated_at": "2026-11-24T21:11:28+00:00",
   "latest": {
-    "version": "2.36.1",
-    "git_sha": "76a8b1a",
-    "git_sha_full": "76a8b1a8233eb948bd9d70114e8848b3b46657a8",
-    "build": 277,
-    "released_at": "2026-11-24T20:35:14+00:00",
-    "notes": "Settings → Packages and package settings: pick the data folder with the shared folder browser instead of typing a path."
+    "version": "2.37.0",
+    "git_sha": "05aa196",
+    "git_sha_full": "05aa196eccab52850f40136325f64c41c41c7503",
+    "build": 279,
+    "released_at": "2026-11-24T21:11:28+00:00",
+    "notes": "Phone PWAs: /videos, /books and /music keep downloading in the background (Chrome Background Fetch) even after switching apps or closing the PWA."
   },
   "releases": [
+    {
+      "version": "2.37.0",
+      "git_sha": "05aa196",
+      "git_sha_full": "05aa196eccab52850f40136325f64c41c41c7503",
+      "build": 279,
+      "released_at": "2026-11-24T21:11:28+00:00",
+      "notes": "Phone PWAs: /videos, /books and /music keep downloading in the background (Chrome Background Fetch) even after switching apps or closing the PWA."
+    },
     {
       "version": "2.36.1",
       "git_sha": "76a8b1a",
@@ -201,14 +209,6 @@
       "build": 216,
       "released_at": "2026-11-22T21:38:28+00:00",
       "notes": "Settings → Updates no longer hangs at \"fetch\": the helper resolves a stale repo owner, reports every failure (EXIT trap) and records its PID so a dead job is finalized with the failing step instead of spinning."
-    },
-    {
-      "version": "2.29.0",
-      "git_sha": "42f6cae",
-      "git_sha_full": "42f6cae6c87a5c47e3211675c219e0ea39db2eb6",
-      "build": 213,
-      "released_at": "2026-11-22T21:14:18+00:00",
-      "notes": "Core apps: Ctrl+K palette, one Services window, SMART history and self-tests, cron next-run preview, live network rates"
     }
   ]
 }
