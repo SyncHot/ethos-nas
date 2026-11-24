@@ -11,6 +11,19 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.34.0] - 2026-11-24
+
+### Added
+
+- **Packages → install settings**: a package can declare install-time fields
+  (an administrator login, a password, a hostname). Package Center shows them in
+  the install dialog and under **Installed → Settings**; EthOS keeps the values
+  with the package record and passes them to the container as environment
+  variables through the signed compose file. Passwords are never returned by the
+  API, and saving a value recreates the service so it applies immediately.
+  Grafana 1.1.0 uses this for its administrator account instead of the built-in
+  `admin/admin`, and InfluxDB-style apps can now offer a real first-run setup.
+
 ## [2.33.0] - 2026-11-23
 
 ### Changed

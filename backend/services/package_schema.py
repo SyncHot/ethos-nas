@@ -245,6 +245,85 @@ def _validate_ui(value: Any) -> Optional[dict]:
             "expose": expose, "auth": auth or None, "ribbon": ribbon}
 
 
+# ── User-supplied settings (optional, compose packages) ────────────────────
+# A manifest may declare values the user fills in at install time (an admin
+# login, a password, a hostname). EthOS keeps the values with the package record
+# and hands them to Compose for `${VAR}` interpolation; the signed compose file
+# stays fixed. Environment names are restricted so a package can never redirect
+# the Docker client (DOCKER_HOST, COMPOSE_*) or EthOS itself (ETHOS_*).
+SETTING_TYPES = ("text", "password")
+_SETTING_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_SETTING_ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_RESERVED_SETTING_ENV = frozenset({
+    "PATH", "HOME", "SHELL", "IFS", "TMPDIR", "USER", "LOGNAME",
+})
+_RESERVED_SETTING_ENV_PREFIXES = (
+    "ETHOS_", "DOCKER_", "COMPOSE_", "LD_", "PYTHON", "BASH", "PERL", "RUBY", "GIT_",
+)
+
+
+def _validate_settings(value: Any) -> list[dict]:
+    """Validate install-time settings; at most 16 string fields per package."""
+    if value in (None, []):
+        return []
+    if not isinstance(value, list):
+        raise PackageError("settings must be a list", 400)
+    if len(value) > 16:
+        raise PackageError("settings may declare at most 16 entries", 400)
+    allowed = {"key", "env", "label", "default", "type", "required", "min_length", "max_length"}
+    out: list[dict] = []
+    keys: set[str] = set()
+    envs: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise PackageError("each settings entry must be an object", 400)
+        unknown = sorted(set(item) - allowed)
+        if unknown:
+            raise PackageError(f"unknown settings field: {unknown[0]}", 400)
+        key = str(item.get("key") or "").strip()
+        if not _SETTING_KEY_RE.fullmatch(key):
+            raise PackageError(f"invalid settings key: {key!r} (lowercase a-z, 0-9, _)", 400)
+        if key in keys:
+            raise PackageError(f"duplicate settings key: {key}", 400)
+        env = str(item.get("env") or "").strip()
+        if not _SETTING_ENV_RE.fullmatch(env):
+            raise PackageError(f"invalid settings env for {key!r}: {env!r}", 400)
+        if env in _RESERVED_SETTING_ENV or env.startswith(_RESERVED_SETTING_ENV_PREFIXES):
+            raise PackageError(f"settings env {env!r} is reserved by EthOS or Docker", 400)
+        if env in envs:
+            raise PackageError(f"duplicate settings env: {env}", 400)
+        setting_type = str(item.get("type") or "text").lower()
+        if setting_type not in SETTING_TYPES:
+            raise PackageError(f"settings type must be text or password: {setting_type!r}", 400)
+        default = item.get("default")
+        default = "" if default is None else str(default)
+        if len(default) > 2048:
+            raise PackageError(f"settings default for {key!r} is too long", 400)
+        try:
+            min_length = int(item.get("min_length") or 0)
+            max_length = int(item.get("max_length") or 256)
+        except (TypeError, ValueError):
+            raise PackageError(f"settings lengths for {key!r} must be integers", 400) from None
+        if not 0 <= min_length <= 1024 or not 1 <= max_length <= 4096 or min_length > max_length:
+            raise PackageError(f"settings lengths for {key!r} are out of range", 400)
+        if default and not min_length <= len(default) <= max_length:
+            # A default that the validator would reject makes every install fail.
+            raise PackageError(f"settings default for {key!r} violates its length limits", 400)
+        out.append({
+            "key": key,
+            "env": env,
+            "label": str(item.get("label") or key).strip()[:80],
+            "type": setting_type,
+            "default": default,
+            "required": bool(item.get("required", False)),
+            "min_length": min_length,
+            "max_length": max_length,
+        })
+        keys.add(key)
+        envs.add(env)
+    return out
+
+
 def _validate_requirement(value: Any, field: str) -> str:
     text = str(value or "").strip()
     if not _REQUIREMENT_RE.fullmatch(text):
@@ -408,6 +487,11 @@ def validate_manifest(manifest: Any, *, allow_legacy: bool = False) -> dict:
 
     files = _validate_files(manifest.get("files"))
     python = _validate_python(manifest, runtime, files)
+    settings = _validate_settings(manifest.get("settings"))
+    if settings and not (compose or legacy_compose):
+        # Settings exist to feed compose interpolation; a files-only package has
+        # nowhere to receive them.
+        raise PackageError("settings require a compose service", 400)
 
     normalized = {
         "schema": 2,
@@ -434,6 +518,7 @@ def validate_manifest(manifest: Any, *, allow_legacy: bool = False) -> dict:
         "compose": compose,
         "files": files,
         "python": python,
+        "settings": settings,
         "ui": _validate_ui(manifest.get("ui")),
         "healthcheck": _validate_ui(manifest.get("healthcheck")),
     }

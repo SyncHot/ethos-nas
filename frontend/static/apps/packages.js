@@ -524,7 +524,57 @@ function _renderInstalled(content) {
     content.querySelectorAll('[data-update]').forEach((btn) => btn.addEventListener('click', () => _update(btn.dataset.update)));
     content.querySelectorAll('[data-open-ui]').forEach((btn) => btn.addEventListener('click', () => _openUi(btn.dataset.openUi)));
     content.querySelectorAll('[data-open-logs]').forEach((btn) => btn.addEventListener('click', () => openLogs({ app: `pkg:${btn.dataset.openLogs}` })));
+    content.querySelectorAll('[data-settings]').forEach((btn) => btn.addEventListener('click', () => _editSettings(btn.dataset.settings)));
     void _renderOrphanData(content);
+}
+
+// Install-time settings a package declares in its manifest (admin login, host,
+// secrets). Values are stored with the package record and reach the service as
+// `${ENV}` interpolation in the signed compose file.
+function _settingDefs(pkg) {
+    return Array.isArray(pkg && pkg.settings)
+        ? pkg.settings.filter((item) => item && item.key && item.env)
+        : [];
+}
+
+function _settingsFields(pkg) {
+    const defs = _settingDefs(pkg);
+    if (!defs.length) return '';
+    const current = (pkg && pkg.settings_values) || {};
+    const rows = defs.map((def) => {
+        const secret = def.type === 'password';
+        const saved = current[def.key];
+        const value = secret ? '' : String(saved !== undefined && saved !== null ? saved : (def.default || ''));
+        const hint = secret
+            ? (saved ? 'stored — leave blank to keep' : 'no value yet')
+            : String(def.default || '');
+        const limits = [def.min_length ? `min ${def.min_length}` : '',
+            def.max_length ? `max ${def.max_length}` : ''].filter(Boolean).join(', ');
+        return `<label style="display:block;margin-top:8px;font-size:12px;color:var(--text-2);">
+            <span style="display:block;margin-bottom:4px;">${escapeHtml(def.label || def.key)}${def.required ? ' *' : ''}</span>
+            <input class="ui-input" style="width:100%;" type="${secret ? 'password' : 'text'}"
+                   name="pkg_setting_${escapeAttr(def.key)}" value="${escapeAttr(value)}"
+                   placeholder="${escapeAttr(hint)}" autocomplete="new-password" spellcheck="false">
+            ${limits ? `<span class="ui-muted" style="font-size:11px;">${escapeHtml(limits)}</span>` : ''}
+        </label>`;
+    }).join('');
+    return `<div class="ui-panel" style="margin-top:10px;padding:10px 12px;">
+        <div style="font-weight:600;font-size:12px;margin-bottom:2px;">Settings</div>
+        <div class="ui-muted" style="font-size:11px;">Passed to the service as environment variables; a stored password is never shown.</div>
+        ${rows}</div>`;
+}
+
+function _collectSettings(pkg, values) {
+    const settings = {};
+    for (const def of _settingDefs(pkg)) {
+        const raw = values[`pkg_setting_${def.key}`];
+        if (raw === undefined) continue;
+        const value = String(raw);
+        if (def.type === 'password' && value === '') continue;  // keep the stored secret
+        if (value === '' && def.default) continue;             // empty = manifest default
+        settings[def.key] = value;
+    }
+    return settings;
 }
 
 function _formatBytes(value) {
@@ -609,13 +659,15 @@ function _installedRow(pkg) {
         ? `<button class="ui-btn small" data-open-ui="${escapeAttr(pkg.id)}">Open UI</button>` : '';
     const openLogsBtn = _pkg.isAdmin
         ? `<button class="ui-btn small" data-open-logs="${escapeAttr(pkg.id)}" data-testid="pkg-logs-${escapeAttr(pkg.id)}" title="Open the unified Logs app filtered to this package">Logs</button>` : '';
+    const settingsBtn = _pkg.isAdmin && _settingDefs(pkg).length
+        ? `<button class="ui-btn small" data-settings="${escapeAttr(pkg.id)}" data-testid="pkg-settings-${escapeAttr(pkg.id)}"${disabled}>Settings</button>` : '';
     return `
         <tr data-testid="pkg-row-${escapeAttr(pkg.id)}">
             <td><div>${_icon(pkg, 20)} ${escapeHtml(pkg.name)}</div><div class="path">${escapeHtml(pkg.id)}</div></td>
             <td class="path">${escapeHtml(pkg.version)}</td>
             <td data-testid="pkg-status-${escapeAttr(pkg.id)}">${_statusBadge(status)}${_healthBadge(health)}</td>
             <td>${escapeHtml(pkg.source_name || pkg.source || 'local')}</td>
-            <td class="actions"><div class="ui-row" style="justify-content:flex-end;">${busyLabel}${openUi}${openLogsBtn}${update}${actions}</div></td>
+            <td class="actions"><div class="ui-row" style="justify-content:flex-end;">${busyLabel}${openUi}${openLogsBtn}${settingsBtn}${update}${actions}</div></td>
         </tr>`;
 }
 
@@ -657,6 +709,7 @@ async function _openDetail(pkgId) {
             <div>I understand that port ${escapeHtml(String(detail.ui.port))} has no login and anyone on my network can open it.</div>
         </label>` : ''}
         ${_pythonRequires(detail).length ? `<div style="font-size:12px;margin-top:6px;">Package environment: ${_pythonRequires(detail).map(escapeHtml).join(', ')} — installed into a private virtualenv from bundled wheels, offline.</div>` : ''}
+        ${canInstall ? _settingsFields(detail) : ''}
         ${(detail.screenshots || []).length ? `<div style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;">${detail.screenshots.map((url) => `<a href="${escapeAttr(url)}" target="_blank" rel="noopener"><img src="${escapeAttr(url)}" alt="" style="height:90px;border-radius:8px;"></a>`).join('')}</div>` : ''}
         ${detail.installed && _pkg.isAdmin ? `<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn-ghost" data-testid="pkg-detail-logs" style="font-size:12px;padding:4px 10px;">📋 Open logs for ${escapeHtml(detail.name)}</button>${detail.runtime === 'compose' && detail.ui && detail.ui.port ? `<button class="btn-ghost" data-testid="pkg-detail-repair-ports" style="font-size:12px;padding:4px 10px;" title="Re-publish this package on a free port when another service took its port">🔌 Repair ports</button>` : ''}</div>` : ''}`;
     await showFormModal({
@@ -684,7 +737,8 @@ async function _openDetail(pkgId) {
                         setTimeout(() => { _uninstall(detail.id); }, 0);
                         return false;
                     }
-                    await _startJob(canUpdate ? 'update' : 'install', detail);
+                    await _startJob(canUpdate ? 'update' : 'install', detail,
+                        canInstall ? _collectSettings(detail, values) : null);
                     return true;
                 } catch (err) {
                     setError(err.detail || err.message);
@@ -717,6 +771,39 @@ async function _install(pkgId) {
     if (!pkg) return;
     try {
         await _startJob('install', pkg);
+    } catch (err) {
+        addNotification(err.detail || err.message, 'error');
+    }
+}
+
+async function _editSettings(pkgId) {
+    const pkg = _pkg.installed.find((item) => item.id === pkgId)
+        || _pkg.catalog.find((item) => item.id === pkgId);
+    if (!pkg) return;
+    try {
+        await showFormModal({
+            title: `Settings — ${pkg.name}`,
+            width: '520px',
+            confirmLabel: 'Save settings',
+            bodyHtml: `<p class="ui-muted" style="font-size:12px;margin:0;">Changing a value recreates the service so it takes effect now.</p>${_settingsFields(pkg)}`,
+            onSubmit: async (values, { setError }) => {
+                try {
+                    const result = await apiJsonFetch(`/api/packages/${encodeURIComponent(pkg.id)}/settings`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ values: _collectSettings(pkg, values) }),
+                    });
+                    addNotification(result.changed
+                        ? `${pkg.name} settings saved${result.recreated ? ' — service recreated' : ''}`
+                        : `${pkg.name} settings unchanged`, 'success');
+                    await _loadAll(true);
+                    return true;
+                } catch (err) {
+                    setError(err.detail || err.message);
+                    return false;
+                }
+            },
+        });
     } catch (err) {
         addNotification(err.detail || err.message, 'error');
     }
@@ -776,16 +863,18 @@ async function _updateAll() {
     }
 }
 
-async function _startJob(kind, pkg) {
+async function _startJob(kind, pkg, settings) {
     if (_pkg.job) {
         const current = JOB_TITLES[_pkg.job.kind] || 'Operation';
         throw new Error(`${current} ${_pkg.job.name} is still running`);
     }
+    const installBody = { package_id: pkg.id, source: pkg.source };
+    if (settings && Object.keys(settings).length) installBody.settings = settings;
     const response = kind === 'install'
         ? await apiJsonFetch('/api/packages/install', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ package_id: pkg.id, source: pkg.source }),
+            body: JSON.stringify(installBody),
         })
         : await apiJsonFetch(`/api/packages/${encodeURIComponent(pkg.id)}/update`, { method: 'POST' });
     const jobId = response.job_id;

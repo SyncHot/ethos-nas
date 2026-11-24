@@ -309,17 +309,76 @@ def _compose_cmd(pkg_id: str, path: Path, *args: str) -> list[str]:
     return [*cmd, "-p", pkg_id, *args]
 
 
-def _compose_env() -> dict:
+def _settings_defs(record: Optional[dict]) -> list[dict]:
+    """Settings a package declared (the manifest copy is kept in the record)."""
+    defs = (record or {}).get("settings") or []
+    return [d for d in defs if isinstance(d, dict) and d.get("key") and d.get("env")]
+
+
+def validate_settings_values(definitions: list[dict], provided: Optional[dict], *,
+                             base: Optional[dict] = None,
+                             enforce_required: bool = True) -> dict:
+    """Merge settings over their current values/defaults and validate them.
+
+    `provided` may only contain declared keys. Values are always strings and the
+    declared length limits are enforced here, so a broken client cannot push an
+    oversized value into the package record. Secrets are never logged.
+    """
+    if provided is not None and not isinstance(provided, dict):
+        raise PackageError("Settings must be an object", 400)
+    known = {str(d["key"]) for d in definitions}
+    unknown = sorted({str(key) for key in (provided or {})} - known)
+    if unknown:
+        raise PackageError(f"Unknown setting: {unknown[0]}", 400)
+    merged = {str(key): str(value) for key, value in (base or {}).items() if str(key) in known}
+    merged.update({str(key): str(value) for key, value in (provided or {}).items()})
+    values: dict[str, str] = {}
+    for definition in definitions:
+        key = str(definition["key"])
+        label = str(definition.get("label") or key)
+        value = str(merged.get(key) or definition.get("default") or "")
+        if definition.get("required") and not value:
+            if enforce_required:
+                raise PackageError(f"{label} is required", 400)
+            logger.warning("Package setting %s is empty; the service may refuse to start", key)
+        if value:
+            minimum = int(definition.get("min_length") or 0)
+            maximum = int(definition.get("max_length") or 256)
+            if len(value) < minimum:
+                raise PackageError(f"{label} must be at least {minimum} characters", 400)
+            if len(value) > maximum:
+                raise PackageError(f"{label} must be at most {maximum} characters", 400)
+        values[key] = value
+    return values
+
+
+def settings_env(record: Optional[dict]) -> dict:
+    """Stored settings as compose interpolation variables (never logged)."""
+    definitions = _settings_defs(record)
+    if not definitions:
+        return {}
+    values = validate_settings_values(
+        definitions, None, base=(record or {}).get("settings_values") or {},
+        enforce_required=False,
+    )
+    return {str(d["env"]): values.get(str(d["key"]), "") for d in definitions}
+
+
+def _compose_env(pkg_id: Optional[str] = None) -> dict:
     """Environment for `docker compose`, including the EthOS service identity.
 
     Compose interpolates `${VAR}` from this environment, so a manifest can run its
     container with the same uid/gid as EthOS (`PUID: "${ETHOS_SERVICE_UID}"`) and
     files it creates on /mnt or /media stay editable by the NAS and its accounts.
+    A package's user settings are added too: `${GF_SECURITY_ADMIN_PASSWORD}` in the
+    signed compose file resolves to the value stored with the package record.
     """
     env = dict(os.environ)
     env.setdefault("ETHOS_SERVICE_UID", str(os.getuid()))
     env.setdefault("ETHOS_SERVICE_GID", str(os.getgid()))
     env.setdefault("ETHOS_DATA_DIR", str(settings.DATA_DIR))
+    if pkg_id:
+        env.update(settings_env(packages_store.get_package(pkg_id)))
     return env
 
 
@@ -331,7 +390,7 @@ def _run_compose(cmd: list[str], env: Optional[dict] = None):
 async def _compose(pkg_id: str, path: Path, *args: str) -> None:
     try:
         proc = await asyncio.to_thread(_run_compose, _compose_cmd(pkg_id, path, *args),
-                                       _compose_env())
+                                       _compose_env(pkg_id))
     except FileNotFoundError:
         raise PackageError("docker is not available on this system", 503) from None
     except subprocess.TimeoutExpired as exc:
@@ -431,7 +490,7 @@ async def compose_ps(pkg_id: str, *, is_compose: Optional[bool] = None) -> list[
         proc = await asyncio.to_thread(
             subprocess.run,
             ["docker", "compose", "-p", pkg_id, "ps", "--format", "json", "--all"],
-            capture_output=True, text=True, timeout=20, env=_compose_env(),
+            capture_output=True, text=True, timeout=20, env=_compose_env(pkg_id),
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("compose ps probe failed for %s", pkg_id, exc_info=True)
@@ -522,7 +581,43 @@ async def compose_action(pkg_id: str, action: str) -> dict:
     return {"ok": True, "package": pkg_id, "action": action, "status": status}
 
 
-def _write_record(manifest: dict, entry: dict, source: dict) -> dict:
+async def apply_settings(pkg_id: str, provided: Optional[dict]) -> dict:
+    """Store new settings for an installed package and recreate its service.
+
+    The compose file is signed and fixed; the values reach it through the
+    environment as `${VAR}`. A compose package is force-recreated so a changed
+    value takes effect immediately (`restart` alone keeps the old environment).
+    """
+    check_pkg_id(pkg_id)
+    record = packages_store.get_package(pkg_id)
+    if not record:
+        raise PackageError(f"Package {pkg_id!r} not found", 404)
+    definitions = _settings_defs(record)
+    if not definitions:
+        raise PackageError("This package has no configurable settings", 400)
+    values = validate_settings_values(
+        definitions, provided, base=record.get("settings_values") or {},
+    )
+    if values == (record.get("settings_values") or {}):
+        return {"ok": True, "package": pkg_id, "changed": False, "recreated": False}
+    packages_store.replace_package({
+        **record, "settings_values": values, "settings_updated_at": _now_iso(),
+    })
+    recreated = False
+    path = compose_file(pkg_id)
+    if _runtime(record) == "compose" and path is not None:
+        await _compose(pkg_id, path, "up", "-d", "--force-recreate")
+        recreated = True
+    emit_event("info", f"Package {record.get('name') or pkg_id} settings updated",
+               "Service recreated with the new settings" if recreated
+               else "Settings stored", source="packages")
+    logger.info("Package %s: settings updated (%d field(s), recreated=%s)",
+                pkg_id, len(values), recreated)
+    return {"ok": True, "package": pkg_id, "changed": True, "recreated": recreated}
+
+
+def _write_record(manifest: dict, entry: dict, source: dict,
+                  settings: Optional[dict] = None) -> dict:
     record = {
         **manifest,
         "runtime": manifest.get("runtime") or "compose",
@@ -534,6 +629,7 @@ def _write_record(manifest: dict, entry: dict, source: dict) -> dict:
         "manifest_sha256": entry.get("manifest_sha256"),
         "installed_at": _now_iso(),
         "updated_at": _now_iso(),
+        "settings_values": dict(settings or {}),
     }
     return record
 
@@ -651,13 +747,16 @@ async def _stage_package(entry: dict, job_id: str, manifest: Optional[dict] = No
     return manifest, staging
 
 
-async def install(entry: dict, job_id: str) -> None:
+async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = None) -> None:
     pkg_id = entry["id"]
     if packages_store.get_package(pkg_id):
         raise PackageError(f"Package {pkg_id!r} is already installed", 409)
     manifest = await package_repo.fetch_manifest(entry)
     check_min_ethos_version(manifest, APP_VERSION)
     _installable(manifest)
+    # Reject bad values before a byte is downloaded; defaults apply for fields
+    # the install form left untouched.
+    provided_settings = validate_settings_values(_settings_defs(manifest), provided_settings)
     _preflight_disk(pkg_id)
     # A compose package can be re-mapped to a free port (`_port_plan`); a venv or
     # native one cannot — EthOS starts that process on the exact port itself.
@@ -691,7 +790,7 @@ async def install(entry: dict, job_id: str) -> None:
     shutil.move(str(staging), str(target))
 
     source = next((s for s in packages_store.load_sources() if s.get("url") == entry.get("source")), {})
-    record = _write_record(manifest, entry, source)
+    record = _write_record(manifest, entry, source, provided_settings)
     if compose_file(pkg_id):
         plan = _port_plan(pkg_id, manifest, target)
         record = _apply_port_plan(record, plan)
@@ -767,7 +866,13 @@ async def update(pkg_id: str, job_id: str) -> None:
         shutil.move(str(target), str(backup))
     shutil.move(str(staging), str(target))
     source = next((s for s in packages_store.load_sources() if s.get("url") == entry.get("source")), {})
-    record = _write_record(manifest, entry, source)
+    # Keep the user's settings across an update; a new manifest may add or drop
+    # fields, so only declared keys survive and defaults fill the gaps.
+    preserved = validate_settings_values(
+        _settings_defs(manifest), None,
+        base=(old or {}).get("settings_values") or {}, enforce_required=False,
+    )
+    record = _write_record(manifest, entry, source, preserved)
     if compose_file(pkg_id):
         plan = _port_plan(pkg_id, manifest, target, previous=old.get("port_remap"))
         record = _apply_port_plan(record, plan)

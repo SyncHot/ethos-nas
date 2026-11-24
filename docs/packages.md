@@ -205,6 +205,48 @@ repo/
   (emoji) remains the fallback when no image is set.
 - A non-null `scripts` object is rejected with “Lifecycle scripts are not supported for new installs”.
 
+### Install-time settings (`settings`)
+
+A compose package may declare values the user fills in when installing (an
+administrator login, a password, an external host). Package Center renders one
+field per setting in the install dialog and the same list is editable later from
+**Installed → Settings**; EthOS stores the values with the package record
+(`packages/installed.json`) and hands them to `docker compose` as environment
+variables for `${VAR}` interpolation, so the signed compose file stays fixed.
+
+```json
+"settings": [
+  {"key": "admin_user", "env": "GF_SECURITY_ADMIN_USER", "label": "Admin login",
+   "default": "admin", "required": true, "max_length": 40},
+  {"key": "admin_password", "env": "GF_SECURITY_ADMIN_PASSWORD", "label": "Admin password",
+   "type": "password", "default": "admin", "required": true, "min_length": 5, "max_length": 128}
+]
+```
+
+```yaml
+environment:
+  GF_SECURITY_ADMIN_USER: "${GF_SECURITY_ADMIN_USER:-admin}"
+  GF_SECURITY_ADMIN_PASSWORD: "${GF_SECURITY_ADMIN_PASSWORD:-admin}"
+```
+
+- `key` matches `^[a-z][a-z0-9_]{0,31}$`, `env` matches `^[A-Z][A-Z0-9_]{0,63}$`; at most 16 fields.
+- `type` is `text` or `password`. A password value is never returned by the API: the record keeps
+  it and the form shows only “stored — leave blank to keep”.
+- `required` values must be non-empty; `min_length`/`max_length` (1–4096) are enforced at install
+  and on every change, and a `default` must satisfy them.
+- `env` names starting with `ETHOS_`, `DOCKER_`, `COMPOSE_`, `LD_`, `PYTHON`, `BASH`, `PERL`,
+  `RUBY` or `GIT_` are rejected — they would redirect the Docker client or EthOS itself.
+- Values are strings. On `POST /api/packages/{id}/settings` an omitted key keeps the stored value
+  (that is how a password stays secret); on install an empty value falls back to the manifest
+  default. The endpoint merges the values and recreates the service
+  (`up -d --force-recreate`) because a plain restart keeps the old environment.
+- Always give the compose variable a fallback (`${VAR:-fallback}`): the `docker compose config`
+  probes used during uninstall/cleanup read images without the settings environment.
+- Settings take effect when the container starts. An app that consumes a value only on its first
+  boot (Grafana's admin account, for example) must document that changing a setting later does not
+  rewrite an existing database; it can still be reset in the app itself.
+- Updates keep stored values for keys the new manifest still declares and drop the rest.
+
 ## Runtimes: compose, venv and files
 
 A package declares one runtime; it is inferred when omitted (compose file → `compose`, otherwise

@@ -84,6 +84,8 @@ class InstallRequest(BaseModel):
     model_config = {"extra": "forbid"}
     package_id: str
     source: Optional[str] = None
+    # Values for the manifest's optional `settings` fields (admin login, etc.).
+    settings: dict[str, str] = {}
 
 
 class AddSourceRequest(BaseModel):
@@ -116,11 +118,33 @@ class ActionRequest(BaseModel):
     action: str
 
 
+class SettingsRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    # Only the keys the user edited; omitted fields keep their stored value.
+    values: dict[str, str] = {}
+
+
 # ── Installed packages / desktop icons ──────────────────────────────────────
+
+def _record_view(pkg: dict) -> dict:
+    """Installed record for API clients: secret settings never leave the NAS.
+
+    Text values are returned so the settings form can prefill them; password
+    values are always blank and the UI keeps the stored one unless the user
+    types a new one (an omitted key means "unchanged" to the backend).
+    """
+    values = pkg.get("settings_values") or {}
+    defs = pkg.get("settings") or []
+    masked = {
+        str(d["key"]): "" if d.get("type") == "password" else str(values.get(str(d["key"]), ""))
+        for d in defs if isinstance(d, dict) and d.get("key")
+    }
+    return {**pkg, "settings_values": masked}
+
 
 @router.get("")
 async def list_packages() -> dict:
-    items = packages_store.load_installed()
+    items = [_record_view(p) for p in packages_store.load_installed()]
     return {"packages": items, "items": items, "total": len(items)}
 
 
@@ -354,7 +378,7 @@ async def install_package(req: InstallRequest) -> dict:
     except PackageError as exc:
         raise _http_error(exc) from None
     return _start_job("install", req.package_id,
-                      lambda job_id: package_installer.install(entry, job_id))
+                      lambda job_id: package_installer.install(entry, job_id, req.settings))
 
 
 @router.get("/jobs")
@@ -662,6 +686,19 @@ async def repair_package_ports(pkg_id: str) -> dict:
     """
     try:
         return await package_installer.repair_ports(pkg_id)
+    except PackageError as exc:
+        raise _http_error(exc) from None
+
+
+@router.post("/{pkg_id}/settings", dependencies=[Depends(require_admin)])
+async def update_package_settings(pkg_id: str, req: SettingsRequest) -> dict:
+    """Change an installed package's install-time settings (login, password, …).
+
+    The service is recreated so the new values take effect now; values the form
+    omits keep their stored value (that is how a password stays secret).
+    """
+    try:
+        return await package_installer.apply_settings(pkg_id, req.values)
     except PackageError as exc:
         raise _http_error(exc) from None
 
