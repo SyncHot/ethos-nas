@@ -274,6 +274,12 @@ volumes:
   general `GET /api/packages` list never exposes host paths.
 - Named volumes remain fine for scratch data; use `data` for the state a user cares about. A package
   migration from a named volume must document how to copy the old volume first (Grafana 1.2.0 does).
+- Images that run as a fixed non-root user cannot write to a folder owned by the EthOS service user.
+  Declare that user in the manifest (`"data": {"mount": "/var/lib/grafana", "uid": 472, "gid": 0}`)
+  and EthOS grants it `rwx` with a POSIX ACL (plus a default ACL for new files) — no world-writable
+  folder. Without `setfacl` on the host the folder falls back to 0777 so the service still starts
+  (logged as a warning). The ACL is re-applied on install, update, a settings save, package
+  start/restart and port repair, so an existing install repairs itself on the next start.
 
 ## Runtimes: compose, venv and files
 

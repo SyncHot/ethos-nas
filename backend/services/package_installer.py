@@ -393,8 +393,16 @@ def validate_data_dir(pkg_id: str, value) -> Path:
     return resolved
 
 
-def ensure_data_dir(path: Path) -> None:
-    """Create the data folder; the container's entrypoint fixes ownership."""
+def ensure_data_dir(path: Path, data: Optional[dict] = None) -> None:
+    """Create the data folder and let the container user write to it.
+
+    Some images run as a fixed non-root uid (Grafana 13 is uid 472) and never
+    start as root, so they cannot take ownership of a bind mount the way a named
+    volume allows. EthOS cannot chown either (it is not root), but it owns the
+    folder and can grant exactly that uid/gid through a POSIX ACL without making
+    the folder world-writable. Without `setfacl` the folder falls back to 0777 so
+    the service still starts (logged as a warning).
+    """
     created = not path.exists()
     try:
         path.mkdir(parents=True, exist_ok=True)
@@ -408,6 +416,35 @@ def ensure_data_dir(path: Path) -> None:
         except OSError:
             logger.warning("Could not set permissions on the data folder %s", path,
                            exc_info=True)
+    uid = (data or {}).get("uid")
+    gid = (data or {}).get("gid")
+    if uid is None and gid is None:
+        return
+    entries = []
+    if uid is not None:
+        entries.append(f"u:{int(uid)}:rwx")
+    if gid is not None:
+        entries.append(f"g:{int(gid)}:rwx")
+    args = ["setfacl"]
+    for entry in entries:
+        args += ["-m", entry]
+    for entry in entries:
+        args += ["-m", f"d:{entry}"]
+    args += ["--", str(path)]
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=15)
+        if proc.returncode != 0:
+            raise OSError((proc.stderr or proc.stdout or "setfacl failed").strip())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Could not set the data folder ACL on %s (%s); "
+                       "falling back to world-writable", path, exc)
+        try:
+            path.chmod(0o777)
+        except OSError:
+            logger.warning("Could not relax permissions on %s either", path,
+                           exc_info=True)
+        return
+    logger.info("Data folder %s: ACL granted to uid=%s gid=%s", path, uid, gid)
 
 
 def _compose_env(pkg_id: Optional[str] = None) -> dict:
@@ -586,6 +623,9 @@ async def repair_ports(pkg_id: str) -> dict:
     changed = bool(new_port and new_port != previous_port)
     if changed or plan.get("remap"):
         packages_store.replace_package(updated)
+    if record.get("data"):
+        folder = validate_data_dir(pkg_id, record.get("data_dir"))
+        await asyncio.to_thread(ensure_data_dir, folder, record.get("data"))
     await _compose(pkg_id, compose_file(pkg_id), "up", "-d",
                    *(["--force-recreate"] if changed else []))
     logger.info("Package %s: port repair finished (port %s -> %s, recreated=%s)",
@@ -620,6 +660,11 @@ async def compose_action(pkg_id: str, action: str) -> dict:
     path = compose_file(pkg_id)
     if path is None:
         return {"ok": True, "package": pkg_id, "action": action, "status": "not_configured"}
+    if action in {"start", "restart"} and record and record.get("data"):
+        # Re-assert the folder ACL: an existing install may predate the uid/gid
+        # in the manifest, and a start is the natural moment to repair it.
+        folder = validate_data_dir(pkg_id, record.get("data_dir"))
+        await asyncio.to_thread(ensure_data_dir, folder, record.get("data"))
     args = {"start": ("up", "-d"), "stop": ("down",), "restart": ("up", "-d", "--force-recreate")}[action]
     await _compose(pkg_id, path, *args)
     status = await _status(pkg_id)
@@ -661,8 +706,8 @@ async def apply_settings(pkg_id: str, provided: Optional[dict],
     if record.get("data"):
         updated["data_dir"] = new_dir
     packages_store.replace_package(updated)
-    if record.get("data") and new_dir != current_dir:
-        await asyncio.to_thread(ensure_data_dir, Path(new_dir))
+    if record.get("data"):
+        await asyncio.to_thread(ensure_data_dir, Path(new_dir), record.get("data"))
     recreated = False
     path = compose_file(pkg_id)
     if _runtime(record) == "compose" and path is not None:
@@ -869,7 +914,7 @@ async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = 
                 f"publishing on {plan['ui']} instead",
             )
     if data_folder is not None:
-        await asyncio.to_thread(ensure_data_dir, data_folder)
+        await asyncio.to_thread(ensure_data_dir, data_folder, manifest.get("data"))
         package_jobs.log(job_id, f"data folder ready: {data_folder}")
     packages_store.add_package(record)
     package_jobs.log(job_id, "files deployed")
@@ -964,7 +1009,7 @@ async def update(pkg_id: str, job_id: str) -> None:
                 f"publishing on {plan['ui']} instead",
             )
     if data_folder is not None:
-        await asyncio.to_thread(ensure_data_dir, data_folder)
+        await asyncio.to_thread(ensure_data_dir, data_folder, manifest.get("data"))
         package_jobs.log(job_id, f"data folder ready: {data_folder}")
     packages_store.replace_package(record)
     package_jobs.log(job_id, f"deployed v{manifest['version']}")

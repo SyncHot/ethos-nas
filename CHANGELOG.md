@@ -11,6 +11,18 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.35.1] - 2026-11-24
+
+### Fixed
+
+- **Packages → data folder**: an image that runs as a fixed non-root user
+  (Grafana 13 runs as uid 472) could not write to the folder EthOS creates, so
+  the container restarted in a loop. A manifest can now declare
+  `data.uid`/`data.gid`; EthOS grants exactly that user access with a POSIX ACL
+  instead of making the folder world-writable, and re-applies it on install,
+  update, a settings save, package start/restart and port repair. Grafana 1.3.0
+  uses it.
+
 ## [2.35.0] - 2026-11-24
 
 ### Added

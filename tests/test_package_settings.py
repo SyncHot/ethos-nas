@@ -5,6 +5,8 @@ Covers the manifest schema, value validation (defaults, required, length limits)
 compose interpolation environment and the API redaction of stored passwords.
 """
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -152,6 +154,33 @@ check("data on a files-only package rejected",
           **BASE, "compose": None, "data": DATA,
           "files": [{"url": "https://example.test/a.txt", "sha256": HEX, "path": "a.txt"}],
       })))
+check("data uid/gid normalized",
+      validate_manifest({**BASE, "data": {**DATA, "uid": 472, "gid": 0}})["data"]
+      == {**DATA, "uid": 472, "gid": 0})
+check("negative data uid rejected",
+      rejects(lambda: validate_manifest({**BASE, "data": {**DATA, "uid": -1}})))
+check("non-integer data uid rejected",
+      rejects(lambda: validate_manifest({**BASE, "data": {**DATA, "uid": "grafana"}})))
+check("out-of-range data uid rejected",
+      rejects(lambda: validate_manifest({**BASE, "data": {**DATA, "uid": 2**31}})))
+
+acl_root = Path(tempfile.mkdtemp(prefix="ethos-data-acl-"))
+acl_dir = acl_root / "grafana" / "data"
+package_installer.ensure_data_dir(acl_dir, {"uid": 472, "gid": 0})
+check("nested data folder created", acl_dir.is_dir())
+if shutil.which("setfacl") and shutil.which("getfacl"):
+    acl = subprocess.run(["getfacl", "-cp", str(acl_dir)], capture_output=True,
+                         text=True).stdout
+    check("container uid gets write access", "user:472:rwx" in acl, acl)
+    check("new files inherit the uid ACL", "default:user:472:rwx" in acl, acl)
+    plain = acl_root / "plain"
+    package_installer.ensure_data_dir(plain, {"mount": "/data"})
+    plain_acl = subprocess.run(["getfacl", "-cp", str(plain)], capture_output=True,
+                               text=True).stdout
+    check("no uid ACL without a manifest uid", "user:472" not in plain_acl, plain_acl)
+else:
+    check("without setfacl the folder is world-writable",
+          (acl_dir.stat().st_mode & 0o777) == 0o777)
 default_dir = package_installer.validate_data_dir("grafana", None)
 check("empty value means the default folder",
       default_dir == packages_store.data_dir("grafana")

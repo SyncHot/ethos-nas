@@ -334,15 +334,33 @@ def _validate_data(value: Any) -> Optional[dict]:
         return None
     if not isinstance(value, dict):
         raise PackageError("data must be an object with a mount path", 400)
-    unknown = sorted(set(value) - {"mount", "label"})
+    unknown = sorted(set(value) - {"mount", "label", "uid", "gid"})
     if unknown:
         raise PackageError(f"unknown data field: {unknown[0]}", 400)
     mount = str(value.get("mount") or "").strip()
     if not mount.startswith("/") or ".." in PurePosixPath(mount).parts:
         raise PackageError("data.mount must be an absolute path inside the container", 400)
+
+    def _id(name: str) -> Optional[int]:
+        raw = value.get(name)
+        if raw is None:
+            return None
+        try:
+            number = int(raw)
+        except (TypeError, ValueError):
+            raise PackageError(f"data.{name} must be an integer", 400) from None
+        if not 0 <= number <= 2**31 - 1:
+            raise PackageError(f"data.{name} is out of range", 400)
+        return number
+
     return {
         "mount": mount[:200],
         "label": str(value.get("label") or "Data folder").strip()[:80] or "Data folder",
+        # Images that run as a fixed non-root uid (Grafana 13 is 472) cannot
+        # write to a folder owned by the EthOS service user; the installer
+        # grants this uid/gid access with a POSIX ACL.
+        "uid": _id("uid"),
+        "gid": _id("gid"),
     }
 
 
