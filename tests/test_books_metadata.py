@@ -240,6 +240,21 @@ def run() -> int:
         server.server_close()
         os.environ.pop("ETHOS_BOOKS_ENRICH_BASE", None)
 
+    print("G. protected titles")
+    established = {"title": "Basia Wielka ksiega", "author": "Zofia Stanecka", "fields_manual": []}
+    near = {"title": "Basia. Wielka księga pytań", "author": "Zofia Stanecka & Marianna Oklejak",
+            "description": "Opis", "genres": ["Dla dzieci"]}
+    service._apply_enrichment(established, near)
+    check("near-miss keeps the title", established["title"] == "Basia Wielka ksiega", established["title"])
+    check("near-miss keeps the author", established["author"] == "Zofia Stanecka", established["author"])
+    check("near-miss still fills the description", established.get("description") == "Opis")
+    diacritics = {"title": "Ciecie", "author": "Jo Nesbo", "fields_manual": []}
+    service._apply_enrichment(diacritics, {"title": "Cięcie", "author": "Jo Nesbø"})
+    check("same title with diacritics corrected", diacritics["title"] == "Cięcie", diacritics["title"])
+    picked = {"title": "Stary", "author": "Ktoś", "fields_manual": []}
+    service._apply_enrichment(picked, {"title": "Nowy", "author": "Ktoś Inny"}, force=True)
+    check("a hand-picked candidate wins", picked["title"] == "Nowy", picked["title"])
+
     passed = sum(1 for _, ok, _ in RESULTS if ok)
     print(f"\n{passed}/{len(RESULTS)} passed")
     return 0 if passed == len(RESULTS) else 1
