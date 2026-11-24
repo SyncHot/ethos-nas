@@ -264,14 +264,102 @@ button, input, select { font: inherit; color: inherit; }
 .bk-cover {
     position: relative;
     aspect-ratio: 2 / 3;
-    background: linear-gradient(160deg, var(--bk-card-2), rgba(200, 112, 62, 0.18));
+    overflow: hidden;
+    isolation: isolate;
+    background: var(--bk-card-2);
+    display: flex;
+    align-items: stretch;
+}
+
+.bk-cover img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.bk-cover .fallback {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 5px;
+    padding: 14px 12px 14px 17px;
+    color: #fff;
+}
+
+.bk-cover .fb-initials {
+    margin-bottom: auto;
+    align-self: flex-start;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 38px;
+    font-weight: 700;
+    line-height: 1;
+    color: rgba(255, 255, 255, 0.84);
+}
+
+.bk-cover .fb-title {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.25;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.bk-cover .fb-author {
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.78);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* A slim spine makes a missing cover read as a book jacket, not a broken image. */
+.bk-cover:not(.has-cover)::after {
+    content: "";
+    position: absolute;
+    inset: 1px auto 1px 1px;
+    width: 6px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, rgba(0, 0, 0, 0.30), rgba(255, 255, 255, 0.08));
+    z-index: 2;
+}
+
+.bk-cover.has-cover .fallback { display: none; }
+
+/* Jacket tones for titles without artwork (muted, both themes). */
+.bk-cover.tone-0, .thumb.tone-0 { background: linear-gradient(155deg, #8a5a3b, #3c2417); }
+.bk-cover.tone-1, .thumb.tone-1 { background: linear-gradient(155deg, #52657f, #24303f); }
+.bk-cover.tone-2, .thumb.tone-2 { background: linear-gradient(155deg, #6b7a4a, #2d341c); }
+.bk-cover.tone-3, .thumb.tone-3 { background: linear-gradient(155deg, #7c5368, #34202c); }
+.bk-cover.tone-4, .thumb.tone-4 { background: linear-gradient(155deg, #4a7a76, #1d3532); }
+.bk-cover.tone-5, .thumb.tone-5 { background: linear-gradient(155deg, #a08256, #4a3520); }
+
+.thumb { overflow: hidden; }
+.thumb .fallback {
     display: flex;
     align-items: center;
     justify-content: center;
+    width: 100%;
+    height: 100%;
 }
-
-.bk-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.bk-cover .fallback { font-size: 34px; opacity: 0.7; }
+.thumb .fb-initials {
+    margin: 0;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 22px;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.86);
+}
+.thumb .fb-title, .thumb .fb-author { display: none; }
 
 .bk-badge {
     position: absolute;
@@ -287,7 +375,32 @@ button, input, select { font: inherit; color: inherit; }
     text-transform: uppercase;
 }
 
-.bk-badge.is-local { left: auto; right: 8px; background: rgba(28, 122, 66, 0.85); }
+.bk-badge.is-local { background: rgba(28, 122, 66, 0.9); }
+.bk-badge.is-partial { background: rgba(200, 112, 62, 0.94); }
+.bk-badge.is-online {
+    background: rgba(0, 0, 0, 0.42);
+    color: rgba(255, 255, 255, 0.78);
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    text-transform: none;
+}
+.bk-cover-status { position: absolute; top: 8px; right: 8px; z-index: 3; }
+.bk-cover-status .bk-badge { position: static; }
+
+.bk-dl-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 0 0;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.bk-dl-status.is-local { color: #2f8f58; background: rgba(28, 122, 66, 0.14); }
+:root.dark .bk-dl-status.is-local { color: #6fe0a1; }
+.bk-dl-status.is-partial { color: var(--bk-gold); background: var(--bk-accent-soft); }
+.bk-dl-status.is-online { color: var(--bk-sub); background: var(--bk-card-2); }
 
 .bk-card-body { display: grid; gap: 2px; padding: 0 10px 10px; }
 .bk-card-title {
@@ -329,6 +442,7 @@ button, input, select { font: inherit; color: inherit; }
 
 .bk-item:active { background: var(--bk-card-2); }
 .bk-item img, .bk-item .thumb {
+    position: relative;
     width: 56px;
     height: 76px;
     border-radius: 8px;
@@ -729,6 +843,7 @@ button, input, select { font: inherit; color: inherit; }
 
 .bk-detail { display: grid; grid-template-columns: 96px 1fr; gap: 14px; align-items: start; }
 .bk-detail img, .bk-detail .thumb {
+    position: relative;
     width: 96px;
     height: 132px;
     border-radius: 10px;

@@ -120,6 +120,11 @@ spec: [`docs/books-pwa.md`](books-pwa.md). Folder management and scanning stay i
 - **Vendored libraries.** epub.js 0.3.93 (BSD-2), JSZip 3.10.1 (MIT), pdf.js 3.11.174 (Apache-2.0);
   pinned by `sha256` in the signed manifest, licenses shipped in `frontend/vendor/`.
 - **PDF covers** are rendered during the scan (page one, ≤ 80 PDFs per pass).
+- **Cover sources, in order:** embedded EPUB metadata → embedded audio art (ID3 APIC / `covr`) →
+  folder artwork (`cover.*`, `folder.*`, `front.*`, `frontcover.*`, `poster.*`, `smallcover.*`,
+  `okladka.*`, or an image named after the file/folder; generic names only when the directory
+  holds a single title) → rendered PDF page one. Folder images are read through
+  `/api/files/raw`, capped at 500 KB and posted through `books/{id}/cover` like any other cover.
 - **Android parity:** not applicable — no Android Books app exists; nothing to mirror.
 
 ## Status

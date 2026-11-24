@@ -43,10 +43,15 @@ and the phone still goes through `/api/files/raw` (path scope) and the package p
 
 ## Features
 
-- **Biblioteka** — cover grid with search, "Wszystko / Audiobooki / Książki i PDF / Skończone"
-  filters, sorting (title, author, newest, size) and a shared-titles section; a title opens a
-  detail sheet. The grid renders 60 cards at a time with a "Pokaż więcej" step and loads covers
-  only when visible (four at a time), so a 20 000-title library stays responsive.
+- **Biblioteka** — cover grid with search, "Wszystko / Audiobooki / Książki i PDF / Na telefonie /
+  Skończone" filters, sorting (title, author, newest, size) and a shared-titles section; a title
+  opens a detail sheet. The grid renders 60 cards at a time with a "Pokaż więcej" step and loads
+  covers only when visible (four at a time), so a 20 000-title library stays responsive. Every
+  card carries its device state: a green **✓ Offline** pill for a finished download, **↓ n%**
+  while it is being fetched and a quiet **Online** pill otherwise (the same state is spelled out
+  in the detail sheet). Missing artwork renders as a typographic book jacket — a deterministic
+  gradient tone with the title, author and initial — instead of an emoji placeholder, and the
+  pills stay visible even when a title has no cover at all.
 - **Słucham** — everything in progress, newest first, with a position bar and total length
   (durations come from the package since 1.2.0).
 - **Pobrane** — device storage, per-title progress, **Anuluj** for a running transfer, **Ponów**
@@ -57,6 +62,9 @@ and the phone still goes through `/api/files/raw` (path scope) and the package p
 - **Android Back** closes the detail sheet, reader or player instead of leaving the app (the
   overlays are history entries).
 - **No scanning.** Folders and scans stay in the desktop window; an empty library explains that.
+  The package scan (1.4.0+) also collects folder artwork for titles without embedded art:
+  `cover.*`, `folder.*`, `front.*`, `frontcover.*`, `poster.*`, `smallcover.*`, `okladka.*` or an
+  image named after the book file/folder (generic names only when the folder holds one title).
 
 Navigation is `?view=…` inside the single `/books` path, so the worker only has one shell to keep.
 

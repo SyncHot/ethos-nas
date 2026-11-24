@@ -11,6 +11,24 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.38.2] - 2026-11-24
+
+### Changed
+
+- **Books: what is already on the phone**: every library card and list row now
+  shows its device state — a green **✓ Offline** pill, **↓ n%** while it is being
+  fetched, or a quiet **Online** pill — and a **Na telefonie** filter lists the
+  titles stored on the device. The detail sheet spells the state out next to the
+  size.
+- **Books: nicer covers**: titles without artwork render as typographic book
+  jackets (deterministic gradient, title, author, initial, spine) instead of an
+  emoji placeholder, and the status pills stay visible even when a cover is
+  missing.
+- **Books package 1.4.0** (Package Center): a scan now picks covers from the
+  folder — `cover.jpg`, `folder.jpg`, `front.jpg`, `okladka.*` or an image named
+  after the book file/folder — when a title has no embedded art; a PDF folder
+  cover replaces the rendered first page. Update the package to get it.
+
 ## [2.38.1] - 2026-11-24
 
 ### Fixed

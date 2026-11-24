@@ -126,16 +126,42 @@ function progressFor(book) {
     return (state.library.progress || {})[book?.id] || null;
 }
 
-function coverHtml(book, className = 'bk-cover') {
-    const fallback = isAudiobook(book) ? '🎧' : '📖';
-    return `<span class="${className}" data-cover="${esc(book.id)}"><span class="fallback">${fallback}</span></span>`;
+function downloadState(book) {
+    if (offline.isDownloaded(book)) {
+        return { key: 'local', label: '✓ Na telefonie', pill: '✓ Offline' };
+    }
+    const partial = offline.downloadPercent(book);
+    if (partial > 0) return { key: 'partial', label: `Pobieranie: ${partial}%`, pill: `↓ ${partial}%` };
+    return { key: 'online', label: 'Tylko online — pobierz, aby czytać bez sieci', pill: 'Online' };
 }
 
-function badgesHtml(book) {
-    const local = offline.isDownloaded(book);
-    const audio = isAudiobook(book);
-    return `${audio ? '<span class="bk-badge">Audio</span>' : ''}`
-        + `${local ? '<span class="bk-badge is-local" title="Pobrane na telefon">⤓</span>' : ''}`;
+function statusPillHtml(book) {
+    const { key, pill } = downloadState(book);
+    const title = key === 'local' ? 'Pobrane na telefon'
+        : key === 'partial' ? 'Pobieranie na telefon' : 'Dostępne tylko online';
+    return `<span class="bk-badge is-${key}" title="${title}">${pill}</span>`;
+}
+
+function coverHtml(book, className = 'bk-cover') {
+    const title = book?.title || baseName(book?.path || '') || '';
+    const author = book?.author || '';
+    const initials = (title || author || '?').trim().slice(0, 1).toUpperCase();
+    let hash = 0;
+    for (let index = 0; index < title.length; index += 1) {
+        hash = (hash * 31 + title.charCodeAt(index)) >>> 0;
+    }
+    const badges = className === 'bk-cover'
+        ? `${isAudiobook(book) ? '<span class="bk-badge is-audio">Audio</span>' : ''}`
+          + `<span class="bk-cover-status" data-book="${esc(book.id)}">${statusPillHtml(book)}</span>`
+        : '';
+    return `<span class="${className} tone-${hash % 6}" data-cover="${esc(book.id)}">
+        <span class="fallback" aria-hidden="true">
+          <span class="fb-initials">${esc(initials)}</span>
+          <span class="fb-title">${esc(title)}</span>
+          <span class="fb-author">${esc(author)}</span>
+        </span>
+        ${badges}
+      </span>`;
 }
 
 /** Cover object URLs are async (IndexedDB, then the package proxy). */
@@ -178,9 +204,32 @@ async function paintCover(node) {
     const book = bookById(node.dataset.cover);
     if (!book) return;
     const url = await offline.coverUrl(book);
-    if (!url || !node.isConnected) return;
-    node.innerHTML = `<img src="${esc(url)}" alt="" loading="lazy" decoding="async">`
-        + (node.classList.contains('bk-cover') ? badgesHtml(book) : '');
+    if (!url || !node.isConnected || node.querySelector('img')) return;
+    // Keep the typographic fallback and the status pills in the DOM: the
+    // image simply covers the fallback, so a missing cover never removes the
+    // downloaded/online badge.
+    const img = document.createElement('img');
+    img.alt = '';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.src = url;
+    node.insertBefore(img, node.firstChild);
+    node.classList.add('has-cover');
+}
+
+/** Refresh download pills in place — the grid is not rebuilt on every byte. */
+function refreshDownloadBadges() {
+    for (const node of document.querySelectorAll('.bk-cover-status[data-book]')) {
+        const book = bookById(node.dataset.book);
+        if (book) node.innerHTML = statusPillHtml(book);
+    }
+    for (const node of document.querySelectorAll('[data-dl-status]')) {
+        const book = bookById(node.dataset.dlStatus);
+        if (!book) continue;
+        const next = downloadState(book);
+        node.className = `bk-dl-status is-${next.key}`;
+        node.textContent = next.label;
+    }
 }
 
 function fmtDuration(seconds) {
@@ -347,6 +396,7 @@ async function startApp({ offlineOnly = false, cached = null } = {}) {
     showApp();
     state.offlineOnly = offlineOnly;
     await offline.initOffline(() => {
+        refreshDownloadBadges();
         if (state.view === 'downloads' || state.view === 'settings') renderView();
     });
     if (offlineOnly && cached) {
@@ -414,6 +464,7 @@ function visibleBooks() {
         if (!matchesQuery(book, state.query)) return false;
         if (state.filter === 'audiobooks') return isAudiobook(book);
         if (state.filter === 'books') return !isAudiobook(book);
+        if (state.filter === 'downloaded') return offline.isDownloaded(book);
         if (state.filter === 'finished') return !!progressFor(book)?.finished;
         return true;
     }));
@@ -460,7 +511,8 @@ function renderLibrary() {
       <input class="bk-input" id="bk-search" type="search" placeholder="Szukaj tytułu lub autora…"
              value="${esc(state.query)}" data-testid="books-search" autocomplete="off">
       <div class="bk-row" style="margin:10px 0 12px;flex-wrap:wrap">
-        ${[['all', 'Wszystko'], ['audiobooks', 'Audiobooki'], ['books', 'Książki i PDF'], ['finished', 'Skończone']].map(([key, label]) => `
+        ${[['all', 'Wszystko'], ['audiobooks', 'Audiobooki'], ['books', 'Książki i PDF'],
+            ['downloaded', 'Na telefonie'], ['finished', 'Skończone']].map(([key, label]) => `
           <button class="bk-btn small${state.filter === key ? ' primary' : ''}" type="button"
                   data-act="filter" data-filter="${key}">${label}</button>`).join('')}
         <select class="bk-select" id="bk-sort" aria-label="Sortowanie" data-testid="books-sort"
@@ -507,6 +559,7 @@ function itemHtml(book, shared = false) {
     const progress = progressFor(book);
     const value = percentOf(book, progress);
     const audio = isAudiobook(book);
+    const local = offline.isDownloaded(book);
     const sub = audio
         ? `${progress ? `Rozdział ${(Number(progress.locator) || 0) + 1} · ${fmtTime(progress.position_s)}` : `${bookTracks(book).length} rozdziałów`}`
         : (book.series || book.author || 'Książka');
@@ -519,7 +572,7 @@ function itemHtml(book, shared = false) {
           <span class="bk-item-sub">${esc(sub)}${lengthText ? ` · ${esc(lengthText)}` : ''}</span>
           ${value > 0 ? `<span class="bk-progress" style="margin-top:4px"><i style="width:${value}%"></i></span>` : ''}
         </span>
-        <span class="bk-item-side">${shared ? 'tylko odczyt' : `${value}%`}</span>
+        <span class="bk-item-side">${shared ? 'tylko odczyt' : local ? '✓ offline' : `${value}%`}</span>
       </button>`;
 }
 
@@ -684,6 +737,7 @@ function openSheet(book) {
     const tracks = bookTracks(book);
     const downloaded = offline.isDownloaded(book);
     const partial = offline.downloadPercent(book);
+    const dl = downloadState(book);
     els.sheetTitle.textContent = book.title || baseName(book.path);
     els.sheetBody.innerHTML = `
       <div class="bk-detail">
@@ -693,6 +747,7 @@ function openSheet(book) {
           <p>${esc(book.author || 'Nieznany autor')}</p>
           ${book.series ? `<p>${esc(book.series)}${book.series_index ? ` · tom ${esc(book.series_index)}` : ''}</p>` : ''}
           <p>${audio ? `${tracks.length} rozdziałów` : String(book.format || '').toUpperCase()} · ${esc(fmtBytes(book.size))}${fmtDuration(book.duration_s) ? ` · ${esc(fmtDuration(book.duration_s))}` : ''}</p>
+          <p class="bk-dl-status is-${dl.key}" data-dl-status="${esc(book.id)}">${esc(dl.label)}</p>
           ${value > 0 ? `<p>${value}%${audio && progress ? ` · rozdział ${(Number(progress.locator) || 0) + 1}, ${esc(fmtTime(progress.position_s))}` : ''}</p>` : ''}
         </div>
       </div>
