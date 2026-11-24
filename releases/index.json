@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T21:32:59+00:00",
+  "generated_at": "2026-11-24T21:36:32+00:00",
   "latest": {
-    "version": "2.38.0",
-    "git_sha": "d4098ee",
-    "git_sha_full": "d4098ee533bb3682c3b288e40846b84f70ce6d78",
-    "build": 281,
-    "released_at": "2026-11-24T21:32:59+00:00",
-    "notes": "Downloads: archive files (zip, tar.*, rar, 7z) now unpack themselves and their source volumes are removed by default"
+    "version": "2.38.1",
+    "git_sha": "2cee53c",
+    "git_sha_full": "2cee53c2b9766b3a19e94817131ac964070934f6",
+    "build": 284,
+    "released_at": "2026-11-24T21:36:32+00:00",
+    "notes": "Downloads: archive extraction and source cleanup stay on by default, without overwriting a settings save that races the one-time migration"
   },
   "releases": [
+    {
+      "version": "2.38.1",
+      "git_sha": "2cee53c",
+      "git_sha_full": "2cee53c2b9766b3a19e94817131ac964070934f6",
+      "build": 284,
+      "released_at": "2026-11-24T21:36:32+00:00",
+      "notes": "Downloads: archive extraction and source cleanup stay on by default, without overwriting a settings save that races the one-time migration"
+    },
     {
       "version": "2.38.0",
       "git_sha": "d4098ee",
@@ -201,14 +209,6 @@
       "build": 220,
       "released_at": "2026-11-22T21:47:58+00:00",
       "notes": "Packages: uninstalling a window-only package (Cameras) can now delete its configuration, and leftover core state is reclaimable under Unused package data"
-    },
-    {
-      "version": "2.29.2",
-      "git_sha": "e6c3e68",
-      "git_sha_full": "e6c3e68160f3334c74137e80e2d0b3025b9c9adb",
-      "build": 218,
-      "released_at": "2026-11-22T21:45:01+00:00",
-      "notes": "API: typed request bodies reject typos with a 422; file search extracted into a service"
     }
   ]
 }
