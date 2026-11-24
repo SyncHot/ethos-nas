@@ -745,12 +745,16 @@ function openSheet(book) {
         <div>
           <h3>${esc(book.title || baseName(book.path))}</h3>
           <p>${esc(book.author || 'Nieznany autor')}</p>
+          ${book.narrator ? `<p>🎙 ${esc(book.narrator)}</p>` : ''}
           ${book.series ? `<p>${esc(book.series)}${book.series_index ? ` · tom ${esc(book.series_index)}` : ''}</p>` : ''}
+          ${book.year || book.publisher ? `<p>${esc([book.year || '', book.publisher || ''].filter(Boolean).join(' · '))}</p>` : ''}
           <p>${audio ? `${tracks.length} rozdziałów` : String(book.format || '').toUpperCase()} · ${esc(fmtBytes(book.size))}${fmtDuration(book.duration_s) ? ` · ${esc(fmtDuration(book.duration_s))}` : ''}</p>
           <p class="bk-dl-status is-${dl.key}" data-dl-status="${esc(book.id)}">${esc(dl.label)}</p>
           ${value > 0 ? `<p>${value}%${audio && progress ? ` · rozdział ${(Number(progress.locator) || 0) + 1}, ${esc(fmtTime(progress.position_s))}` : ''}</p>` : ''}
         </div>
       </div>
+      ${book.description ? `<p class="bk-sheet-desc">${esc(book.description)}</p>` : ''}
+      ${book.source_url ? `<p class="bk-muted" style="font-size:12px">Metadane: <a href="${esc(book.source_url)}" target="_blank" rel="noopener noreferrer">${esc(book.source || 'źródło')}</a></p>` : ''}
       <div class="bk-actions">
         <button class="bk-btn primary" type="button" data-act="open" data-id="${esc(book.id)}">
           ${audio ? (value > 0 ? '▶ Słuchaj dalej' : '▶ Słuchaj') : (value > 0 ? '📖 Czytaj dalej' : '📖 Czytaj')}

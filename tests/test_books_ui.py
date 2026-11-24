@@ -137,9 +137,11 @@ def main() -> int:
 
     service_port = free_port()
     installed = Path(DATA) / "packages" / "apps" / "ethos-books"
-    for rel in ("server/main.py", "frontend/app.js", "frontend/vendor/jszip.min.js",
-                "frontend/vendor/epub.min.js", "frontend/vendor/pdf.min.js",
-                "frontend/vendor/pdf.worker.min.js", "icon.svg"):
+    manifest = json.loads((PACKAGE / "manifest.json").read_text(encoding="utf-8"))
+    for item in manifest.get("files") or []:
+        rel = str(item.get("path") or "")
+        if not rel:
+            continue
         target = installed / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(PACKAGE / rel, target)
@@ -156,13 +158,8 @@ def main() -> int:
         "python": {"entry": "server/main.py", "port": service_port, "requirements": [],
                    "requires_python": "3.14", "wheels": []},
         "files": [
-            {"path": "server/main.py", "url": "local", "sha256": "0" * 64, "mode": 420},
-            {"path": "frontend/app.js", "url": "local", "sha256": "0" * 64, "mode": 420},
-            {"path": "frontend/vendor/jszip.min.js", "url": "local", "sha256": "0" * 64, "mode": 420},
-            {"path": "frontend/vendor/epub.min.js", "url": "local", "sha256": "0" * 64, "mode": 420},
-            {"path": "frontend/vendor/pdf.min.js", "url": "local", "sha256": "0" * 64, "mode": 420},
-            {"path": "frontend/vendor/pdf.worker.min.js", "url": "local", "sha256": "0" * 64, "mode": 420},
-            {"path": "icon.svg", "url": "local", "sha256": "0" * 64, "mode": 420},
+            {"path": str(item.get("path")), "url": "local", "sha256": "0" * 64, "mode": 420}
+            for item in manifest.get("files") or [] if item.get("path")
         ],
     })
 

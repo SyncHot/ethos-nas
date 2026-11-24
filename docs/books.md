@@ -121,17 +121,29 @@ spec: [`docs/books-pwa.md`](books-pwa.md). Folder management and scanning stay i
 - **Vendored libraries.** epub.js 0.3.93 (BSD-2), JSZip 3.10.1 (MIT), pdf.js 3.11.174 (Apache-2.0);
   pinned by `sha256` in the signed manifest, licenses shipped in `frontend/vendor/`.
 - **PDF covers** are rendered during the scan (page one, ≤ 80 PDFs per pass).
-- **Cover sources, in order:** embedded EPUB metadata → embedded audio art (ID3 APIC / `covr`) →
-  folder artwork (`cover.*`, `folder.*`, `front.*`, `frontcover.*`, `poster.*`, `smallcover.*`,
-  `okladka.*`, or an image named after the file/folder; generic names only when the directory
-  holds a single title) → rendered PDF page one → **Open Library** for whatever still has none.
-  Folder images are read through `/api/files/raw`, capped at 500 KB and posted through
-  `books/{id}/cover` like any other cover.
-- **Online metadata stays in the service.** The browser cannot read Open Library responses (no
-  CORS), so `POST books/{id}/enrich` calls `openlibrary.org/search.json` with the inferred title
-  (`Author - Title` file names included) and downloads `covers.openlibrary.org` artwork. Fixed host
-  allowlist, 8 s timeout, 2 MB response cap, 250 ms gap between lookups, empty fields only, manual
-  edits never overwritten, `enrich_after_scan` (default on) makes a scan fill what is missing.
+- **Names are parsed offline** in `server/naming.py` (2.0.0): `Author - Title (czyta Narrator)`,
+  `Cykl X Tom N`, scene names (`Author.First.Title.128vbr.EM.2026`) and slugs
+  (`title-author-ebookpoint`). Tags beat the folder name, the folder name beats the file name, and
+  a release folder is never used as an author. Calibre `.opf` sidecars are read when present.
+- **Cover sources, in order:** embedded EPUB metadata → embedded audio art (ID3 APIC, MP4 `covr`,
+  FLAC `METADATA_BLOCK_PICTURE`, OGG) → folder artwork (`cover.*`, `folder.*`, `front.*`,
+  `frontcover.*`, `poster.*`, `smallcover.*`, `okladka.*`, or an image named after the file/folder;
+  generic names only when the directory holds a single title) → rendered PDF page one → the
+  **provider chain** → a deterministic **SVG poster** when nothing is found. Folder images are read
+  through `/api/files/raw`, capped at 500 KB and posted through `books/{id}/cover`.
+- **Online metadata stays in the service.** The browser cannot read provider responses (no CORS),
+  so `POST books/{id}/enrich` runs `server/providers.py`: **Apple Books** (`itunes.apple.com/search`,
+  `media=ebook`, `country=PL`) first, then **Google Books** (keyless quota, optional key) and
+  **Open Library** last. Records fill title, author, narrator, series, year, publisher, ISBN,
+  pages, genres, rating and a description; covers are fetched at up to 600 px (≤ 512 KB). Matching
+  is 65 % title + 35 % author with diacritic folding. HTTPS host allowlist, redirect guard, 8 s
+  timeout, 2 MB JSON cap, 0.35 s gap per provider, 15-minute cooldown after 429/5xx. Manual fields
+  (`fields_manual`) are never overwritten; `enrich_after_scan` (default on) fills what is missing
+  and unmatched titles are retried after 30 days. The **Metadata & cover** panel lists ranked
+  candidates (previews are proxied by the service), applies one, or uploads/removes a cover.
+- **Schema 2** adds `description`, `narrator`, `publisher`, `year`, `isbn`, `pages`, `genres`,
+  `rating`, `source`, `source_id`, `source_url`, `cover_source` and `fields_manual`; version-1
+  stores migrate on the first read, and a rescan keeps provider data, manual fields and covers.
 - **Android parity:** not applicable — no Android Books app exists; nothing to mirror.
 
 ## Status
@@ -149,6 +161,8 @@ spec: [`docs/books-pwa.md`](books-pwa.md). Folder management and scanning stay i
 - [x] Phone PWA `/books`: background playback, offline downloads, EPUB/PDF readers
   ([`docs/books-pwa.md`](books-pwa.md))
 - [x] Open Library enrichment (metadata, covers, automatic after a scan)
+- [x] 2.0.0 metadata: offline name parsing, ID3/MP4/FLAC/OGG tags, schema 2, provider chain
+  (Apple Books → Google Books → Open Library), Metadata & cover panel, generated posters
 
 ## Known gaps / next steps
 
@@ -156,3 +170,6 @@ spec: [`docs/books-pwa.md`](books-pwa.md). Folder management and scanning stay i
 - Shelves/collections, reading statistics, full-text search inside books.
 - MOBI/AZW3 and comic (CBZ) support.
 - PDF text layer (selection/search) — pages are rendered as images today.
+- Archives (`.rar`, `.7z`, `.zip`) are not scanned; the Folders view lists them as unsupported.
+- Metadata providers do not cover audiobook-only Polish releases that never had an ebook edition;
+  a Lubimyczytać adapter would be an opt-in scraping provider (not implemented).

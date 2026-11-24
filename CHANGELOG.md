@@ -11,6 +11,16 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.39.0] - 2026-11-24
+
+### Added
+
+- **Books on the phone: full title details** — the `/books` sheet now shows the narrator,
+  series and volume, year, publisher, a scrollable description and a link to the metadata
+  source. Package `ethos-books` 2.0.0 fills those fields from Apple Books (Poland), Google
+  Books and Open Library, parses real-world folder names and audio tags offline, and draws a
+  generated poster when no cover exists (`docs/books.md`, `docs/books-pwa.md`).
+
 ## [2.38.7] - 2026-11-24
 
 ### Fixed

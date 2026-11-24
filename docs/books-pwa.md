@@ -51,7 +51,9 @@ and the phone still goes through `/api/files/raw` (path scope) and the package p
   while it is being fetched and a quiet **Online** pill otherwise (the same state is spelled out
   in the detail sheet). Missing artwork renders as a typographic book jacket — a deterministic
   gradient tone with the title, author and initial — instead of an emoji placeholder, and the
-  pills stay visible even when a title has no cover at all.
+  pills stay visible even when a title has no cover at all. Since package 2.0.0 the sheet also
+  shows the narrator, series/volume, year, publisher, the description (scrollable) and a link to
+  the source record the metadata came from.
 - **Słucham** — everything in progress, newest first, with a position bar and total length
   (durations come from the package since 1.2.0).
 - **Pobrane** — device storage, per-title progress, **Anuluj** for a running transfer, **Ponów**
@@ -65,8 +67,9 @@ and the phone still goes through `/api/files/raw` (path scope) and the package p
   The package scan (1.4.0+) also collects folder artwork for titles without embedded art:
   `cover.*`, `folder.*`, `front.*`, `frontcover.*`, `poster.*`, `smallcover.*`, `okladka.*` or an
   image named after the book file/folder (generic names only when the folder holds one title).
-  Package 1.5.0 can also fill missing metadata and covers from Open Library; the PWA picks up the
-  new artwork because the cover cache key includes the book's `updated_at`.
+  Package 2.0.0 fills missing metadata and covers through a provider chain (Apple Books, Google
+  Books, Open Library); the PWA picks up the new artwork because the cover cache key includes the
+  book's `updated_at`.
 
 Navigation is `?view=…` inside the single `/books` path, so the worker only has one shell to keep.
 
