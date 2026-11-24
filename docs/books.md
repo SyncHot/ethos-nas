@@ -141,6 +141,9 @@ spec: [`docs/books-pwa.md`](books-pwa.md). Folder management and scanning stay i
   (`fields_manual`) are never overwritten; `enrich_after_scan` (default on) fills what is missing
   and unmatched titles are retried after 30 days. The **Metadata & cover** panel lists ranked
   candidates (previews are proxied by the service), applies one, or uploads/removes a cover.
+- **Self-healing (2.0.1):** before a lookup the service re-parses the path when the stored title
+  is an auto title or the author looks like a release folder, so libraries scanned by 1.5.0 get
+  fixed titles, authors, narrators and series from a metadata refresh even without a rescan.
 - **Schema 2** adds `description`, `narrator`, `publisher`, `year`, `isbn`, `pages`, `genres`,
   `rating`, `source`, `source_id`, `source_url`, `cover_source` and `fields_manual`; version-1
   stores migrate on the first read, and a rescan keeps provider data, manual fields and covers.

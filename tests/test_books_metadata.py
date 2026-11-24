@@ -78,6 +78,14 @@ def run() -> int:
     check("inline narrator", book["narrator"] == "P. Fronczewski", fields(book))
     check("multi-part title", book["title"] == "Saga o Malfoid - Harry Potter i kamień filozoficzny", fields(book))
 
+    book = parsed("Mit motywacji - Jeff Haden")
+    check("title-first name is not an author", book["title"] == "Mit motywacji", fields(book))
+    check("trailing author detected", book["author"] == "Jeff Haden", fields(book))
+
+    book = parsed("Pilip Łukasz - Podwórko bez trzepaka")
+    check("Polish ł folds like l", naming.fold("Łukasz") == "lukasz", naming.fold("Łukasz"))
+    check("surname-first with ł", book["author"] == "Łukasz Pilip", fields(book))
+
     print("B. release names (dotted)")
     book = parsed("Yoda.Hiroko.Osiem.milionow.drog.do.szczescia.136vbrp")
     check("dotted author", book["author"] == "Hiroko Yoda", fields(book))
@@ -171,6 +179,12 @@ def run() -> int:
         check("scan metadata parsed", book["title"] == "Cięcie" and book["author"] == "Jo Nesbø"
               and book["narrator"] == "Mariusz Bonaszewski" and book["series"] == "Harry Hole",
               str({k: book.get(k) for k in ("title", "author", "narrator", "series")}))
+        # Simulate a record written by 1.5.0: title = folder name, author = release name.
+        book["title"] = "Nesbø Jo - Cykl Harry Hole Tom 14 Cięcie (czyta Mariusz Bonaszewski) 128vbr EM (2026)"
+        book["author"] = "Nesbo.Jo.Cykl.Harry.Hole.Tom.14.Ciecie.128vbr.EM.2026"
+        book["narrator"] = ""
+        book["series"] = ""
+        book["series_index"] = 0
         service._save(service.LIBRARY_FILE, {"version": 2, "users": {"marcin": {
             "folders": [{"path": "/mnt/books/audiobooks", "added_at": service._now(),
                           "last_scan": "", "count": 1}],
@@ -186,6 +200,13 @@ def run() -> int:
         check("cover stored", enriched["cover"] is True
               and (TMP / "covers" / f"{book['id']}.jpg").is_file())
         check("cover attributed", enriched["cover_source"] == "apple", enriched.get("cover_source", ""))
+        check("stale title healed", enriched["title"] == "Cięcie", enriched.get("title", ""))
+        check("stale author healed", enriched["author"] == "Jo Nesbø", enriched.get("author", ""))
+        check("narrator from the folder name", enriched["narrator"] == "Mariusz Bonaszewski",
+              enriched.get("narrator", ""))
+        check("series healed", enriched["series"] == "Harry Hole", str(enriched.get("series")))
+        check("query is free of release noise", "128vbr" not in str(result.get("queries")),
+              str(result.get("queries")))
 
         entry = {
             "path": folder, "format": "mp3",
