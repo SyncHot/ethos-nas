@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T21:11:28+00:00",
+  "generated_at": "2026-11-24T21:32:59+00:00",
   "latest": {
-    "version": "2.37.0",
-    "git_sha": "05aa196",
-    "git_sha_full": "05aa196eccab52850f40136325f64c41c41c7503",
-    "build": 279,
-    "released_at": "2026-11-24T21:11:28+00:00",
-    "notes": "Phone PWAs: /videos, /books and /music keep downloading in the background (Chrome Background Fetch) even after switching apps or closing the PWA."
+    "version": "2.38.0",
+    "git_sha": "d4098ee",
+    "git_sha_full": "d4098ee533bb3682c3b288e40846b84f70ce6d78",
+    "build": 281,
+    "released_at": "2026-11-24T21:32:59+00:00",
+    "notes": "Downloads: archive files (zip, tar.*, rar, 7z) now unpack themselves and their source volumes are removed by default"
   },
   "releases": [
+    {
+      "version": "2.38.0",
+      "git_sha": "d4098ee",
+      "git_sha_full": "d4098ee533bb3682c3b288e40846b84f70ce6d78",
+      "build": 281,
+      "released_at": "2026-11-24T21:32:59+00:00",
+      "notes": "Downloads: archive files (zip, tar.*, rar, 7z) now unpack themselves and their source volumes are removed by default"
+    },
     {
       "version": "2.37.0",
       "git_sha": "05aa196",
@@ -201,14 +209,6 @@
       "build": 218,
       "released_at": "2026-11-22T21:45:01+00:00",
       "notes": "API: typed request bodies reject typos with a 422; file search extracted into a service"
-    },
-    {
-      "version": "2.29.1",
-      "git_sha": "c005674",
-      "git_sha_full": "c005674108c01a970f38fefa7b78fed0284d54ff",
-      "build": 216,
-      "released_at": "2026-11-22T21:38:28+00:00",
-      "notes": "Settings → Updates no longer hangs at \"fetch\": the helper resolves a stale repo owner, reports every failure (EXIT trap) and records its PID so a dead job is finalized with the failing step instead of spinning."
     }
   ]
 }
