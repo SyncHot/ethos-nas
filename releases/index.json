@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T22:48:56+00:00",
+  "generated_at": "2026-11-24T22:58:20+00:00",
   "latest": {
-    "version": "2.39.1",
-    "git_sha": "41de72e",
-    "git_sha_full": "41de72e8ec4dc041965efd32367ca0fc12ec1c8f",
-    "build": 303,
-    "released_at": "2026-11-24T22:48:56+00:00",
-    "notes": "Videos: one-tap downloads on the fastest path (copy when the phone can play it, otherwise a quick 480p/720p copy), an Auto default and a cleaner sheet; saving settings no longer resets other options."
+    "version": "2.39.2",
+    "git_sha": "0b81926",
+    "git_sha_full": "0b819269c6571c99f9def36677a7cf90c9064354",
+    "build": 307,
+    "released_at": "2026-11-24T22:58:20+00:00",
+    "notes": "Videos: downloads resume by themselves after a NAS restart or a dropped connection — the Wznów wszystkie button is now only a fallback."
   },
   "releases": [
+    {
+      "version": "2.39.2",
+      "git_sha": "0b81926",
+      "git_sha_full": "0b819269c6571c99f9def36677a7cf90c9064354",
+      "build": 307,
+      "released_at": "2026-11-24T22:58:20+00:00",
+      "notes": "Videos: downloads resume by themselves after a NAS restart or a dropped connection — the Wznów wszystkie button is now only a fallback."
+    },
     {
       "version": "2.39.1",
       "git_sha": "41de72e",
@@ -201,14 +209,6 @@
       "build": 245,
       "released_at": "2026-11-22T22:47:50+00:00",
       "notes": "GET /api/music/state now declares MusicLibraryState (documented library sections, free-form tracks, extra sections preserved)."
-    },
-    {
-      "version": "2.30.2",
-      "git_sha": "9b4c797",
-      "git_sha_full": "9b4c79733e2b1282806409bae80e8631105e9e68",
-      "build": 242,
-      "released_at": "2026-11-22T22:45:12+00:00",
-      "notes": "Download Station RSS scanner moved into services/download_rss.py; same API; new scanner test."
     }
   ]
 }
