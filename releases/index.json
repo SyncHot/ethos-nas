@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T20:26:11+00:00",
+  "generated_at": "2026-11-24T20:35:14+00:00",
   "latest": {
-    "version": "2.36.0",
-    "git_sha": "3dd44ac",
-    "git_sha_full": "3dd44ac664b131560a82559ffa02fa87a01e149b",
-    "build": 275,
-    "released_at": "2026-11-24T20:26:11+00:00",
-    "notes": "Settings → Packages: set the default folder for data of new Docker-based packages (for example on a data disk); installed packages keep their folder."
+    "version": "2.36.1",
+    "git_sha": "76a8b1a",
+    "git_sha_full": "76a8b1a8233eb948bd9d70114e8848b3b46657a8",
+    "build": 277,
+    "released_at": "2026-11-24T20:35:14+00:00",
+    "notes": "Settings → Packages and package settings: pick the data folder with the shared folder browser instead of typing a path."
   },
   "releases": [
+    {
+      "version": "2.36.1",
+      "git_sha": "76a8b1a",
+      "git_sha_full": "76a8b1a8233eb948bd9d70114e8848b3b46657a8",
+      "build": 277,
+      "released_at": "2026-11-24T20:35:14+00:00",
+      "notes": "Settings → Packages and package settings: pick the data folder with the shared folder browser instead of typing a path."
+    },
     {
       "version": "2.36.0",
       "git_sha": "3dd44ac",
@@ -201,14 +209,6 @@
       "build": 213,
       "released_at": "2026-11-22T21:14:18+00:00",
       "notes": "Core apps: Ctrl+K palette, one Services window, SMART history and self-tests, cron next-run preview, live network rates"
-    },
-    {
-      "version": "2.28.8",
-      "git_sha": "814c45c",
-      "git_sha_full": "814c45ce22412ec60af5a12f185d4d4e3383183c",
-      "build": 210,
-      "released_at": "2026-11-22T19:12:45+00:00",
-      "notes": "Camera storage warnings stop when there is nothing to warn about (and when no camera is configured); an unreachable camera no longer restarts ffmpeg every 2 seconds."
     }
   ]
 }
