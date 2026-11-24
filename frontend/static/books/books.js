@@ -1074,6 +1074,7 @@ function wirePublicUi() {
     window.addEventListener('online', () => {
         if (state.offlineOnly) { location.reload(); return; }
         netPill(false);
+        offline.resumeServerErrors();
         offline.flushProgress().catch(() => {});
         refreshLibrary().catch(() => {});
     });
@@ -1081,7 +1082,10 @@ function wirePublicUi() {
     window.addEventListener('pagehide', () => { engine.saveProgress(); offline.flushProgress().catch(() => {}); });
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden') engine.saveProgress();
-        else offline.flushProgress().catch(() => {});
+        else {
+            offline.resumeServerErrors();
+            offline.flushProgress().catch(() => {});
+        }
     });
 
     window.addEventListener('beforeinstallprompt', (event) => {

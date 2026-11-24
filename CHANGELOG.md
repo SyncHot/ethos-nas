@@ -11,6 +11,24 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.38.5] - 2026-11-24
+
+### Added
+
+- **PWAs resume downloads after a NAS restart**: `/videos`, `/music` and
+  `/books` treat network errors and 5xx as temporary — the row stays queued and
+  retries automatically with a 5 s → 2 min backoff, and immediately when the
+  connection returns or the app becomes visible again. Partial video transfers
+  keep resuming with `Range`; a permanent 4xx still offers Retry. A Background
+  Fetch that died with the restart re-queues instead of asking for a tap.
+
+### Fixed
+
+- **Music and Sticky Notes offline with an expired session**: `/music` opens the
+  **Pobrane** view (and the player) instead of the login wall when downloaded
+  tracks are on the device, and `/notes` opens the saved notes with the outbox.
+  Both reload into the normal sign-in once the network returns.
+
 ## [2.38.4] - 2026-11-24
 
 ### Added

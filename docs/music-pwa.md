@@ -64,6 +64,15 @@ applies on the next start. iOS Safari and Firefox have no such API, and a
 refused or stalled job falls back to the in-page resumable transfer described
 below — hence the hint in the Downloads view.
 
+**Expired session offline.** When the JWT expired and the device is offline,
+`/music` opens directly in **Pobrane** instead of the login wall: downloaded
+tracks play from IndexedDB and every server-backed view stays disabled. Once the
+connection returns the page reloads so the normal sign-in runs.
+
+**NAS restart mid-transfer.** Network errors and 5xx are not track failures:
+the row waits with a 5 s → 2 min backoff, and `online` / returning to the tab
+retries immediately. Only a permanent 4xx fails the row.
+
 ### Liked is the playlist „Polubione”
 
 There is no separate liked list any more: the heart adds the track to a real

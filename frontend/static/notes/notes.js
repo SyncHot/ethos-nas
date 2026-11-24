@@ -15,6 +15,7 @@ const BASE = '/api/packages/ethos-sticky-notes/proxy/api/sticky-notes';
 const CHANNEL_NAME = 'ethos-sticky-notes';
 const CACHE_PREFIX = 'ethos-notes-cache:';
 const OUTBOX_PREFIX = 'ethos-notes-outbox:';
+const USER_KEY = 'ethos.notes.user';
 const MAX_OUTBOX = 200;
 const SAVE_DEBOUNCE_MS = 700;
 const COLORS = ['yellow', 'pink', 'blue', 'green', 'orange'];
@@ -52,6 +53,8 @@ const state = {
     outbox: [],
     syncing: false,
     offline: !navigator.onLine,
+    localOnly: false,
+    account: '',
     push: { supported: false, subscription: null },
     installPrompt: null,
     highlight: '',
@@ -91,11 +94,34 @@ function authed() {
 }
 
 function username() {
-    return String(claims()?.username || '').slice(0, 64) || 'anon';
+    const fromClaims = String(claims()?.username || '').slice(0, 64);
+    if (fromClaims) {
+        try { localStorage.setItem(USER_KEY, fromClaims); } catch { /* ignore */ }
+        return fromClaims;
+    }
+    try { return String(localStorage.getItem(USER_KEY) || '').slice(0, 64) || 'anon'; } catch { return 'anon'; }
 }
 
-function cacheKey() { return CACHE_PREFIX + username(); }
-function outboxKey() { return OUTBOX_PREFIX + username(); }
+function accountName() {
+    return state.account || username();
+}
+
+function cacheKey() { return CACHE_PREFIX + accountName(); }
+function outboxKey() { return OUTBOX_PREFIX + accountName(); }
+
+/** Which account's cache can be opened without a valid token (one device, one account). */
+function rememberedAccount() {
+    try {
+        const stored = String(localStorage.getItem(USER_KEY) || '').slice(0, 64);
+        if (stored) return stored;
+        const keys = Object.keys(localStorage).filter((key) => key.startsWith(CACHE_PREFIX));
+        return keys.length === 1 ? keys[0].slice(CACHE_PREFIX.length) : '';
+    } catch { return ''; }
+}
+
+function hasCachedNotes(account) {
+    try { return !!account && localStorage.getItem(CACHE_PREFIX + account) !== null; } catch { return false; }
+}
 
 function showLogin() {
     els.login.hidden = false;
@@ -983,6 +1009,7 @@ function bindEvents() {
     });
 
     window.addEventListener('online', async () => {
+        if (state.localOnly) { location.reload(); return; }
         state.offline = false;
         updateOfflineBanner();
         await syncOutbox();
@@ -995,6 +1022,7 @@ function bindEvents() {
     });
     document.addEventListener('visibilitychange', async () => {
         if (document.visibilityState !== 'visible') return;
+        if (state.localOnly) return;
         if (!state.offline) {
             await syncOutbox();
             await loadRemote();
@@ -1063,6 +1091,21 @@ async function boot() {
     updateInstallButton();
 
     if (!authed()) {
+        // An expired JWT off the grid is a flight, not a sign-out: read the
+        // cached notes of the last account and queue new writes in the outbox.
+        const account = navigator.onLine ? '' : rememberedAccount();
+        if (account && hasCachedNotes(account)) {
+            state.account = account;
+            state.localOnly = true;
+            state.offline = true;
+            showApp();
+            loadOutbox();
+            loadCache();
+            render();
+            updateOfflineBanner();
+            setPill('Offline — zapisane notatki', 'offline');
+            return;
+        }
         showLogin();
         return;
     }

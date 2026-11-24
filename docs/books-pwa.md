@@ -108,6 +108,9 @@ Two stores, mirroring `/videos`:
 - One file at a time; a full device pauses the queue at 92 % usage (persistent storage requested),
   reports through `core/progress.js` and warns through the Notification Center.
 - Every stored file is checked against `Content-Length`; a short body is discarded rather than kept.
+- **NAS restart / dropped link**: network errors and 5xx put the file back in the queue with a
+  5 s → 2 min backoff; `online`, returning to the tab and the next launch retry immediately. A
+  permanent 4xx (file gone) offers **Ponów**.
 - `reconcileDownloads()` re-checks finished rows against Cache Storage on every start. A file the
   browser evicted is marked **missing** (badge gone, "pobierz ponownie") instead of pretending to
   work offline.

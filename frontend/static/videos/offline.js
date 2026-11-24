@@ -39,6 +39,11 @@ let _storage = null;
 const _stalled = new Map();   // id → consecutive attempts without progress
 const _paused = new Set();    // id → gave up, do not auto-retry
 const _bgWatchers = new Map(); // id → live Background Fetch reattach
+const _bgFailed = new Set();   // id → browser-managed attempt failed
+// A NAS restart or a dropped link is not a bad file: keep the row and retry
+// with a backoff instead of pausing it.
+const _retryTimers = new Map();
+const _retryTries = new Map();
 
 function noteAttempt(id, progressed) {
     const count = progressed ? 0 : (_stalled.get(id) || 0) + 1;
@@ -222,6 +227,12 @@ export async function initOffline(onChange) {
             next.status = 'ready';
             next.error = '';
             touched.add(next.id);
+        } else if (next.status === 'waiting') {
+            // A previous NAS outage. Rows that opted into retries come back on
+            // their own; anything else needs an explicit Retry.
+            next.status = next.retry ? 'ready' : 'failed';
+            if (!next.retry && !next.error) next.error = 'The NAS no longer has this download — queue it again';
+            touched.add(next.id);
         } else if (next.status === 'rendering') {
             // The NAS-side render was cut by the reload and keeps running
             // there — the local byte counters mean nothing yet.
@@ -295,7 +306,7 @@ function formatBytes(value) {
 
 // ── server <-> device reconciliation ──────────────────────────────────────
 
-const ACTIVE_STATUSES = new Set(['queued', 'rendering', 'ready', 'downloading']);
+const ACTIVE_STATUSES = new Set(['queued', 'rendering', 'ready', 'downloading', 'waiting']);
 
 function rowFromJob(job) {
     return {
@@ -391,6 +402,9 @@ export async function syncDownloads() {
         // A paused download stays failed with its own error: reconciling it
         // would flip it back to `ready` every poll and restart the loop.
         if (_paused.has(row.id)) continue;
+        // A backoff retry owns the row until its timer fires; a 2 s sync must
+        // not restart a transfer the NAS is still rebooting through.
+        if (row.retry && row.status === 'waiting') continue;
         const job = byId.get(row.id);
         if (!job) {
             if (row.status !== 'done' && row.status !== 'failed') {
@@ -498,9 +512,54 @@ function canBackgroundTransfer(row) {
     // (`_stalled` is bumped so the next attempt skips the browser queue), and
     // partial bytes can only be resumed by the page's Range logic.
     return backgroundDownloadSupported()
+        && !_bgFailed.has(row.id)
         && !(_stalled.get(row.id) >= 1)
         && !(Array.isArray(row.parts) && row.parts.length)
         && !(Number(row.bytesDone) > 0);
+}
+
+function isTransient(error) {
+    if (error?.name === 'QuotaExceededError') return false;
+    const status = Number(error?.status) || 0;
+    if (status >= 400 && status < 500) return false;
+    return true;   // network error, timeout, 5xx or a restarting NAS
+}
+
+function clearRetry(id) {
+    const timer = _retryTimers.get(id);
+    if (timer) clearTimeout(timer);
+    _retryTimers.delete(id);
+}
+
+function scheduleRetry(id) {
+    const row = _downloads.find((entry) => entry.id === id);
+    if (!row) return;
+    const attempt = (_retryTries.get(id) || 0) + 1;
+    _retryTries.set(id, attempt);
+    const delay = [5000, 15000, 30000, 60000, 120000][Math.min(attempt - 1, 4)];
+    clearRetry(id);
+    upsert({ ...row, status: 'waiting', retry: true, error: 'The NAS is unavailable — retrying…' });
+    persistRow(id).catch(() => {});
+    _retryTimers.set(id, setTimeout(() => {
+        _retryTimers.delete(id);
+        const current = _downloads.find((entry) => entry.id === id);
+        if (!current) return;
+        if (navigator.onLine === false) { scheduleRetry(id); return; }
+        upsert({ ...current, status: 'ready', error: '' });
+        persistRow(id).catch(() => {});
+        pumpDownloads();
+    }, delay));
+}
+
+/** Server is back (online event / app visible): retry without waiting. */
+export function resumeServerErrors() {
+    for (const row of _downloads) {
+        if (row.status !== 'waiting' || !row.retry) continue;
+        clearRetry(row.id);
+        upsert({ ...row, status: 'ready', error: '' });
+        persistRow(row.id).catch(() => {});
+    }
+    pumpDownloads();
 }
 
 function downloadUrlFor(row) {
@@ -590,26 +649,34 @@ async function transferRow(row) {
             return;
         }
         if (error?.background) {
-            // Chromium refused or lost the background transfer — retry in the
-            // page. `noteAttempt` makes the next `pumpDownloads()` skip the
-            // browser queue; a second failure pauses the row as usual.
-            noteAttempt(row.id, false);
-            const paused = _paused.has(row.id);
+            // The browser refused or lost the transfer: retry in-page. NAS
+            // restarts surface as network errors there and get a backoff, so
+            // a browser-managed failure must not pause the row.
+            _bgFailed.add(row.id);
             upsert({
                 ...current,
-                status: paused ? 'failed' : 'ready',
+                status: 'ready',
                 bg_tag: '',
                 percent: 0,
                 bytesDone: 0,
                 parts: [],
-                error: paused ? `${message} — tap Retry` : '',
+                error: '',
             });
             await persistRow(row.id);
-            task.finish(paused ? 'failed' : 'cancelled', {
-                detail: paused ? message : 'Background download unavailable — retrying in the app',
-            });
-            if (!paused) setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1500);
+            task.finish('cancelled', { detail: 'Background download unavailable — retrying in the app' });
+            setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1500);
             logWarn('Background download fell back', `${row.path}: ${message}`);
+            return;
+        }
+        if (isTransient(error)) {
+            // NAS restart / network lost: keep the downloaded parts and retry
+            // with a backoff; no manual Retry tap is needed.
+            upsert({ ...current, status: 'waiting', retry: true, error: 'The NAS is unavailable — retrying…' });
+            await persistRow(row.id);
+            task.finish('cancelled', { detail: 'NAS unavailable — will retry' });
+            setTimeout(() => { try { task.dismiss(); } catch { /* ignore */ } }, 1500);
+            scheduleRetry(row.id);
+            logWarn('Download paused until the NAS is back', `${row.path}: ${message}`);
             return;
         }
         // Partial bytes that did reach Cache Storage stay on the row, so a
@@ -630,6 +697,9 @@ async function transferRow(row) {
 
 async function completeTransfer(row, size, task) {
     clearAttempts(row.id);
+    clearRetry(row.id);
+    _retryTries.delete(row.id);
+    _bgFailed.delete(row.id);
     const current = _downloads.find((entry) => entry.id === row.id);
     if (!current) {
         // The user deleted/cancelled the row while the file was streaming.
@@ -650,6 +720,7 @@ async function completeTransfer(row, size, task) {
         finished_at: Date.now(),
         error: '',
         bg_tag: '',
+        retry: false,
     });
     await persistRow(row.id);
     await storePoster(row, row.item || {});
@@ -748,6 +819,9 @@ export async function cancelDownload(id) {
     } catch (error) {
         logWarn('Could not cancel the download', String(error));
     }
+    clearRetry(id);
+    _retryTries.delete(id);
+    _bgFailed.delete(id);
     const index = _downloads.findIndex((entry) => entry.id === id);
     if (index >= 0) {
         const [row] = _downloads.splice(index, 1);
@@ -1057,6 +1131,9 @@ export function srtToVtt(srt) {
 
 export async function deleteDownload(id) {
     const row = _downloads.find((entry) => entry.id === id);
+    clearRetry(id);
+    _retryTries.delete(id);
+    _bgFailed.delete(id);
     stopBackground(row);
     await discardLocalMedia(id);
     try { await dbDelete(id); } catch { /* ignore */ }

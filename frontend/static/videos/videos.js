@@ -18,7 +18,7 @@ import {
     initOffline, downloadsSnapshot, queueDownload, pumpDownloads, syncDownloads,
     cancelDownload, retryDownload, deleteDownload, localMediaUrl, storageInfo,
     refreshStorage, localSubtitle, srtToVtt, saveLocalResume, clearLocalResume,
-    allLocalResumes,
+    allLocalResumes, resumeServerErrors,
 } from './offline.js';
 
 setLogContext({ app: 'videos' });
@@ -1936,7 +1936,10 @@ function bindEvents() {
     document.addEventListener('visibilitychange', () => {
         const player = state.player;
         if (player && document.visibilityState === 'visible' && !els.video.paused) acquireWakeLock(player);
-        if (document.visibilityState === 'visible') syncDownloadState();
+        if (document.visibilityState === 'visible') {
+            resumeServerErrors();
+            syncDownloadState();
+        }
     });
     window.addEventListener('pagehide', () => {
         const player = state.player;
@@ -1967,6 +1970,7 @@ function bindEvents() {
         setOnline(true);
         // Coming back from an offline-only library, re-read the real one.
         if (state.localOnly) { state.localOnly = false; boot(); return; }
+        resumeServerErrors();
         syncResume();
         flushLocalResumes();
     });

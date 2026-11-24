@@ -108,6 +108,7 @@ const ui = {
     installPrompt: null,
     wired: false,
     engineWired: false,
+    localOnly: false,
 };
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -395,17 +396,29 @@ async function persistPlaylists() {
 
 // ── app start ──────────────────────────────────────────────────────────────
 
-async function startApp() {
+async function startApp({ offlineOnly = false } = {}) {
     showApp();
     await offline.initOffline(() => {
         updateDownloadsMenu();
         updatePlaylistBadges();
         if (ui.view === 'downloads' || ui.view === 'settings') renderView();
     });
-    await loadState();
+    if (!offlineOnly) await loadState();
     engine.restoreSession();
     wireEngine();
     wirePublicUi();
+    if (offlineOnly) {
+        // A plane can outlast the JWT: play what is already on the device and
+        // keep every server-backed view out of reach.
+        ui.localOnly = true;
+        setNet(true);
+        if (els.net) { els.net.textContent = 'Offline — pobrane utwory'; }
+        ui.view = 'downloads';
+        renderView();
+        updateMini();
+        updatePlayer();
+        return;
+    }
     const params = new URLSearchParams(location.search);
     const initial = params.get('view');
     const detailId = params.get('id') || '';
@@ -1105,7 +1118,7 @@ function badgeFor(row) {
     if (row.status === 'done') return { text: fmtBytes(row.bytes), cls: '' };
     if (row.status === 'downloading') return { text: 'pobieranie', cls: 'waiting' };
     if (row.status === 'queued') return { text: 'w kolejce', cls: 'waiting' };
-    if (row.status === 'waiting') return { text: 'brak miejsca', cls: 'failed' };
+    if (row.status === 'waiting') return { text: row.retry ? 'ponawiam' : 'brak miejsca', cls: row.retry ? 'waiting' : 'failed' };
     if (row.status === 'failed') return { text: 'błąd', cls: 'failed' };
     return null;
 }
@@ -1544,7 +1557,12 @@ function wirePublicUi() {
     // nav
     els.nav.addEventListener('click', (event) => {
         const button = event.target.closest('[data-view]');
-        if (button) go(button.dataset.view);
+        if (!button) return;
+        if (ui.localOnly && !['downloads', 'settings'].includes(button.dataset.view)) {
+            toast('Offline — dostępne są pobrane utwory.', 'info');
+            return;
+        }
+        go(button.dataset.view);
     });
     // content actions
     els.content.addEventListener('click', onContentClick);
@@ -1618,14 +1636,22 @@ function wirePublicUi() {
     });
     // login / online / install / theme
     els.loginForm.addEventListener('submit', login);
-    window.addEventListener('online', () => { setNet(false); loadState().then(renderView); });
+    window.addEventListener('online', () => {
+        setNet(false);
+        if (ui.localOnly) { location.reload(); return; }
+        offline.resumeServerErrors();
+        loadState().then(renderView);
+    });
     window.addEventListener('offline', () => setNet(true));
     window.addEventListener('popstate', () => {
         if (ui.view === 'playlist') go('library');
         else if (ui.view === 'podcast') go('podcasts');
     });
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') refreshLibrary();
+        if (document.visibilityState === 'visible') {
+            offline.resumeServerErrors();
+            if (!ui.localOnly) refreshLibrary();
+        }
     });
     window.addEventListener('beforeinstallprompt', (event) => {
         event.preventDefault();
@@ -1815,5 +1841,15 @@ if (authed() && getToken()) {
         showLogin('Nie udało się wczytać aplikacji');
     });
 } else {
-    showLogin();
+    // Expired session + no network is a normal flight mode, not a sign-out:
+    // unlock the Downloads view when finished tracks are on the device.
+    offline.initOffline()
+        .then(() => {
+            if (navigator.onLine || !offline.hasAnyDownloads()) { showLogin(); return; }
+            startApp({ offlineOnly: true }).catch((error) => {
+                logError('Music offline boot failed', String(error));
+                showLogin('Nie udało się wczytać pobranej muzyki');
+            });
+        })
+        .catch(() => showLogin());
 }

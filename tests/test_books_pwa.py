@@ -294,10 +294,11 @@ def main() -> int:
             source = (urllib.parse.parse_qs(urllib.parse.urlparse(request.url).query)
                       .get("path", [""])[0])
             if source.endswith(".mp3") and mode["failRaw"] > 0:
-                # First transfer fails once: the UI must offer "Ponów".
+                # A permanent 4xx failure: the UI must offer "Ponów". (A 5xx or
+                # a network error is a NAS restart and retries automatically.)
                 mode["failRaw"] -= 1
-                route.fulfill(status=500, content_type="application/json",
-                              body=json.dumps({"detail": "simulated failure"}))
+                route.fulfill(status=404, content_type="application/json",
+                              body=json.dumps({"detail": "simulated missing file"}))
                 return
             if source.endswith(".epub"):
                 route.fulfill(status=200, content_type="application/epub+zip", body=EPUB_BYTES)

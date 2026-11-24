@@ -73,6 +73,10 @@ Writes are optimistic and survive an unreachable NAS:
   dropped (the note was deleted, the text is invalid) and logged as a warning.
 - The queue replays on `online`, on tab visibility, and after a successful reload; after it drains,
   the page reloads from the server.
+- **Expired session + no network**: boot reads the last account (`ethos.notes.user`, or the single
+  `ethos-notes-cache:*` key on the device) and opens the saved notes in a read/queue mode instead
+  of the sign-in card. New writes stay in the outbox; reconnecting reloads the page so the normal
+  login runs.
 - The service worker (`frontend/sw.js`, cache `ethos-shell-v5`) is **network-first**. It precaches
   `/notes`, its manifest, CSS, module and icons, and falls back to the cached `/notes` shell only
   when the network is unavailable. It never caches `/api/*`, `/ws*`, `Range` responses or URLs with

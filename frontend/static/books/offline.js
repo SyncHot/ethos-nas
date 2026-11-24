@@ -60,6 +60,10 @@ const _aborts = new Map();
 let _batchFailed = 0;
 const _bgWatchers = new Map();  // key → live Background Fetch reattach
 const _bgFailed = new Set();    // keys whose browser-managed attempt failed
+// Network errors and 5xx during a NAS restart are not failures of the file:
+// keep the row queued and retry with a backoff until the server answers.
+const _retryTimers = new Map();
+const _retryTries = new Map();
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────
 
@@ -135,13 +139,16 @@ export async function initOffline(onChange) {
                 finished.push({ row: next, tag });
             } else {
                 _bgFailed.add(next.key);
-                next.status = 'failed';
-                next.error = 'Przerwane — pobierz ponownie';
+                // The browser lost the transfer (usually a NAS restart): put it
+                // back in the queue instead of asking for a manual retry.
+                next.status = 'queued';
+                next.error = '';
             }
         } else if (next.status === 'downloading' || next.status === 'queued') {
-            // An interrupted transfer cannot resume byte-for-byte; ask for a retry.
-            next.status = 'failed';
-            next.error = 'Przerwane — pobierz ponownie';
+            // Interrupted by a reload or a NAS restart: queue it again instead
+            // of demanding a manual retry.
+            next.status = 'queued';
+            next.error = '';
             touched.add(next.key);
         }
         _rows.push(next);
@@ -164,6 +171,18 @@ export async function initOffline(onChange) {
     } catch { /* the quota manager may refuse; downloads still try */ }
     notifyChange();
     for (const row of reattach) resumeBackgroundRow(row);
+    for (const row of _rows) {
+        if (row.status === 'waiting' && row.retry && row.book) {
+            upsert({ ...row, status: 'queued', error: '' });
+            dbPut(ROWS, _index.get(row.key)).catch(() => {});
+        }
+    }
+    for (const row of _rows) {
+        if (row.status === 'queued' && row.book && !_queue.some((item) => item.key === row.key)) {
+            _queue.push(itemFor(row));
+        }
+    }
+    if (_queue.length && navigator.onLine !== false) pump();
     return _rows;
 }
 
@@ -406,6 +425,63 @@ function bytesText(done, total) {
     return total ? `${fmtBytes(done)} / ${fmtBytes(total)}` : fmtBytes(done);
 }
 
+function isTransient(error) {
+    const status = Number(error?.status) || 0;
+    if (status >= 400 && status < 500) return false;
+    return true;   // network error, timeout, 5xx or a restarting NAS
+}
+
+function clearRetry(key) {
+    const timer = _retryTimers.get(key);
+    if (timer) clearTimeout(timer);
+    _retryTimers.delete(key);
+}
+
+function itemFor(row) {
+    const track = row.trackIndex == null ? null : bookTracks(row.book)[row.trackIndex];
+    return {
+        key: row.key,
+        book: row.book,
+        trackIndex: row.trackIndex,
+        path: row.trackIndex == null ? row.book?.path : track?.path,
+        title: row.title,
+        size: row.bytes_total,
+    };
+}
+
+function scheduleRetry(key) {
+    const row = _index.get(key);
+    if (!row || !row.book) return;
+    const attempt = (_retryTries.get(key) || 0) + 1;
+    _retryTries.set(key, attempt);
+    const delay = [5000, 15000, 30000, 60000, 120000][Math.min(attempt - 1, 4)];
+    clearRetry(key);
+    upsert({ ...row, status: 'waiting', retry: true, error: 'Serwer niedostępny — ponawiam…' });
+    dbPut(ROWS, _index.get(key)).catch(() => {});
+    _retryTimers.set(key, setTimeout(() => {
+        _retryTimers.delete(key);
+        const current = _index.get(key);
+        if (!current) return;
+        if (navigator.onLine === false) { scheduleRetry(key); return; }
+        upsert({ ...current, status: 'queued', error: '' });
+        dbPut(ROWS, _index.get(key)).catch(() => {});
+        if (!_queue.some((item) => item.key === key)) _queue.push(itemFor(current));
+        pump();
+    }, delay));
+}
+
+/** Server is back (online event / app visible): retry without waiting. */
+export function resumeServerErrors() {
+    for (const row of _rows) {
+        if (row.status !== 'waiting' || !row.retry || !row.book) continue;
+        clearRetry(row.key);
+        upsert({ ...row, status: 'queued', error: '' });
+        dbPut(ROWS, _index.get(row.key)).catch(() => {});
+        if (!_queue.some((item) => item.key === row.key)) _queue.push(itemFor(row));
+    }
+    if (_queue.length && navigator.onLine !== false) pump();
+}
+
 async function runDownload(item) {
     if (!('caches' in window)) {
         failRow(item.key, 'Pobieranie wymaga HTTPS (secure context)');
@@ -501,7 +577,11 @@ async function runDownload(item) {
         }
         if (!fromBackground) {
             const res = await apiFetch(rawPath(item.path), { signal: controller.signal });
-            if (!res.ok) throw new Error(await errorDetail(res));
+            if (!res.ok) {
+                const error = new Error(await errorDetail(res));
+                error.status = res.status;   // 4xx is permanent, 5xx retries
+                throw error;
+            }
             total = Number(res.headers.get('content-length')) || total;
             const type = (res.headers.get('content-type') || 'application/octet-stream').split(';')[0];
             const headers = { 'Content-Type': type };
@@ -548,6 +628,8 @@ async function runDownload(item) {
                 title: 'Books offline',
                 message: 'Pamięć telefonu prawie pełna — pobieranie wstrzymane.',
             });
+        } else if (isTransient(error)) {
+            scheduleRetry(item.key);
         } else {
             _batchFailed += 1;
             failRow(item.key, error?.detail || error?.message || 'Pobieranie nie powiodło się');
@@ -582,6 +664,8 @@ function failRow(key, message) {
 async function completeRow(key, size) {
     const row = _index.get(key);
     if (!row) return null;
+    clearRetry(key);
+    _retryTries.delete(key);
     _bgFailed.delete(key);
     const finished = upsert({
         ...row,
@@ -607,9 +691,10 @@ function markBackgroundFailed(key) {
     const row = _index.get(key);
     if (!row) return;
     _bgFailed.add(key);
-    upsert({ ...row, status: 'failed', bg_tag: '', error: 'Przerwane — pobierz ponownie' });
+    upsert({ ...row, status: 'waiting', bg_tag: '', retry: true, error: 'Przerwane — ponawiam…' });
     dbPut(ROWS, _index.get(key)).catch(() => {});
     notifyChange();
+    scheduleRetry(key);
 }
 
 /** Follow a Background Fetch that survived a reload or an app switch. */
@@ -727,6 +812,8 @@ export async function cancelBook(book) {
 
 async function removeRow(key, { silent = false } = {}) {
     _queue = _queue.filter((item) => item.key !== key);
+    clearRetry(key);
+    _retryTries.delete(key);
     const row = _index.get(key);
     if (row?.bg_tag) {
         // The browser keeps running a Background Fetch without the page.
@@ -750,6 +837,8 @@ async function removeRow(key, { silent = false } = {}) {
 export function retryRow(key) {
     const row = _index.get(key);
     if (!row?.book) return;
+    clearRetry(key);
+    _retryTries.delete(key);
     enqueue({
         book: row.book,
         trackIndex: row.trackIndex,

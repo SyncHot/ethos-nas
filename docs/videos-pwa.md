@@ -166,6 +166,10 @@ after a reload; nothing outside the caller's scope is ever returned.
   rows on the device, `boot()` opens the Downloads view instead of the login
   form (`Offline · <version>`), so a plane-mode phone still plays the trip
   library. A valid session restores the normal flow.
+- **NAS restart mid-transfer**: a network error or 5xx moves the row to
+  `waiting` and retries automatically with a 5 s → 2 min backoff (partial
+  `?part=` entries resume with `Range`); `online` and returning to the tab retry
+  immediately. Only a permanent 4xx asks for **Retry**.
 
 ## Files
 

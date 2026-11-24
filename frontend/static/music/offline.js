@@ -59,6 +59,11 @@ const _runIds = new Map();
 const _bgTags = new Map();
 const _bgWatchers = new Map();
 const _bgFailed = new Set();
+// A NAS restart kills in-flight transfers with a network error or 5xx. Those
+// are not failures of the track: keep it queued and retry with a backoff until
+// the server answers again.
+const _retryTimers = new Map();
+const _retryTries = new Map();
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────
 
@@ -156,9 +161,14 @@ export async function initOffline(onChange) {
     }
     // Rows queued before the reload have no in-memory queue item yet.
     for (const row of _rows) {
-        if (row.status === 'queued' && row.track
-                && !_queue.some((item) => item.key === row.key)) {
-            _queue.push({ key: row.key, track: row.track, kind: row.kind });
+        if (row.status === 'waiting' && row.retry && row.track) {
+            upsert({ ...row, status: 'queued', error: '' });
+            dbPut(ROWS, _index.get(row.key)).catch(() => {});
+        }
+        const current = _index.get(row.key);
+        if (current && current.status === 'queued' && current.track
+                && !_queue.some((item) => item.key === current.key)) {
+            _queue.push({ key: current.key, track: current.track, kind: current.kind });
         }
     }
     await refreshStorage();
@@ -169,7 +179,7 @@ export async function initOffline(onChange) {
     } catch { /* the quota manager may refuse */ }
     notifyChange();
     for (const row of reattach) resumeBackgroundRow(row);
-    if (_queue.length) pump();
+    if (_queue.length && navigator.onLine !== false) pump();
     return _rows;
 }
 
@@ -194,6 +204,11 @@ function upsert(row) {
 
 export function downloadsSnapshot() {
     return _rows.slice();
+}
+
+/** True when at least one finished track is stored on the device. */
+export function hasAnyDownloads() {
+    return _rows.some((row) => row.status === 'done');
 }
 
 export function totalBytes() {
@@ -403,6 +418,53 @@ function canBackgroundTransfer(row) {
         && !(Number(row.bytes) > 0);
 }
 
+function isTransient(error) {
+    const status = Number(error?.status) || 0;
+    if (status >= 400 && status < 500) return false;
+    return true;   // network error, timeout, 5xx or a restarting NAS
+}
+
+function clearRetry(key) {
+    const timer = _retryTimers.get(key);
+    if (timer) clearTimeout(timer);
+    _retryTimers.delete(key);
+}
+
+function scheduleRetry(key) {
+    const row = _index.get(key);
+    if (!row || _cancelled.has(key)) return;
+    const attempt = (_retryTries.get(key) || 0) + 1;
+    _retryTries.set(key, attempt);
+    const delay = [5000, 15000, 30000, 60000, 120000][Math.min(attempt - 1, 4)];
+    clearRetry(key);
+    upsert({ ...row, status: 'waiting', retry: true, error: 'Serwer niedostępny — ponawiam…' });
+    dbPut(ROWS, _index.get(key)).catch(() => {});
+    _retryTimers.set(key, setTimeout(() => {
+        _retryTimers.delete(key);
+        const current = _index.get(key);
+        if (!current || _cancelled.has(key)) return;
+        if (navigator.onLine === false) { scheduleRetry(key); return; }
+        upsert({ ...current, status: 'queued', error: '', retry: true });
+        dbPut(ROWS, _index.get(key)).catch(() => {});
+        _queue.push({ key, track: current.track, kind: current.kind });
+        pump();
+    }, delay));
+}
+
+/** Server is back (online event / app visible): retry without waiting. */
+export function resumeServerErrors() {
+    for (const row of _rows) {
+        if (row.status !== 'waiting' || !row.retry) continue;
+        clearRetry(row.key);
+        upsert({ ...row, status: 'queued', error: '' });
+        dbPut(ROWS, _index.get(row.key)).catch(() => {});
+        if (row.track && !_queue.some((item) => item.key === row.key)) {
+            _queue.push({ key: row.key, track: row.track, kind: row.kind });
+        }
+    }
+    pump();
+}
+
 async function runDownload({ key, track, kind }) {
     const row = _index.get(key);
     if (!row || _cancelled.has(key)) return;
@@ -519,6 +581,8 @@ async function runDownload({ key, track, kind }) {
         // as soon as the bytes are stored, not after a thumbnail round-trip.
         if (!fromBackground) await dbPut(BLOBS, { key, audio: blob, thumb: null, type });
         if (_cancelled.has(key)) return;          // deleted during the IDB write
+        clearRetry(key);
+        _retryTries.delete(key);
         const done = upsert({
             ..._index.get(key),
             status: 'done',
@@ -548,8 +612,8 @@ async function runDownload({ key, track, kind }) {
                 kind: 'warning',
                 title: 'Muzyka offline',
                 message: 'Pamięć urządzenia prawie pełna — pobieranie wstrzymane.',
-            });
-        } else {
+            });        } else if (isTransient(error)) {
+            scheduleRetry(key);        } else {
             markFailed(key, error?.detail || error?.message || 'Pobieranie nie powiodło się');
         }
         dbPut(ROWS, _index.get(key)).catch(() => {});
@@ -566,7 +630,9 @@ async function runDownload({ key, track, kind }) {
 function markFailed(key, message) {
     const row = _index.get(key);
     if (!row) return;
-    upsert({ ...row, status: 'failed', error: message });
+    clearRetry(key);
+    _retryTries.delete(key);
+    upsert({ ...row, status: 'failed', retry: false, error: message });
     dbPut(ROWS, _index.get(key)).catch(() => {});
     notifyChange();
 }
@@ -807,9 +873,11 @@ function finishBatch() {
 function markBackgroundFailed(key) {
     const row = _index.get(key);
     if (!row) return;
-    upsert({ ...row, status: 'failed', bg_tag: '', error: 'Przerwane — pobierz ponownie' });
+    _bgFailed.add(key);
+    upsert({ ...row, status: 'waiting', bg_tag: '', retry: true, error: 'Przerwane — ponawiam…' });
     dbPut(ROWS, _index.get(key)).catch(() => {});
     notifyChange();
+    scheduleRetry(key);
 }
 
 /** Follow a Background Fetch that survived a reload or an app switch. */
@@ -877,6 +945,8 @@ async function removeRow(key, { silent = false } = {}) {
     // would re-insert the row a moment later. A Background Fetch keeps running
     // in the browser, so it must be aborted explicitly as well.
     _cancelled.add(key);
+    clearRetry(key);
+    _retryTries.delete(key);
     const controller = _controllers.get(key);
     if (controller) {
         try { controller.abort(); } catch { /* already finished */ }
@@ -910,6 +980,8 @@ export function retryDownload(trackOrKey) {
     const key = typeof trackOrKey === 'string' ? trackOrKey : tkey(trackOrKey);
     const row = _index.get(key);
     if (!row?.track) return;
+    clearRetry(key);
+    _retryTries.delete(key);
     enqueue({ key, track: row.track, kind: row.kind });
     resumeDownloads();
     pump();
@@ -928,7 +1000,10 @@ export function resumeDownloads() {
     _pauseReason = '';
     _quotaNotified = false;
     for (const row of _rows) {
-        if (row.status === 'waiting') upsert({ ...row, status: 'queued' });
+        if (row.status === 'waiting') {
+            clearRetry(row.key);
+            upsert({ ...row, status: 'queued', retry: false, error: '' });
+        }
     }
     _rows.filter((row) => row.status === 'queued').forEach((row) => {
         if (row.track && !_queue.some((item) => item.key === row.key)) {
