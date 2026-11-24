@@ -836,9 +836,13 @@ def _config_for_tasks(tasks: list[dict]) -> dict:
     """Config of the account that owns a download.
 
     The pump and the extractor run as `system`, but extraction is a per-user
-    preference: reading the system slice would always see the defaults.
+    preference: reading the system slice would always see the defaults. Tasks
+    created before the owner field existed (premium link downloads) belong to
+    the admin who maintains the queue, never to the system-global config.
     """
     owner = next((str(t.get("owner") or "") for t in (tasks or []) if t.get("owner")), "")
+    if not owner:
+        owner = user_data.admin_username()
     if owner and owner != user_data.current_username():
         with path_scope.identity_scope(owner, user_data.user_role(owner)):
             return _load_config()
@@ -1786,6 +1790,7 @@ async def add_task(payload: AddTaskRequest):
             "name": name,
             "path": target_dir,
             "kind": "debrid_link",
+            "owner": _owner(),
             "_name_fixed": bool((payload.name or "").strip()),
             "category": category,
             "provider": provider,

@@ -114,11 +114,16 @@ def main() -> int:
 
     write_user("alice", download_dir=WORK, auto_extract=True, auto_extract_delete=False)
     write_user("bob", download_dir=WORK, auto_extract=True, auto_extract_delete=True)
+    # Link downloads created before the owner field existed belong to the admin.
+    write_user("admin", download_dir=WORK, auto_extract=True, auto_extract_delete=False)
     with path_scope.system_scope():
         alice_cfg = downloads._config_for_tasks([{"owner": "alice"}])
         bob_cfg = downloads._config_for_tasks([{"owner": "bob"}])
+        orphan_cfg = downloads._config_for_tasks([{"owner": ""}])
     check("the delete policy comes from the task owner's slice",
           alice_cfg["auto_extract_delete"] is False and bob_cfg["auto_extract_delete"] is True)
+    check("an ownerless task uses the admin's extraction policy",
+          orphan_cfg["auto_extract_delete"] is False, str(orphan_cfg))
 
     print("[auto extraction]")
     cfg = {"auto_extract": True, "auto_extract_delete": False, "download_dir": WORK}

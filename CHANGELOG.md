@@ -11,6 +11,17 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.38.7] - 2026-11-24
+
+### Fixed
+
+- **Download Station: extraction of premium link downloads**: `debrid_link`
+  tasks (RapidGator, Mega, tb7.pl-supported hosts) were created without an owner,
+  so auto-extraction read the system/global defaults instead of the account's
+  and never ran for a single archive or a multi-part package. They now record
+  their owner, and legacy ownerless tasks resolve through the admin's config;
+  the same fix makes their `Extracting…` state reach the progress bar.
+
 ## [2.38.6] - 2026-11-24
 
 ### Changed
