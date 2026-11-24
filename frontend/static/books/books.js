@@ -15,6 +15,7 @@
 
 import { getCurrentClaims, setToken } from '../core/api.js';
 import { notify } from '../core/notification-center.js';
+import { startTask } from '../core/progress.js';
 import { logError, logInfo, logWarn, setLogContext } from '../core/logger.js';
 import '../core/error-reporter.js';
 import { engine } from './player.js';
@@ -536,6 +537,43 @@ function renderLibrary() {
     hydrateCovers(els.content);
 }
 
+// ── offline covers ────────────────────────────────────────────────────────
+
+async function refreshCoverStat() {
+    const node = $('bk-cover-stat');
+    if (!node) return;
+    const books = allBooks();
+    const total = books.filter((book) => book.cover).length;
+    const cached = await offline.cachedCoverCount(books);
+    if (node.isConnected) node.textContent = `${cached} z ${total}`;
+}
+
+async function prefetchCovers() {
+    const books = allBooks().filter((book) => book.cover);
+    if (!books.length) {
+        toast('Żadna pozycja nie ma okładki do zapisania.', 'info');
+        return;
+    }
+    const task = startTask({
+        appId: 'books',
+        title: 'Okładki offline',
+        total: books.length,
+        detail: `0 z ${books.length}`,
+        testIdPrefix: 'books-covers',
+    });
+    try {
+        const result = await offline.cacheCovers(books, (done, total) => {
+            task.update({ percent: Math.round((done / total) * 100), detail: `${done} z ${total}` });
+        });
+        task.finish('done', { detail: `${result.cached} z ${result.total}` });
+        notify(`Okładki offline: ${result.cached} z ${result.total}.`, 'success');
+    } catch (error) {
+        task.finish('failed', { detail: errorText(error) });
+        notify('Nie udało się pobrać okładek.', 'warning');
+    }
+    if (state.view === 'settings') renderSettings();
+}
+
 function cardsHtml(books) {
     if (!books.length) return '<div class="bk-empty" style="grid-column:1/-1">Brak wyników.</div>';
     return books.map((book) => {
@@ -694,6 +732,12 @@ function renderSettings() {
             ${options([[0.75, '0.75×'], [1, '1×'], [1.25, '1.25×'], [1.5, '1.5×'], [1.75, '1.75×'], [2, '2×']], value.speed || 1)}
           </select></div>
       </div>
+      <div class="bk-section-title"><h2>Offline</h2></div>
+      <div class="bk-sheet-body">
+        <div class="bk-stat"><span>Okładki na telefonie</span><b id="bk-cover-stat" data-testid="books-cover-stat">…</b></div>
+        <p class="bk-muted" style="margin:6px 0 0;font-size:12px">Pobrane tytuły zapisują okładkę automatycznie. Ten przycisk zapisuje okładki całej biblioteki — przydatne przed lotem.</p>
+        <button class="bk-btn" type="button" data-act="cache-covers" data-testid="books-cache-covers" style="margin-top:8px">📥 Pobierz okładki</button>
+      </div>
       <div class="bk-section-title"><h2>Aplikacja</h2></div>
       <div class="bk-sheet-body">
         <div class="bk-stat"><span>Biblioteka</span><b>${(state.library.books || []).length} pozycji</b></div>
@@ -708,6 +752,7 @@ function renderSettings() {
           Foldery i skanowanie ustawisz w oknie Books na komputerze. Zmiany w czytniku są wspólne dla obu.
         </p>
       </div>`;
+    refreshCoverStat();
 }
 
 function saveSettings(patch) {
@@ -1138,6 +1183,8 @@ function onContentClick(event) {
         if (book) openSheet(book);
     } else if (action === 'refresh') {
         refreshLibrary().then(() => toast('Biblioteka odświeżona.', 'success')).catch((error) => toast(errorText(error), 'error'));
+    } else if (action === 'cache-covers') {
+        prefetchCovers();
     } else if (action === 'theme') {
         toggleTheme();
     } else if (action === 'logout') {

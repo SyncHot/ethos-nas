@@ -99,6 +99,11 @@ Two stores, mirroring `/videos`:
 | Cache Storage `ethos-books-v1` | the bytes: `/__books/<bookId>` (EPUB/PDF) and `/__books/<bookId>/t<index>` (one audiobook track) |
 | IndexedDB `ethos-books-db` | `rows` (download state per file), `blobs` (covers), `meta` (library snapshot, progress outbox) |
 
+- **Covers offline.** A cover is stored in IndexedDB the first time it is shown, and a downloaded
+  title stores its artwork when the transfer completes. Settings shows *Okładki na telefonie: N z M*
+  and a **Pobierz okładki** button that caches the rest of the library (three at a time, with a
+  progress row) — run it before a flight. Offline, a cached cover paints with no network; a title
+  without one keeps the typographic jacket, and the badge pills never disappear.
 - A download streams through a `TransformStream` straight into Cache Storage, so a 1 GB audiobook is
   never held in RAM as one Blob.
 - **Background Fetch** (`core/background-download.js`): on Chromium the transfer is browser-managed,

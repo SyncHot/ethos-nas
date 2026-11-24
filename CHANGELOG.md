@@ -11,6 +11,16 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.39.3] - 2026-11-25
+
+### Added
+
+- **Books offline: covers on the phone** — artwork is cached in IndexedDB when a cover is first
+  shown and for every downloaded title, so the `/books` library still shows real covers in
+  airplane mode. Settings shows how many covers are stored (*Okładki na telefonie: N z M*) and
+  a **Pobierz okładki** button caches the whole library before a flight; titles without a cached
+  cover keep the typographic jacket (`docs/books-pwa.md`).
+
 ## [2.39.2] - 2026-11-24
 
 ### Changed

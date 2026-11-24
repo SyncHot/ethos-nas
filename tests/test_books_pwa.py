@@ -14,6 +14,7 @@ Playwright is optional — the test skips (exit 0) when it is not installed.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -52,6 +53,11 @@ WAV = (b"RIFF" + (36 + _SAMPLES).to_bytes(4, "little") + b"WAVEfmt " + (16).to_b
        + (8000).to_bytes(4, "little") + (1).to_bytes(2, "little") + (8).to_bytes(2, "little")
        + b"data" + _SAMPLES.to_bytes(4, "little") + bytes([128]) * _SAMPLES)
 
+# A 1×1 PNG so a cover download actually returns image bytes.
+COVER_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+
+
 AUDIOBOOK = {
     "id": "bk_audio00001",
     "path": "/mnt/books/Test Book",
@@ -65,7 +71,7 @@ AUDIOBOOK = {
     "size": 2 * len(WAV),
     "duration_s": 8.0,
     "modified": 0,
-    "cover": False,
+    "cover": True,
     "cover_ext": "webp",
     "manual": False,
     "added_at": "2026-11-20T10:00:00+00:00",
@@ -90,7 +96,7 @@ EPUB = {
     "language": "pl",
     "size": 2048,
     "modified": 0,
-    "cover": False,
+    "cover": True,
     "cover_ext": "webp",
     "manual": False,
     "added_at": "2026-11-20T10:00:00+00:00",
@@ -288,7 +294,7 @@ def main() -> int:
             reply({"status": "ok", "progress": body})
             return
         if path.startswith(f"{proxy}/covers/"):
-            route.fulfill(status=404, body="")
+            route.fulfill(status=200, content_type="image/png", body=COVER_PNG)
             return
         if path == "/api/files/raw":
             source = (urllib.parse.parse_qs(urllib.parse.urlparse(request.url).query)
@@ -364,6 +370,38 @@ def main() -> int:
                   page.locator('[data-testid="books-item"]').count() >= 1)
             check("the EPUB title is listed too",
                   "Testowa książka" in page.inner_text("#bk-content"))
+
+            # 1b. covers are painted online and stored for offline use
+            page.wait_for_selector('[data-cover] img', timeout=8000)
+            check("covers render from the package proxy",
+                  page.locator('[data-cover] img').count() >= 2,
+                  str(page.locator('[data-cover] img').count()))
+            cached_covers = page.evaluate("""async () => {
+                const db = await new Promise((res, rej) => {
+                    const request = indexedDB.open('ethos-books-db');
+                    request.onsuccess = () => res(request.result);
+                    request.onerror = () => rej(request.error);
+                });
+                return await new Promise((res, rej) => {
+                    const request = db.transaction('blobs', 'readonly')
+                        .objectStore('blobs').getAll();
+                    request.onsuccess = () => res((request.result || [])
+                        .filter((row) => String(row.key).startsWith('cover:')).length);
+                    request.onerror = () => rej(request.error);
+                });
+            }""")
+            check("covers are stored in IndexedDB", cached_covers >= 2, str(cached_covers))
+
+            # 1c. Settings can prefetch every cover before a flight
+            page.goto(f"{base}/books?view=settings", wait_until="domcontentloaded")
+            page.wait_for_selector('[data-testid="books-cache-covers"]', timeout=10000)
+            page.click('[data-testid="books-cache-covers"]')
+            page.wait_for_function(
+                "() => (document.getElementById('bk-cover-stat')?.textContent || '').trim() === '2 z 2'",
+                timeout=15000)
+            check("Settings caches every cover offline", True)
+            page.goto(f"{base}/books", wait_until="domcontentloaded")
+            page.wait_for_selector('[data-testid="books-hero"]', timeout=8000)
 
             # service worker takes over (needed for the offline reload)
             page.evaluate("navigator.serviceWorker.ready.then((r) => !!r.active)")
@@ -472,6 +510,16 @@ def main() -> int:
                   "Testowy audiobook" in page.inner_text("#bk-content"))
             check("the offline pill is shown",
                   page.evaluate("!document.getElementById('bk-net').hidden"))
+
+            # 5b. covers already on the device still paint without the network
+            page.goto(f"{base}/books", wait_until="domcontentloaded")
+            page.wait_for_selector('[data-testid="books-app"]', state="visible", timeout=15000)
+            page.wait_for_selector('[data-cover] img', timeout=8000)
+            check("cached covers render while offline",
+                  page.locator('[data-cover] img').count() >= 2,
+                  str(page.locator('[data-cover] img').count()))
+            page.goto(f"{base}/books?view=downloads", wait_until="domcontentloaded")
+            page.wait_for_selector('[data-testid="books-download-row"]', timeout=8000)
 
             # 6. playback comes from /__books, not from the NAS
             file_calls_before = sum(1 for _m, path in calls if path == "/api/files/raw")

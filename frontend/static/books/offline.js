@@ -357,6 +357,40 @@ export async function coverUrl(book, { fetch = true } = {}) {
     }
 }
 
+/** How many of these titles already have a cover stored on the device. */
+export async function cachedCoverCount(books) {
+    let count = 0;
+    for (const book of books || []) {
+        if (!book?.id || !book.cover) continue;
+        try {
+            const stored = await dbGet(BLOBS, `cover:${book.id}`);
+            if (stored?.cover) count += 1;
+        } catch { /* the cover cache is optional */ }
+    }
+    return count;
+}
+
+/** Save every cover for offline use ("Pobierz okładki" before a flight). */
+export async function cacheCovers(books, onProgress) {
+    const list = (books || []).filter((book) => book?.id && book.cover);
+    let done = 0;
+    let cached = 0;
+    let cursor = 0;
+    const worker = async () => {
+        for (;;) {
+            const index = cursor++;
+            if (index >= list.length) return;
+            try {
+                if (await coverUrl(list[index])) cached += 1;
+            } catch { /* one broken cover must not stop the batch */ }
+            done += 1;
+            if (onProgress) onProgress(done, list.length);
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, list.length) }, worker));
+    return { total: list.length, cached };
+}
+
 // ── downloads ─────────────────────────────────────────────────────────────
 
 /** Queue every missing file of a title: one file for EPUB/PDF, every track for audio. */
