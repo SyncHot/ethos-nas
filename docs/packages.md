@@ -387,7 +387,7 @@ registry ids in `backend/services/system_deps.py`; anything else is rejected at 
 |---|---|---|---|
 | `docker` | `docker` | `docker.io` | Installed on demand through `ethos-docker-install`; **never** auto-removed (shared by every compose package) |
 | `samba` | `smbd`, `testparm`, `smbpasswd` | `samba` | Installed with the package through `ethos-system-deps`; removed again when the last package that needs it goes away |
-| `archive-tools` | `bsdtar` | `libarchive-tools` | **Optional**: installs `bsdtar` (`.7z`, `.rar`, `.zst`, `.lz4`) for File Manager extraction; a missing tool never fails an install/update, and the ownership is released like Samba's |
+| `archive-tools` | `bsdtar`, `7z` | `libarchive-tools 7zip` | **Optional**: installs `bsdtar` (`.7z`, `.rar`, `.zst`, `.lz4`) and 7-Zip (split volumes, encrypted archives) for File Manager and Download Manager extraction; a missing tool never fails an install/update, and the ownership is released like Samba's |
 
 ```json
 { "system_requires": ["samba"] }
@@ -417,7 +417,7 @@ an arbitrary package name:
   tool is logged instead of failing the install; the helper is still used when it is available).
 - Optional example: `download-manager` declares `system_requires: ["archive-tools"]`. Without the
   helper/sudoers rule the package still installs, File Manager simply keeps reporting that no
-  extractor is installed until the operator installs `libarchive-tools`.
+  extractor is installed until the operator installs `libarchive-tools` and `7zip`.
 - Probe uses absolute candidates (`/usr/sbin`, `/usr/bin`, …) before `shutil.which`, because the
   service account's `PATH` usually lacks `/usr/sbin`.
 - Without the helper (host installed before this feature), the job fails with HTTP 503 telling the
