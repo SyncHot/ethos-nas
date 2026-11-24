@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T16:10:38+00:00",
+  "generated_at": "2026-11-24T16:17:26+00:00",
   "latest": {
-    "version": "2.34.1",
-    "git_sha": "04a78a3",
-    "git_sha_full": "04a78a3f0a40cfef410c7cfe5c2a65a56da4dcab",
-    "build": 269,
-    "released_at": "2026-11-24T16:10:38+00:00",
-    "notes": "Packages: the install dialog now shows the package's settings fields (admin login, password) and system requirements."
+    "version": "2.35.0",
+    "git_sha": "8f12ab9",
+    "git_sha_full": "8f12ab9c5ac3faafed3455e19128c377e533f568",
+    "build": 271,
+    "released_at": "2026-11-24T16:17:26+00:00",
+    "notes": "Packages: choose the folder a package keeps its data in (install dialog or Installed → Settings); defaults to a package-named folder under /home, /mnt or /media. Grafana 1.2.0 stores its database and dashboards there."
   },
   "releases": [
+    {
+      "version": "2.35.0",
+      "git_sha": "8f12ab9",
+      "git_sha_full": "8f12ab9c5ac3faafed3455e19128c377e533f568",
+      "build": 271,
+      "released_at": "2026-11-24T16:17:26+00:00",
+      "notes": "Packages: choose the folder a package keeps its data in (install dialog or Installed → Settings); defaults to a package-named folder under /home, /mnt or /media. Grafana 1.2.0 stores its database and dashboards there."
+    },
     {
       "version": "2.34.1",
       "git_sha": "04a78a3",
@@ -201,14 +209,6 @@
       "build": 194,
       "released_at": "2026-11-22T17:45:56+00:00",
       "notes": "Package Center shows when a package had to move to another port and can repair a port lost to another container."
-    },
-    {
-      "version": "2.28.5",
-      "git_sha": "ebcf236",
-      "git_sha_full": "ebcf236e27f6a6bcab7690bb7f0d38afe06937b0",
-      "build": 191,
-      "released_at": "2026-11-22T17:37:51+00:00",
-      "notes": "Packages install even when their port is already taken: the published host port is re-mapped to a free one and kept stable across updates."
     }
   ]
 }
