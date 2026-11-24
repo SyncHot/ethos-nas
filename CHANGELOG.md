@@ -11,6 +11,17 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.39.4] - 2026-11-25
+
+### Changed
+
+- **Books: covers are cached automatically** — every library load stores the missing artwork in the
+  background (two at a time, up to 600 per start, paused when offline or with Data Saver) instead of
+  waiting for a card to scroll into view or a button press. A cover that answers 404 is remembered
+  per version so it is not requested again. Settings keeps the *Okładki na telefonie: N z M*
+  counter and the manual **Pobierz brakujące okładki** action for an immediate full pass
+  (`docs/books-pwa.md`).
+
 ## [2.39.3] - 2026-11-25
 
 ### Added

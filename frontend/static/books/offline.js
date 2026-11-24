@@ -41,6 +41,7 @@ const PROGRESS_PREFIX = 'progress:';
 const FLUSH_DELAY = 2500;
 
 let _db = null;
+let _autoRuns = 0;
 let _rows = [];
 let _index = new Map();
 let _queue = [];
@@ -345,9 +346,15 @@ export async function coverUrl(book, { fetch = true } = {}) {
     if (!fetch || !book.cover) return '';
     try {
         const res = await apiFetch(coverPath(book.id, version));
-        if (!res.ok) return '';
+        if (!res.ok) {
+            // Remember the miss for this version so a background pass does not
+            // ask again on every start.
+            await dbPut(META, { k: `covermiss:${book.id}`, v: version }).catch(() => {});
+            return '';
+        }
         const blob = await res.blob();
         await dbPut(BLOBS, { key: `cover:${book.id}`, cover: blob, version }).catch(() => {});
+        await dbDel(META, `covermiss:${book.id}`).catch(() => {});
         const url = URL.createObjectURL(blob);
         _covers.set(memoKey, url);
         return url;
@@ -371,7 +378,7 @@ export async function cachedCoverCount(books) {
 }
 
 /** Save every cover for offline use ("Pobierz okładki" before a flight). */
-export async function cacheCovers(books, onProgress) {
+export async function cacheCovers(books, onProgress, { retryMisses = true } = {}) {
     const list = (books || []).filter((book) => book?.id && book.cover);
     let done = 0;
     let cached = 0;
@@ -380,6 +387,7 @@ export async function cacheCovers(books, onProgress) {
         for (;;) {
             const index = cursor++;
             if (index >= list.length) return;
+            if (retryMisses) await dbDel(META, `covermiss:${list[index].id}`).catch(() => {});
             try {
                 if (await coverUrl(list[index])) cached += 1;
             } catch { /* one broken cover must not stop the batch */ }
@@ -388,6 +396,53 @@ export async function cacheCovers(books, onProgress) {
         }
     };
     await Promise.all(Array.from({ length: Math.min(3, list.length) }, worker));
+    return { total: list.length, cached };
+}
+
+/** How many background cover passes this page ran (diagnostics + tests). */
+export function autoCacheRuns() {
+    return _autoRuns;
+}
+
+/**
+ * Background pass after the library loads: store every cover the device does
+ * not have yet, so the phone is ready for airplane mode without a button.
+ * Bounded (600 per start), three at a time, and skipped when the user saves
+ * data or the page is offline.
+ */
+export async function autoCacheCovers(books, { concurrency = 2, limit = 600 } = {}) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        return { total: 0, cached: 0, skipped: 'offline' };
+    }
+    try {
+        if (navigator.connection?.saveData) return { total: 0, cached: 0, skipped: 'save-data' };
+    } catch { /* the connection API is optional */ }
+    _autoRuns += 1;
+    const list = [];
+    for (const book of books || []) {
+        if (!book?.id || !book.cover) continue;
+        if (list.length >= limit) break;
+        const version = String(book.updated_at || book.enriched_at || '');
+        try {
+            const stored = await dbGet(BLOBS, `cover:${book.id}`);
+            if (stored?.cover && String(stored.version || '') === version) continue;
+            const miss = await dbGet(META, `covermiss:${book.id}`);
+            if (miss && String(miss.v || '') === version) continue;
+        } catch { /* the cover cache is optional */ }
+        list.push(book);
+    }
+    let cursor = 0;
+    let cached = 0;
+    const worker = async () => {
+        for (;;) {
+            const index = cursor++;
+            if (index >= list.length) return;
+            try {
+                if (await coverUrl(list[index])) cached += 1;
+            } catch { /* skip one broken cover */ }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, list.length) }, worker));
     return { total: list.length, cached };
 }
 

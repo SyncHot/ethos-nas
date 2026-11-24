@@ -376,20 +376,35 @@ def main() -> int:
             check("covers render from the package proxy",
                   page.locator('[data-cover] img').count() >= 2,
                   str(page.locator('[data-cover] img').count()))
-            cached_covers = page.evaluate("""async () => {
-                const db = await new Promise((res, rej) => {
-                    const request = indexedDB.open('ethos-books-db');
-                    request.onsuccess = () => res(request.result);
-                    request.onerror = () => rej(request.error);
-                });
-                return await new Promise((res, rej) => {
-                    const request = db.transaction('blobs', 'readonly')
-                        .objectStore('blobs').getAll();
-                    request.onsuccess = () => res((request.result || [])
-                        .filter((row) => String(row.key).startsWith('cover:')).length);
-                    request.onerror = () => rej(request.error);
-                });
-            }""")
+            deadline = time.time() + 10
+            runs = 0
+            while time.time() < deadline:
+                runs = page.evaluate(
+                    "async () => (await import('/static/books/offline.js')).autoCacheRuns()")
+                if runs:
+                    break
+                page.wait_for_timeout(200)
+            check("the app caches covers automatically", runs >= 1, str(runs))
+            deadline = time.time() + 10
+            cached_covers = 0
+            while time.time() < deadline:
+                cached_covers = page.evaluate("""async () => {
+                    const db = await new Promise((res, rej) => {
+                        const request = indexedDB.open('ethos-books-db');
+                        request.onsuccess = () => res(request.result);
+                        request.onerror = () => rej(request.error);
+                    });
+                    return await new Promise((res, rej) => {
+                        const request = db.transaction('blobs', 'readonly')
+                            .objectStore('blobs').getAll();
+                        request.onsuccess = () => res((request.result || [])
+                            .filter((row) => String(row.key).startsWith('cover:')).length);
+                        request.onerror = () => rej(request.error);
+                    });
+                }""")
+                if cached_covers >= 2:
+                    break
+                page.wait_for_timeout(200)
             check("covers are stored in IndexedDB", cached_covers >= 2, str(cached_covers))
 
             # 1c. Settings can prefetch every cover before a flight

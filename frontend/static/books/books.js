@@ -389,6 +389,7 @@ async function refreshLibrary() {
     }
     await loadLibrary();
     renderView();
+    autoCacheCovers();
 }
 
 // ── boot ──────────────────────────────────────────────────────────────────
@@ -417,6 +418,7 @@ async function startApp({ offlineOnly = false, cached = null } = {}) {
     setNavActive(state.view);
     renderView();
     updateMini();
+    autoCacheCovers();
     const deepLink = params.get('book');
     if (deepLink) {
         const book = bookById(deepLink);
@@ -546,6 +548,16 @@ async function refreshCoverStat() {
     const total = books.filter((book) => book.cover).length;
     const cached = await offline.cachedCoverCount(books);
     if (node.isConnected) node.textContent = `${cached} z ${total}`;
+}
+
+function autoCacheCovers() {
+    if (state.offlineOnly || navigator.onLine === false) return;
+    offline.autoCacheCovers(allBooks()).then((result) => {
+        if (result.total) {
+            logInfo('Books covers cached', `${result.cached}/${result.total}`);
+            if (state.view === 'settings') refreshCoverStat();
+        }
+    }).catch((error) => logWarn('Books cover prefetch failed', String(error)));
 }
 
 async function prefetchCovers() {
@@ -735,8 +747,8 @@ function renderSettings() {
       <div class="bk-section-title"><h2>Offline</h2></div>
       <div class="bk-sheet-body">
         <div class="bk-stat"><span>Okładki na telefonie</span><b id="bk-cover-stat" data-testid="books-cover-stat">…</b></div>
-        <p class="bk-muted" style="margin:6px 0 0;font-size:12px">Pobrane tytuły zapisują okładkę automatycznie. Ten przycisk zapisuje okładki całej biblioteki — przydatne przed lotem.</p>
-        <button class="bk-btn" type="button" data-act="cache-covers" data-testid="books-cache-covers" style="margin-top:8px">📥 Pobierz okładki</button>
+        <p class="bk-muted" style="margin:6px 0 0;font-size:12px">Okładki zapisują się same po każdej wizycie w bibliotece (pobrane tytuły od razu). Przycisk dociąga wszystkie brakujące natychmiast.</p>
+        <button class="bk-btn" type="button" data-act="cache-covers" data-testid="books-cache-covers" style="margin-top:8px">📥 Pobierz brakujące okładki</button>
       </div>
       <div class="bk-section-title"><h2>Aplikacja</h2></div>
       <div class="bk-sheet-body">
