@@ -55,7 +55,8 @@ export const library = () => json('library');
 export const putProgress = (bookId, payload) => json(`books/${encodeURIComponent(bookId)}/progress`, { method: 'PUT', body: payload });
 export const getSettings = () => json('settings');
 export const putSettings = (settings) => json('settings', { method: 'PUT', body: settings });
-export const coverPath = (bookId) => `${BASE}/covers/${encodeURIComponent(bookId)}`;
+export const coverPath = (bookId, version = '') =>
+    `${BASE}/covers/${encodeURIComponent(bookId)}${version ? `?v=${encodeURIComponent(version)}` : ''}`;
 
 export function rawPath(path) {
     return `/api/files/raw?path=${encodeURIComponent(path)}`;

@@ -11,6 +11,23 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.38.4] - 2026-11-24
+
+### Added
+
+- **Books: metadata and covers from Open Library** (package 1.5.0): a **Fetch
+  metadata** button in the library and an option, on by default, that fills what
+  is missing after every scan. Matching understands `Author - Title` file names,
+  never overwrites manual edits, retries unmatched titles after 30 days, and
+  downloads the cover through the package service (no browser CORS limits).
+  Update the package in Package Center to get it.
+
+### Fixed
+
+- **Books on the phone**: a cover replaced by a rescan or by the online lookup
+  now shows on the PWA card — cached artwork is keyed by the book's
+  `updated_at` instead of being kept forever.
+
 ## [2.38.3] - 2026-11-24
 
 ### Fixed

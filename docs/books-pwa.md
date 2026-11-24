@@ -65,6 +65,8 @@ and the phone still goes through `/api/files/raw` (path scope) and the package p
   The package scan (1.4.0+) also collects folder artwork for titles without embedded art:
   `cover.*`, `folder.*`, `front.*`, `frontcover.*`, `poster.*`, `smallcover.*`, `okladka.*` or an
   image named after the book file/folder (generic names only when the folder holds one title).
+  Package 1.5.0 can also fill missing metadata and covers from Open Library; the PWA picks up the
+  new artwork because the cover cache key includes the book's `updated_at`.
 
 Navigation is `?view=…` inside the single `/books` path, so the worker only has one shell to keep.
 

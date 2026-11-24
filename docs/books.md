@@ -45,11 +45,11 @@ core: no new privileged code, no second path resolver.
 |---|---|
 | `library.json` | `{version: 1, users: {<user>: {folders: [{path, added_at, last_scan, count}], books: {<id>: Book}}}}` |
 | `progress.json` | `{version: 1, users: {<user>: {<id>: {percent, locator, position_s, finished, updated_at}}}}` |
-| `settings.json` | `{version: 1, users: {<user>: {theme, font_family, font_size, margin, line_height, flow, skip_seconds, speed, extensions}}}` |
+| `settings.json` | `{version: 1, users: {<user>: {theme, font_family, font_size, margin, line_height, flow, skip_seconds, speed, extensions, enrich_after_scan}}}` |
 | `covers/<id>.<ext>` | WebP/PNG/JPEG cover bytes (≤ 512 KB), written by the client |
 
 `Book`: `{id, path, format, kind, title, author, series, series_index, language, size, modified,
-cover, cover_ext, manual, added_at, updated_at, tracks[]}`.
+cover, cover_ext, manual, added_at, updated_at, tracks[], enriched_at, enrich_status, enrich_query}`.
 
 - `id` = `bk_` + `sha1(path)[:12]` (computed by the service; the UI receives it in the scan reply).
 - `format` ∈ `epub|pdf|m4b|m4a|mp3|flac|ogg|opus`; `kind` = `book` for EPUB/PDF, `audiobook` for audio.
@@ -72,6 +72,7 @@ the core forwards `X-Ethos-User`/`X-Ethos-Role`. `GET /health` is the supervisor
 | GET | `covers/{id}` | — | `image/webp`, private cache |
 | PUT | `books/{id}/progress` | `{percent, locator, position_s, finished}` | |
 | PUT | `books/{id}/meta` | `{title, author, series, series_index}` | sets `manual` |
+| POST | `books/{id}/enrich` | `{force?}` — Open Library lookup for empty fields/cover | `skipped` inside a 30-day retry window |
 | DELETE | `books/{id}` | — | forgets the record only; the file is untouched |
 | GET/PUT | `settings` | reader/player prefs | |
 
@@ -123,8 +124,14 @@ spec: [`docs/books-pwa.md`](books-pwa.md). Folder management and scanning stay i
 - **Cover sources, in order:** embedded EPUB metadata → embedded audio art (ID3 APIC / `covr`) →
   folder artwork (`cover.*`, `folder.*`, `front.*`, `frontcover.*`, `poster.*`, `smallcover.*`,
   `okladka.*`, or an image named after the file/folder; generic names only when the directory
-  holds a single title) → rendered PDF page one. Folder images are read through
-  `/api/files/raw`, capped at 500 KB and posted through `books/{id}/cover` like any other cover.
+  holds a single title) → rendered PDF page one → **Open Library** for whatever still has none.
+  Folder images are read through `/api/files/raw`, capped at 500 KB and posted through
+  `books/{id}/cover` like any other cover.
+- **Online metadata stays in the service.** The browser cannot read Open Library responses (no
+  CORS), so `POST books/{id}/enrich` calls `openlibrary.org/search.json` with the inferred title
+  (`Author - Title` file names included) and downloads `covers.openlibrary.org` artwork. Fixed host
+  allowlist, 8 s timeout, 2 MB response cap, 250 ms gap between lookups, empty fields only, manual
+  edits never overwritten, `enrich_after_scan` (default on) makes a scan fill what is missing.
 - **Android parity:** not applicable — no Android Books app exists; nothing to mirror.
 
 ## Status
@@ -141,6 +148,7 @@ spec: [`docs/books-pwa.md`](books-pwa.md). Folder management and scanning stay i
 - [x] Docs: this file, `docs/app-store.md`, `docs/apps.md`
 - [x] Phone PWA `/books`: background playback, offline downloads, EPUB/PDF readers
   ([`docs/books-pwa.md`](books-pwa.md))
+- [x] Open Library enrichment (metadata, covers, automatic after a scan)
 
 ## Known gaps / next steps
 

@@ -309,24 +309,28 @@ export function trackSource(book, index) {
 /** Object URL for a cover (IndexedDB first, then the package proxy). */
 export async function coverUrl(book, { fetch = true } = {}) {
     if (!book?.id) return '';
-    const cached = _covers.get(book.id);
+    // A rescan or an online lookup can replace the artwork; the package bumps
+    // `updated_at`, so an older blob must not win forever.
+    const version = String(book.updated_at || book.enriched_at || '');
+    const memoKey = `${book.id}:${version}`;
+    const cached = _covers.get(memoKey);
     if (cached) return cached;
     try {
         const stored = await dbGet(BLOBS, `cover:${book.id}`);
-        if (stored?.cover) {
+        if (stored?.cover && String(stored.version || '') === version) {
             const url = URL.createObjectURL(stored.cover);
-            _covers.set(book.id, url);
+            _covers.set(memoKey, url);
             return url;
         }
     } catch { /* cover cache is optional */ }
     if (!fetch || !book.cover) return '';
     try {
-        const res = await apiFetch(coverPath(book.id));
+        const res = await apiFetch(coverPath(book.id, version));
         if (!res.ok) return '';
         const blob = await res.blob();
-        await dbPut(BLOBS, { key: `cover:${book.id}`, cover: blob }).catch(() => {});
+        await dbPut(BLOBS, { key: `cover:${book.id}`, cover: blob, version }).catch(() => {});
         const url = URL.createObjectURL(blob);
-        _covers.set(book.id, url);
+        _covers.set(memoKey, url);
         return url;
     } catch (error) {
         logWarn('Books cover unavailable', `${book.id}: ${error}`);
