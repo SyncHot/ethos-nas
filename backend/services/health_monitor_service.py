@@ -29,6 +29,7 @@ import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import psutil
 
@@ -69,7 +70,7 @@ def _collect_disks() -> list[dict]:
     instances have their own st_dev and are kept separately. For each device the
     shortest mount path is kept as canonical.
     """
-    best: dict[int, object] = {}  # st_dev -> psutil partition entry
+    best: dict[int, Any] = {}  # st_dev -> psutil partition entry (sdiskpart)
     for p in psutil.disk_partitions(all=True):
         if p.fstype in _PSEUDO_FSTYPES:
             continue

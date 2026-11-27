@@ -282,6 +282,22 @@ def _name_from_url(url: str) -> str:
     return download_urls.name_from_url(url)
 
 
+def _ensure_download_dir(path: str) -> None:
+    """Create the folder a download writes into, with a readable failure.
+
+    A bare filename has no directory part (`os.makedirs("")` raises
+    FileNotFoundError) and a real permission/disk error should reach the job log
+    as a sentence instead of a bare OSError.
+    """
+    parent = os.path.dirname(path)
+    if not parent:
+        return
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"Cannot create download folder {parent}: {exc}") from exc
+
+
 # Part-file helpers and the transfer engine live in
 # backend/services/download_transfer.py (TODO.md P2-01), imported above.
 
@@ -515,7 +531,10 @@ def _debrid_worker_scoped(task: dict, stop_event: threading.Event) -> None:
                     # Fall through to the poll sleep below. Re-querying
                     # immediately (the old `continue`) hammered the provider
                     # when its status had not flipped yet and could trip 429s.
-                if _now() - wait_since > DEBRID_MAX_WAIT:
+                # `wait_since` is None right after a fresh auto-selection: the
+                # clock restarts on the next poll, so there is nothing to
+                # compare yet (subtracting None raised TypeError).
+                if wait_since is not None and _now() - wait_since > DEBRID_MAX_WAIT:
                     raise RuntimeError("Timed out waiting for file selection on the debrid provider")
             elif status in ("completed", "cached", "downloaded"):
                 # "downloaded" is Real-Debrid's final state; without it an RD
@@ -636,7 +655,7 @@ def _debrid_worker_scoped(task: dict, stop_event: threading.Event) -> None:
         if not url:
             raise RuntimeError(f"Provider returned no download link for file {fid}")
 
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        _ensure_download_dir(dest)
         # Resume a partial file left behind by an earlier stalled/failed run.
         expected = int(f.get("size") or 0)
         resume = _resume_source(dest)
@@ -1226,7 +1245,7 @@ def _download_worker_scoped(task: dict, stop_event: threading.Event) -> None:
             last_bytes = pos
             last_t = now
 
-    os.makedirs(os.path.dirname(state["dest"]), exist_ok=True)
+    _ensure_download_dir(state["dest"])
     limits = cfg.get("speed_limit") or {}
     pkg_key, pkg_limit = _package_limit(task, cfg)
     _stream_to_file(url, state, resume, stop_event, _on_chunk, _on_open,

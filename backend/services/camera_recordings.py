@@ -282,8 +282,11 @@ def _save_export(op: dict) -> None:
     def _mutate(data):
         if not isinstance(data, dict):
             data = {}
-        ops = data.get("ops") if isinstance(data.get("ops"), list) else []
-        ops = [o for o in ops if o.get("op_id") != op["op_id"]]
+        raw_ops = data.get("ops")
+        candidates = raw_ops if isinstance(raw_ops, list) else []
+        # JSON on disk can hold anything: a non-dict entry must not crash the
+        # export (hand-edited or truncated camera_exports.json).
+        ops = [o for o in candidates if isinstance(o, dict) and o.get("op_id") != op["op_id"]]
         ops.insert(0, op)
         data["ops"] = ops[:MAX_EXPORTS]
         data["version"] = 1

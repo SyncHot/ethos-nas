@@ -11,6 +11,21 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.39.7] - 2026-11-27
+
+### Fixed
+
+- **Hardened four spots found by a static type pass** (no behaviour change when the happy path is
+  taken):
+  - Health Monitor no longer annotates the per-device partition map as `object`, so the disk reader
+    type-checks cleanly.
+  - Cameras: a storage folder that the path scope denies is refused explicitly instead of falling
+    through to `Path("")` (the current working directory).
+  - Cameras: a hand-edited or truncated `surveillance_exports.json` no longer breaks exports —
+    non-object entries in `ops` are dropped instead of raising `AttributeError`.
+  - Downloads: the debrid file-selection timeout no longer subtracts from `None` right after an
+    automatic file selection (that raised `TypeError` and aborted the poll loop).
+
 ## [2.39.6] - 2026-11-27
 
 ### Fixed

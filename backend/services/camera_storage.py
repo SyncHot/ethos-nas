@@ -103,11 +103,16 @@ def validate_storage_dir(raw: str | Path) -> str:
     text = str(raw or "").strip()
     if not text:
         raise ValueError("Storage folder must not be empty")
+    resolved = ""
     try:
         with path_scope.system_scope():
             resolved = path_scope.sanitize(text)
     except Exception as exc:  # noqa: BLE001 — surface the scope denial verbatim
         raise ValueError(str(exc) or "Storage folder is not allowed") from exc
+    if not resolved:
+        # The scope is expected to raise, but a context manager that suppresses
+        # instead would leave this unbound and Path("") is the CWD — refuse it.
+        raise ValueError("Storage folder is not allowed")
     path = Path(resolved)
     try:
         path.mkdir(parents=True, exist_ok=True)
