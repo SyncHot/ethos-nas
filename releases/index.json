@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-27T07:59:46+00:00",
+  "generated_at": "2026-11-27T08:11:49+00:00",
   "latest": {
-    "version": "2.39.5",
-    "git_sha": "e232f45",
-    "git_sha_full": "e232f45b3aa999ac7203d59fc7ce6dd60f554094",
-    "build": 314,
-    "released_at": "2026-11-27T07:59:46+00:00",
-    "notes": "Progress: the task panel reserves its own space, so the last button of a window is always clickable"
+    "version": "2.39.6",
+    "git_sha": "426d009",
+    "git_sha_full": "426d009c84cd460fc5aadbaf3936389524dd8278",
+    "build": 316,
+    "released_at": "2026-11-27T08:11:49+00:00",
+    "notes": "Packages: installing a package that needs a password asks for it first, in a setup dialog"
   },
   "releases": [
+    {
+      "version": "2.39.6",
+      "git_sha": "426d009",
+      "git_sha_full": "426d009c84cd460fc5aadbaf3936389524dd8278",
+      "build": 316,
+      "released_at": "2026-11-27T08:11:49+00:00",
+      "notes": "Packages: installing a package that needs a password asks for it first, in a setup dialog"
+    },
     {
       "version": "2.39.5",
       "git_sha": "e232f45",
@@ -201,14 +209,6 @@
       "build": 257,
       "released_at": "2026-11-23T09:47:39+00:00",
       "notes": "Settings → Updates: a Browser-extension card downloads the EthOS NAS Downloader zip from the NAS (or GitHub as fallback), with the deployed version shown."
-    },
-    {
-      "version": "2.31.2",
-      "git_sha": "6dd4cc9",
-      "git_sha_full": "6dd4cc9ae75a2de232ab5595be7f5dff12c7cc39",
-      "build": 253,
-      "released_at": "2026-11-23T09:21:29+00:00",
-      "notes": "Settings → Updates: a Download button links the published release's tagged source archive; every account can download it."
     }
   ]
 }
