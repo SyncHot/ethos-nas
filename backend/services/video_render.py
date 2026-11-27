@@ -41,21 +41,20 @@ from backend.services.video_engine import TranscodeLimiter, output_bitrate_bps
 
 logger = logging.getLogger("ethos-nas.services.video_render")
 
-MAX_JOBS_PER_USER = 60          # rows kept per owner (history + queue)
-MAX_QUEUED_PER_USER = 40        # queued + rendering at any time
-PREPARED_WINDOW = 8             # finished files kept per owner (re-saveable)
-DELIVERED_GRACE = 2 * 3600      # never reap a file served in the last 2 h
+MAX_JOBS_PER_USER = 60  # rows kept per owner (history + queue)
+MAX_QUEUED_PER_USER = 40  # queued + rendering at any time
+PREPARED_WINDOW = 8  # finished files kept per owner (re-saveable)
+DELIVERED_GRACE = 2 * 3600  # never reap a file served in the last 2 h
 TTL_SECONDS = 7 * 86400
-CONSUMED_TTL = 7 * 86400        # a stored copy stays re-downloadable for a week
-MAX_TOTAL_BYTES = 50 * 1024 ** 3  # 50 GiB of prepared downloads
-MIN_FREE_BYTES = 5 * 1024 ** 3    # refuse to start below 5 GiB free
+CONSUMED_TTL = 7 * 86400  # a stored copy stays re-downloadable for a week
+MAX_TOTAL_BYTES = 50 * 1024**3  # 50 GiB of prepared downloads
+MIN_FREE_BYTES = 5 * 1024**3  # refuse to start below 5 GiB free
 WORKER_TIMEOUT = 6 * 3600
 # AAC estimate for the size hint — the encoder uses the account's audio bitrate,
 # but the cap below is what a phone needs to know *before* queueing.
 ESTIMATE_AUDIO_BPS = 128_000
 MAX_JOBS_KEPT = 300
-QUALITY_LABELS = {"tiny": "480p", "fast": "720p", "balanced": "1080p",
-                  "high": "source", "original": "Original"}
+QUALITY_LABELS = {"tiny": "480p", "fast": "720p", "balanced": "1080p", "high": "source", "original": "Original"}
 
 
 class RenderError(Exception):
@@ -90,11 +89,11 @@ class RenderJob:
     mode: str = "transcode"  # passthrough | remux | transcode
     note: str = ""
     percent: float = 0.0
-    speed: float = 0.0          # ffmpeg ``speed=1.8x`` during a render
-    eta_s: float = 0.0          # remaining seconds at the current speed
+    speed: float = 0.0  # ffmpeg ``speed=1.8x`` during a render
+    eta_s: float = 0.0  # remaining seconds at the current speed
     duration: float = 0.0
     size: int = 0
-    expected_bytes: int = 0   # size estimate before the render finishes
+    expected_bytes: int = 0  # size estimate before the render finishes
     error: str = ""
     queue_position: int = 0
     created_at: float = field(default_factory=time.time)
@@ -143,13 +142,17 @@ class RenderJob:
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
-            "download_url": (f"/api/videos/exports/{self.id}/download"
-                             if self.status in ("done", "consumed") else None),
+            "download_url": (
+                f"/api/videos/exports/{self.id}/download" if self.status in ("done", "consumed") else None
+            ),
         }
 
 
 def estimate_output_bytes(
-    info: dict, source_bytes: int, mode: str, quality: str,
+    info: dict,
+    source_bytes: int,
+    mode: str,
+    quality: str,
 ) -> int:
     """Rough size of the prepared file, for the phone's pre-download hint.
 
@@ -180,13 +183,18 @@ def _file_size(path: str) -> int:
 class RenderManager:
     """Queue, run and expire offline renders. One process-wide instance."""
 
-    def __init__(self, *, limiter: TranscodeLimiter | None = None,
-                 base_dir: Path | None = None, ttl: float = TTL_SECONDS,
-                 max_total_bytes: int = MAX_TOTAL_BYTES,
-                 min_free_bytes: int = MIN_FREE_BYTES,
-                 max_per_user: int = MAX_JOBS_PER_USER,
-                 max_queued: int = MAX_QUEUED_PER_USER,
-                 prepared_window: int = PREPARED_WINDOW):
+    def __init__(
+        self,
+        *,
+        limiter: TranscodeLimiter | None = None,
+        base_dir: Path | None = None,
+        ttl: float = TTL_SECONDS,
+        max_total_bytes: int = MAX_TOTAL_BYTES,
+        min_free_bytes: int = MIN_FREE_BYTES,
+        max_per_user: int = MAX_JOBS_PER_USER,
+        max_queued: int = MAX_QUEUED_PER_USER,
+        prepared_window: int = PREPARED_WINDOW,
+    ):
         self.base_dir = Path(base_dir) if base_dir else settings.DATA_DIR / "video_exports"
         self.files_dir = self.base_dir / "files"
         self.limiter = limiter or TranscodeLimiter(1)
@@ -283,8 +291,7 @@ class RenderManager:
         return job
 
     def list_for(self, owner: str) -> list[RenderJob]:
-        return sorted((j for j in self._jobs.values() if j.owner == owner),
-                      key=lambda j: j.created_at, reverse=True)
+        return sorted((j for j in self._jobs.values() if j.owner == owner), key=lambda j: j.created_at, reverse=True)
 
     def download_path(self, job_id: str, owner: str) -> Path:
         job = self.get(job_id, owner)
@@ -318,8 +325,7 @@ class RenderManager:
 
     def _owner_count(self, owner: str) -> int:
         # Terminal failures do not block the queue; only live/ready work counts.
-        return sum(1 for j in self._jobs.values()
-                   if j.owner == owner and j.status in ("queued", "rendering", "done"))
+        return sum(1 for j in self._jobs.values() if j.owner == owner and j.status in ("queued", "rendering", "done"))
 
     def _discard_locked(self, job: RenderJob) -> None:
         """Drop a job row and its files (never the original of a passthrough)."""
@@ -336,9 +342,10 @@ class RenderManager:
         A consumed copy is no longer deleted immediately: it stays re-downloadable
         until the window or the byte cap evicts it.
         """
-        prepared = sorted((j for j in self._jobs.values()
-                           if j.owner == owner and j.status in ("done", "consumed")),
-                          key=lambda j: (j.created_at, j.id))
+        prepared = sorted(
+            (j for j in self._jobs.values() if j.owner == owner and j.status in ("done", "consumed")),
+            key=lambda j: (j.created_at, j.id),
+        )
         removed = 0
         now = time.time()
         while len(prepared) > self.prepared_window:
@@ -353,9 +360,19 @@ class RenderManager:
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
-    async def start(self, *, owner: str, abs_path: str, info: dict, quality: str,
-                    audio_idx: int, source_key: str, cmd_factory,
-                    mode: str = "transcode", note: str = "") -> RenderJob:
+    async def start(
+        self,
+        *,
+        owner: str,
+        abs_path: str,
+        info: dict,
+        quality: str,
+        audio_idx: int,
+        source_key: str,
+        cmd_factory,
+        mode: str = "transcode",
+        note: str = "",
+    ) -> RenderJob:
         """Queue a render, or reuse the copy already made (or running) for it."""
         if shutdown_state.is_set():
             raise RenderBusy("The server is shutting down — try again after the restart")
@@ -373,11 +390,9 @@ class RenderManager:
                     return job
             queued = sum(1 for j in self._jobs.values() if j.owner == owner and j.active)
             if queued >= self.max_queued:
-                raise RenderLimit(
-                    f"The download queue is full ({self.max_queued}) — remove an item first")
+                raise RenderLimit(f"The download queue is full ({self.max_queued}) — remove an item first")
             if self._owner_count(owner) >= self.max_per_user:
-                raise RenderLimit(
-                    f"You already have {self.max_per_user} downloads — remove one first")
+                raise RenderLimit(f"You already have {self.max_per_user} downloads — remove one first")
             self._reap_prepared_locked(owner)
             if self._stored_bytes() >= self.max_total_bytes:
                 raise RenderDiskError("The download area is full — delete an older download")
@@ -386,21 +401,32 @@ class RenderManager:
             if mode != "passthrough":
                 self._ensure_dirs()
             job = RenderJob(
-                id=uuid.uuid4().hex, owner=owner, path=abs_path, quality=quality,
-                audio_idx=max(0, int(audio_idx or 0)), source_key=source_key,
-                duration=float(info.get("duration") or 0), mode=mode, note=note,
-                expected_bytes=estimate_output_bytes(
-                    info, _file_size(abs_path), mode, quality),
+                id=uuid.uuid4().hex,
+                owner=owner,
+                path=abs_path,
+                quality=quality,
+                audio_idx=max(0, int(audio_idx or 0)),
+                source_key=source_key,
+                duration=float(info.get("duration") or 0),
+                mode=mode,
+                note=note,
+                expected_bytes=estimate_output_bytes(info, _file_size(abs_path), mode, quality),
             )
             self._jobs[job.id] = job
             self._refresh_positions_locked()
             self._persist()
-        task = task_registry.spawn(self._run(job, abs_path, info, cmd_factory),
-                                   name=f"video-render-{job.id}")
+        task = task_registry.spawn(self._run(job, abs_path, info, cmd_factory), name=f"video-render-{job.id}")
         if task is not None:
             self._tasks[job.id] = task
-        logger.info("Render queued | id=%s owner=%s q=%s mode=%s pos=%d input=%s",
-                    job.id, owner, quality, mode, job.queue_position, abs_path)
+        logger.info(
+            "Render queued | id=%s owner=%s q=%s mode=%s pos=%d input=%s",
+            job.id,
+            owner,
+            quality,
+            mode,
+            job.queue_position,
+            abs_path,
+        )
         return job
 
     async def _run(self, job: RenderJob, abs_path: str, info: dict, cmd_factory) -> None:
@@ -420,8 +446,9 @@ class RenderManager:
                 job.percent = 100.0
                 job.status = "done"
                 job.finished_at = time.time()
-                logger.info("Render passthrough | id=%s owner=%s size=%d input=%s",
-                            job.id, job.owner, job.size, abs_path)
+                logger.info(
+                    "Render passthrough | id=%s owner=%s size=%d input=%s", job.id, job.owner, job.size, abs_path
+                )
                 return
             if not await self.limiter.acquire(timeout=WORKER_TIMEOUT):
                 raise RenderBusy("The renderer stayed busy")
@@ -443,11 +470,11 @@ class RenderManager:
             job.started_at = time.time()
             job.speed = 0.0
             job.eta_s = 0.0
-            logger.info("Render start | id=%s q=%s mode=%s input=%s",
-                        job.id, job.quality, job.mode, abs_path)
+            logger.info("Render start | id=%s q=%s mode=%s input=%s", job.id, job.quality, job.mode, abs_path)
             proc = await asyncio.create_subprocess_exec(
                 *child_limits.wrap(cmd, mem_mb=settings.CHILD_RENDER_MEM_LIMIT_MB),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
             self._procs[job.id] = proc
             drain = asyncio.create_task(self._drain(proc.stderr, stderr_tail))
@@ -462,14 +489,16 @@ class RenderManager:
             if proc.returncode != 0 or not part.is_file() or part.stat().st_size == 0:
                 raise RenderError(
                     f"ffmpeg exited with {proc.returncode}: "
-                    + (b"".join(stderr_tail).decode("utf-8", "replace")[-600:] or "no stderr"))
+                    + (b"".join(stderr_tail).decode("utf-8", "replace")[-600:] or "no stderr")
+                )
             os.replace(part, out)
             job.status = "done"
             job.percent = 100.0
             job.size = out.stat().st_size
             job.finished_at = time.time()
-            logger.info("Render done | id=%s owner=%s mode=%s size=%d input=%s",
-                        job.id, job.owner, job.mode, job.size, abs_path)
+            logger.info(
+                "Render done | id=%s owner=%s mode=%s size=%d input=%s", job.id, job.owner, job.mode, job.size, abs_path
+            )
         except asyncio.CancelledError:
             job.status = "cancelled"
             raise
@@ -477,8 +506,9 @@ class RenderManager:
             job.status = "failed"
             job.error = str(exc)[:600] or "Render failed"
             job.finished_at = time.time()
-            logger.error("Render failed | id=%s input=%s: %s", job.id, abs_path, exc,
-                         exc_info=not isinstance(exc, RenderError))
+            logger.error(
+                "Render failed | id=%s input=%s: %s", job.id, abs_path, exc, exc_info=not isinstance(exc, RenderError)
+            )
             self._notify_failed(job, abs_path)
             if not job.passthrough:
                 with contextlib.suppress(OSError):
@@ -549,28 +579,42 @@ class RenderManager:
         """One batched event per owner instead of a toast for every film."""
         try:
             from backend.services.notifications_service import emit_event
+
             queued = any(j.active for j in self._jobs.values() if j.owner == job.owner)
-            ready = sum(1 for j in self._jobs.values()
-                        if j.owner == job.owner and j.status == "done")
+            ready = sum(1 for j in self._jobs.values() if j.owner == job.owner and j.status == "done")
             if queued:
                 return  # more work in the queue — tell the user when it drains
             title = "Download ready" if ready <= 1 else f"{ready} downloads ready"
-            message = (f"{Path(job.path).name} ({job.quality}) is ready to save offline."
-                       if ready <= 1 else
-                       f"{ready} videos are ready to save offline in the Videos app.")
-            emit_event("success", title, message, source="videos", users=[job.owner],
-                       action={"label": "Open Videos", "href": "/videos"},
-                       dedupe_key=f"video-exports-{job.owner}")
+            message = (
+                f"{Path(job.path).name} ({job.quality}) is ready to save offline."
+                if ready <= 1
+                else f"{ready} videos are ready to save offline in the Videos app."
+            )
+            emit_event(
+                "success",
+                title,
+                message,
+                source="videos",
+                users=[job.owner],
+                action={"label": "Open Videos", "href": "/videos"},
+                dedupe_key=f"video-exports-{job.owner}",
+            )
         except Exception:
             logger.debug("Could not emit render notification", exc_info=True)
 
     def _notify_failed(self, job: RenderJob, abs_path: str) -> None:
         try:
             from backend.services.notifications_service import emit_event
-            emit_event("error", "Download failed", f"{Path(abs_path).name}: {job.error}",
-                       source="videos", users=[job.owner],
-                       action={"label": "Open Videos", "href": "/videos"},
-                       dedupe_key=f"video-export-{job.id}")
+
+            emit_event(
+                "error",
+                "Download failed",
+                f"{Path(abs_path).name}: {job.error}",
+                source="videos",
+                users=[job.owner],
+                action={"label": "Open Videos", "href": "/videos"},
+                dedupe_key=f"video-export-{job.id}",
+            )
         except Exception:
             logger.debug("Could not emit render notification", exc_info=True)
 
@@ -639,8 +683,7 @@ class RenderManager:
             if job.active:
                 continue
             expired = now - (job.finished_at or job.created_at) > self.ttl
-            consumed = (job.status == "consumed"
-                        and job.consumed_at and now - job.consumed_at > CONSUMED_TTL)
+            consumed = job.status == "consumed" and job.consumed_at and now - job.consumed_at > CONSUMED_TTL
             if job.status == "cancelled" or expired or consumed:
                 self._discard_locked(job)
                 removed += 1

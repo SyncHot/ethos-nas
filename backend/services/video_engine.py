@@ -123,8 +123,7 @@ def resolve_quality(info: dict, quality: str, allow_hevc: bool = False) -> str:
     return "tiny" if 0 < height <= 480 else "fast"
 
 
-def download_mode(info: dict, quality: str, ext: str, audio_idx: int = 0,
-                  allow_hevc: bool = False) -> tuple[str, str]:
+def download_mode(info: dict, quality: str, ext: str, audio_idx: int = 0, allow_hevc: bool = False) -> tuple[str, str]:
     """Return ``(mode, note)`` for an offline export.
 
     passthrough — the source already is a phone-playable MP4: serve it as is
@@ -180,11 +179,15 @@ def bitrate_for(width: int, height: int, max_height: int = 0) -> str:
     run in constant-quality mode, and this only bounds the result.
     """
     target_height = int(max_height or height or 0)
-    if target_height >= 1080:
+    # Real-world "1080p" sources are frequently 1040/1042/1072 (cropped black
+    # bars). A strict >= 1080 test silently gave those the 720p cap, i.e. a
+    # visibly soft picture plus an underestimated download size. Bucket by the
+    # nearest standard height instead.
+    if target_height >= 1000:
         return "5M"
-    if target_height >= 720:
+    if target_height >= 700:
         return "2.8M"
-    if target_height >= 480:
+    if target_height >= 460:
         return "1.5M"
     return "1.2M"
 
@@ -221,7 +224,7 @@ def output_bitrate_bps(quality: str, info: dict | None = None) -> int:
 
 
 def needs_tonemap(info: dict) -> bool:
-    return (str(info.get("color_transfer") or "").lower() in HDR_TRANSFERS)
+    return str(info.get("color_transfer") or "").lower() in HDR_TRANSFERS
 
 
 def build_video_args(
@@ -232,6 +235,7 @@ def build_video_args(
     *,
     decode_hw: bool = False,
     device: str | None = None,
+    gop_seconds: float = 2.0,
 ) -> tuple[list[str], list[str], list[str]]:
     """Return ``(input_options, video_options, filters)`` for one ffmpeg run."""
     width = int(info.get("width") or 0)
@@ -250,6 +254,11 @@ def build_video_args(
     except (TypeError, ValueError):
         fps = 0.0
     cap_fps = fps > 30.5
+    # Klatka kluczowa co ``gop_seconds``: mniej IDR = mniejszy plik przy tym
+    # samym QP/CRF, ale segment HLS nie może być krótszy niż GOP. Live chce
+    # krótkiego pierwszego segmentu (szybki start), plik offline chce mniejszego
+    # rozmiaru — dlatego GOP jest parametrem, nie stałą "30".
+    gop_frames = max(8, round((fps if fps > 0 else 30.0) * max(0.5, gop_seconds)))
 
     pre: list[str] = []
     filters: list[str] = []
@@ -292,9 +301,24 @@ def build_video_args(
         # ``-global_quality`` is ICQ (constant quality); ``-maxrate`` bounds
         # the file so the phone's size preflight stays honest.
         video = [
-            "-c:v", "h264_qsv", "-low_power", "1", "-preset", "veryfast",
-            "-global_quality", str(preset["qsv_q"]),
-            "-maxrate", bitrate, "-bufsize", "16M", "-g", "30", "-bf", "0",
+            "-c:v",
+            "h264_qsv",
+            "-low_power",
+            "1",
+            "-preset",
+            "veryfast",
+            "-global_quality",
+            str(preset["qsv_q"]),
+            "-maxrate",
+            bitrate,
+            "-bufsize",
+            "16M",
+            "-g",
+            str(gop_frames),
+            "-keyint_min",
+            str(gop_frames),
+            "-bf",
+            "0",
         ]
     elif encoder == "vaapi":
         if device:
@@ -311,14 +335,42 @@ def build_video_args(
         else:
             filters.extend(software_filters("nv12"))
             filters.append("hwupload")
-        video = ["-c:v", "h264_vaapi", "-qp", str(preset["va_qp"]),
-                 "-maxrate", bitrate, "-bufsize", "16M", "-g", "30", "-bf", "0"]
+        video = [
+            "-c:v",
+            "h264_vaapi",
+            "-qp",
+            str(preset["va_qp"]),
+            "-maxrate",
+            bitrate,
+            "-bufsize",
+            "16M",
+            "-g",
+            str(gop_frames),
+            "-keyint_min",
+            str(gop_frames),
+            "-bf",
+            "0",
+        ]
     else:
         video = [
-            "-c:v", "libx264", "-preset", preset["preset"], "-crf", str(preset["crf"]),
-            # Short GOP: with the default 250-frame GOP a slow CPU would take
-            # ~a minute to emit the first fragment of the live pipe.
-            "-g", "30", "-maxrate", bitrate, "-bufsize", "16M", "-pix_fmt", "yuv420p",
+            "-c:v",
+            "libx264",
+            "-preset",
+            preset["preset"],
+            "-crf",
+            str(preset["crf"]),
+            # GOP z ``gop_frames``: przy 250-klatkowym domyślnym GOP wolny CPU
+            # emitowałby pierwszą fragment live-pipe'a po minucie.
+            "-g",
+            str(gop_frames),
+            "-keyint_min",
+            str(gop_frames),
+            "-maxrate",
+            bitrate,
+            "-bufsize",
+            "16M",
+            "-pix_fmt",
+            "yuv420p",
         ]
         filters.extend(software_filters("yuv420p"))
 
@@ -343,8 +395,7 @@ def aac_layout_filter(track: dict) -> list[str]:
     return ["-af", f"aformat=channel_layouts={target}"] if target else []
 
 
-def build_audio_args(info: dict, track_idx: int, mode: str, audio_bitrate: str,
-                     acodec: str = "aac") -> list[str]:
+def build_audio_args(info: dict, track_idx: int, mode: str, audio_bitrate: str, acodec: str = "aac") -> list[str]:
     acodec = acodec if acodec in AUDIO_CODECS else "aac"
     tracks = info.get("audio_tracks") or []
     idx = min(max(0, int(track_idx)), max(0, len(tracks) - 1)) if tracks else 0
@@ -361,8 +412,7 @@ def build_audio_args(info: dict, track_idx: int, mode: str, audio_bitrate: str,
     # would break playback in the browser just like an encoded one.
     if mode == "remux" and codec == "aac" and (not layout or layout in AAC_STANDARD_LAYOUTS):
         return ["-map", f"0:a:{idx}?", "-c:a", "copy"]
-    return ["-map", f"0:a:{idx}?", "-c:a", "aac", "-b:a", audio_bitrate,
-            *aac_layout_filter(track)]
+    return ["-map", f"0:a:{idx}?", "-c:a", "aac", "-b:a", audio_bitrate, *aac_layout_filter(track)]
 
 
 def _av_args(
@@ -376,9 +426,16 @@ def _av_args(
     decode_hw: bool,
     device: str | None,
     acodec: str = "aac",
+    gop_seconds: float = 2.0,
 ) -> tuple[list[str], list[str], list[str]]:
     pre, video, filters = build_video_args(
-        info, mode, encoder, quality, decode_hw=decode_hw, device=device,
+        info,
+        mode,
+        encoder,
+        quality,
+        decode_hw=decode_hw,
+        device=device,
+        gop_seconds=gop_seconds,
     )
     audio = build_audio_args(info, track_idx, mode, audio_bitrate, acodec)
     return pre, video + (["-vf", ",".join(filters)] if filters else []), audio
@@ -399,18 +456,43 @@ def build_transcode_cmd(
     device: str | None = None,
     loglevel: str = "error",
     acodec: str = "aac",
+    gop_seconds: float = 1.0,
 ) -> list[str]:
     pre, video, audio = _av_args(
-        info, mode, encoder, track_idx, quality, audio_bitrate,
-        decode_hw=decode_hw, device=device, acodec=acodec,
+        info,
+        mode,
+        encoder,
+        track_idx,
+        quality,
+        audio_bitrate,
+        decode_hw=decode_hw,
+        device=device,
+        acodec=acodec,
+        gop_seconds=gop_seconds,
     )
     return [
-        ffmpeg, "-nostdin", "-hide_banner", "-loglevel", loglevel,
-        *pre, "-ss", f"{start:.3f}", "-i", abs_path,
-        "-map", "0:v:0", *video, *audio, "-sn",
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        loglevel,
+        *pre,
+        "-ss",
+        f"{start:.3f}",
+        "-i",
+        abs_path,
+        "-map",
+        "0:v:0",
+        *video,
+        *audio,
+        "-sn",
         # Fragmented MP4: empty moov up front + one fragment per keyframe so
         # the browser starts playing immediately from a non-seekable pipe.
-        "-f", "mp4", "-movflags", "+frag_keyframe+empty_moov", "pipe:1",
+        "-f",
+        "mp4",
+        "-movflags",
+        "+frag_keyframe+empty_moov",
+        "pipe:1",
     ]
 
 
@@ -432,23 +514,60 @@ def build_hls_cmd(
     segment_seconds: int = 4,
     list_size: int = 10,
     acodec: str = "aac",
+    init_segment_seconds: float = 1.0,
 ) -> list[str]:
-    """Bounded live HLS: real-time read, fMP4 segments, small sliding window."""
+    """Bounded live HLS: real-time read, fMP4 segments, small sliding window.
+
+    ``init_segment_seconds`` makes the FIRST segments short, so the player can
+    start ~3 s earlier: measured 7.4 s → 4.2 s to first playable segment on the
+    N150. The encoder GOP is pinned to 1 s for the same reason (an HLS segment
+    can never be shorter than the GOP), and the steady state still cuts at
+    ``segment_seconds`` once the init list is behind us.
+    """
     pre, video, audio = _av_args(
-        info, mode, encoder, track_idx, quality, audio_bitrate,
-        decode_hw=decode_hw, device=device, acodec=acodec,
+        info,
+        mode,
+        encoder,
+        track_idx,
+        quality,
+        audio_bitrate,
+        decode_hw=decode_hw,
+        device=device,
+        acodec=acodec,
+        gop_seconds=min(1.0, init_segment_seconds) if init_segment_seconds else 1.0,
     )
     return [
-        ffmpeg, "-nostdin", "-hide_banner", "-loglevel", loglevel,
-        *pre, "-re", "-ss", f"{start:.3f}", "-i", abs_path,
-        "-map", "0:v:0", *video, *audio, "-sn",
-        "-f", "hls",
-        "-hls_time", str(max(2, int(segment_seconds))),
-        "-hls_list_size", str(max(3, int(list_size))),
-        "-hls_flags", "delete_segments+independent_segments+temp_file",
-        "-hls_segment_type", "fmp4",
-        "-hls_fmp4_init_filename", "init.mp4",
-        "-hls_segment_filename", os.path.join(out_dir, "seg%05d.m4s"),
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        loglevel,
+        *pre,
+        "-re",
+        "-ss",
+        f"{start:.3f}",
+        "-i",
+        abs_path,
+        "-map",
+        "0:v:0",
+        *video,
+        *audio,
+        "-sn",
+        "-f",
+        "hls",
+        "-hls_time",
+        str(max(2, int(segment_seconds))),
+        *(["-hls_init_time", f"{max(0.5, init_segment_seconds):.1f}"] if init_segment_seconds else []),
+        "-hls_list_size",
+        str(max(3, int(list_size))),
+        "-hls_flags",
+        "delete_segments+independent_segments+temp_file",
+        "-hls_segment_type",
+        "fmp4",
+        "-hls_fmp4_init_filename",
+        "init.mp4",
+        "-hls_segment_filename",
+        os.path.join(out_dir, "seg%05d.m4s"),
         os.path.join(out_dir, "index.m3u8"),
     ]
 
@@ -469,6 +588,7 @@ def build_render_cmd(
     loglevel: str = "error",
     progress: bool = True,
     mode: str = "transcode",
+    gop_seconds: float = 2.0,
 ) -> list[str]:
     """Finite MP4 render used for offline downloads (seekable, +faststart).
 
@@ -479,7 +599,13 @@ def build_render_cmd(
     re-encodes when the source codec cannot be copied.
     """
     pre, video, filters = build_video_args(
-        info, mode, encoder, quality, decode_hw=decode_hw, device=device,
+        info,
+        mode,
+        encoder,
+        quality,
+        decode_hw=decode_hw,
+        device=device,
+        gop_seconds=gop_seconds,
     )
     audio = build_audio_args(info, track_idx, mode, audio_bitrate, acodec)
     cmd = [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", loglevel]
@@ -505,16 +631,18 @@ class TranscodeLimiter:
         self._active = 0
         self._lock: asyncio.Lock | None = None
 
-    def _ensure(self) -> None:
+    def _ensure(self) -> asyncio.Lock:
+        """Lazily create the lock and hand it back (typed, never Optional at use)."""
         if self._lock is None:
             self._lock = asyncio.Lock()
+        return self._lock
 
     async def acquire(self, timeout: float = 5.0) -> bool:
-        self._ensure()
+        lock = self._ensure()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
-            async with self._lock:  # type: ignore[union-attr]
+            async with lock:
                 if self._active < self.max_active:
                     self._active += 1
                     return True
@@ -523,8 +651,7 @@ class TranscodeLimiter:
             await asyncio.sleep(0.2)
 
     async def release(self) -> None:
-        self._ensure()
-        async with self._lock:  # type: ignore[union-attr]
+        async with self._ensure():
             self._active = max(0, self._active - 1)
 
     def snapshot(self) -> dict:
@@ -536,9 +663,7 @@ LIMITER = TranscodeLimiter(2)
 
 def _list_dri_nodes() -> list[str]:
     try:
-        return sorted(
-            f"/dev/dri/{name}" for name in os.listdir("/dev/dri") if name.startswith("renderD")
-        )
+        return sorted(f"/dev/dri/{name}" for name in os.listdir("/dev/dri") if name.startswith("renderD"))
     except OSError:
         return []
 
@@ -577,7 +702,8 @@ class HardwareProbe:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *child_limits.wrap(cmd, mem_mb=settings.CHILD_PROBE_MEM_LIMIT_MB),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
         except Exception as exc:  # pragma: no cover - spawn failures are environmental
             return None, "", f"spawn failed: {exc}"
@@ -605,8 +731,7 @@ class HardwareProbe:
             self._hwaccels = []
         else:
             self._hwaccels = [
-                line.strip() for line in out.splitlines()
-                if line.strip() and not line.strip().endswith(":")
+                line.strip() for line in out.splitlines() if line.strip() and not line.strip().endswith(":")
             ]
         self._hwaccels_ts = now
         return self._hwaccels
@@ -621,9 +746,19 @@ class HardwareProbe:
 
     async def _probe(self, args: list[str]) -> tuple[bool, str]:
         cmd = [
-            self.ffmpeg or "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-f", "lavfi", "-i", "testsrc2=duration=0.4:size=640x360:rate=30",
-            *args, "-f", "null", "-",
+            self.ffmpeg or "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=duration=0.4:size=640x360:rate=30",
+            *args,
+            "-f",
+            "null",
+            "-",
         ]
         rc, _, tail = await self._run(cmd, timeout=PROBE_TIMEOUT)
         return rc == 0, tail
@@ -633,8 +768,20 @@ class HardwareProbe:
         # ``auto`` default selects the legacy path and fails with -22 even
         # when the oneVPL runtime is installed and the MFX session opens.
         common = [
-            "-c:v", "h264_qsv", "-low_power", "1", "-preset", "veryfast",
-            "-b:v", "2M", "-g", "30", "-bf", "0", "-pix_fmt", "nv12",
+            "-c:v",
+            "h264_qsv",
+            "-low_power",
+            "1",
+            "-preset",
+            "veryfast",
+            "-b:v",
+            "2M",
+            "-g",
+            "30",
+            "-bf",
+            "0",
+            "-pix_fmt",
+            "nv12",
         ]
         variants = [
             ["-qsv_device", node, *common],
@@ -649,10 +796,22 @@ class HardwareProbe:
         return False, " | ".join(r[-300:] for r in reasons if r)[-MAX_REASON:]
 
     async def _probe_vaapi(self, node: str) -> tuple[bool, str]:
-        ok, reason = await self._probe([
-            "-vaapi_device", node, "-vf", "format=nv12,hwupload",
-            "-c:v", "h264_vaapi", "-b:v", "2M", "-g", "30", "-bf", "0",
-        ])
+        ok, reason = await self._probe(
+            [
+                "-vaapi_device",
+                node,
+                "-vf",
+                "format=nv12,hwupload",
+                "-c:v",
+                "h264_vaapi",
+                "-b:v",
+                "2M",
+                "-g",
+                "30",
+                "-bf",
+                "0",
+            ]
+        )
         return ok, (f"VA-API H.264 encode via {node}" if ok else (reason or "probe exited non-zero"))
 
     async def _probe_software(self) -> tuple[bool, str]:
@@ -666,10 +825,14 @@ class HardwareProbe:
     async def status(self, refresh: bool = False) -> dict:
         if not self.ffmpeg:
             return {
-                "encoder": None, "device": None,
+                "encoder": None,
+                "device": None,
                 "reason": "ffmpeg not found on PATH — start the service after installing ffmpeg",
-                "probe_version": PROBE_VERSION, "probed_at": int(time.time()),
-                "candidates": {}, "decode": {}, "tools": {"ffmpeg": False, "ffprobe": bool(self.ffprobe)},
+                "probe_version": PROBE_VERSION,
+                "probed_at": int(time.time()),
+                "candidates": {},
+                "decode": {},
+                "tools": {"ffmpeg": False, "ffprobe": bool(self.ffprobe)},
             }
         now = time.monotonic()
         cached = self._status
@@ -685,8 +848,11 @@ class HardwareProbe:
             hwaccels = await self.hwaccels(refresh=refresh)
             candidates: dict[str, dict] = {}
             result: dict = {
-                "encoder": None, "device": usable[0] if usable else None,
-                "reason": "", "probe_version": PROBE_VERSION, "probed_at": int(time.time()),
+                "encoder": None,
+                "device": usable[0] if usable else None,
+                "reason": "",
+                "probe_version": PROBE_VERSION,
+                "probed_at": int(time.time()),
                 "candidates": candidates,
                 "decode": {
                     "vaapi": bool(usable and "vaapi" in hwaccels),
@@ -717,9 +883,7 @@ class HardwareProbe:
                     if ok:
                         result.update(encoder="vaapi", device=node, reason=reason)
                     else:
-                        result["reason"] = (
-                            f"no working hardware H.264 encoder on {node} — using libx264"
-                        )
+                        result["reason"] = f"no working hardware H.264 encoder on {node} — using libx264"
                 sw_ok, sw_reason = await self._probe_software()
                 candidates["libx264"] = {"ok": sw_ok, "reason": sw_reason or "software fallback"}
                 if not sw_ok and result["encoder"] is None:
@@ -733,12 +897,14 @@ class HardwareProbe:
                 logger.info("Videos media engine: software libx264 (%s)", result["reason"])
             for name, candidate in candidates.items():
                 if name != "libx264" and not candidate.get("ok"):
-                    logger.info("Videos media engine: %s probe failed: %s", name,
-                                (candidate.get("reason") or "")[-300:])
+                    logger.info(
+                        "Videos media engine: %s probe failed: %s", name, (candidate.get("reason") or "")[-300:]
+                    )
             return result
 
-    async def can_decode_hw(self, abs_path: str, info: dict, encoder: str | None,
-                            device: str | None) -> tuple[bool, str]:
+    async def can_decode_hw(
+        self, abs_path: str, info: dict, encoder: str | None, device: str | None
+    ) -> tuple[bool, str]:
         if not self.ffmpeg or not device or encoder not in ("vaapi", "qsv"):
             return False, "no hardware decoder"
         codec = (info.get("video_codec") or "").lower()
@@ -752,16 +918,28 @@ class HardwareProbe:
         else:
             hw = ["-qsv_device", device, "-hwaccel", "qsv", "-hwaccel_output_format", "qsv"]
         cmd = [
-            self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *hw,
-            "-i", abs_path, "-t", "0.5", "-f", "null", "-",
+            self.ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            *hw,
+            "-i",
+            abs_path,
+            "-t",
+            "0.5",
+            "-f",
+            "null",
+            "-",
         ]
         rc, _, tail = await self._run(cmd, timeout=DECODE_TIMEOUT)
         ok = rc == 0
         reason = "" if ok else (tail or f"decode probe exit {rc}")
         self._decode[key] = (now, ok, reason)
         if not ok:
-            logger.info("HW decode unavailable for %s via %s — software decode (%s)",
-                        codec or "?", encoder, reason[-300:])
+            logger.info(
+                "HW decode unavailable for %s via %s — software decode (%s)", codec or "?", encoder, reason[-300:]
+            )
         return ok, reason
 
 
@@ -770,7 +948,7 @@ def prune_decode_cache(probe: HardwareProbe, max_items: int = 64) -> None:
     if len(probe._decode) <= max_items:
         return
     ordered = sorted(probe._decode.items(), key=lambda kv: kv[1][0])
-    for key, _ in ordered[:len(probe._decode) - max_items]:
+    for key, _ in ordered[: len(probe._decode) - max_items]:
         probe._decode.pop(key, None)
 
 

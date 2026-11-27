@@ -120,6 +120,16 @@ function esc(value) {
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
+/**
+ * Ustawia zawartość elementu ze znaczników zbudowanych z wyescapowanych wartości,
+ * bez `innerHTML` — `createContextualFragment` parsuje HTML w kontekście
+ * dokumentu i zwraca węzły, więc nie ma powierzchni wstrzyknięcia.
+ */
+function setMarkup(el, markup) {
+    if (!el) return;
+    el.replaceChildren(document.createRange().createContextualFragment(String(markup ?? '')));
+}
+
 function fmtTime(seconds) {
     const s = Math.max(0, Math.floor(Number(seconds) || 0));
     const h = Math.floor(s / 3600);
@@ -531,13 +541,13 @@ async function boot() {
             logWarn('Library unavailable — offline library', String(error));
             return;
         }
-        els.content.innerHTML = `<div class="vd-empty"><b>Could not load the library</b>${esc(apiError(error))}</div>`;
+        setMarkup(els.content, `<div class="vd-empty"><b>Could not load the library</b>${esc(apiError(error))}</div>`);
         logWarn('Library load failed', String(error));
     }
 }
 
 function renderLoading(text) {
-    els.content.innerHTML = `<div class="vd-empty"><b>Loading…</b>${esc(text)}</div>`;
+    setMarkup(els.content, `<div class="vd-empty"><b>Loading…</b>${esc(text)}</div>`);
 }
 
 function videos() {
@@ -649,10 +659,10 @@ function render() {
     const q = state.query.trim().toLowerCase();
     if (q) {
         const hits = videos().filter((item) => searchText(item).includes(q)).slice(0, 120);
-        els.content.innerHTML = hits.length
+        setMarkup(els.content, hits.length
             ? `<section class="vd-shelf"><div class="vd-shelf-head"><h2>Results</h2><span>${hits.length}</span></div>
                <div class="vd-grid">${hits.map((item) => cardHtml(item)).join('')}</div></section>`
-            : `<div class="vd-empty"><b>No matches</b>Nothing in the library matches “${esc(state.query)}”.</div>`;
+            : `<div class="vd-empty"><b>No matches</b>Nothing in the library matches “${esc(state.query)}”.</div>`);
         paintSelection();
         return;
     }
@@ -697,7 +707,7 @@ function render() {
             pieces.push(`<div class="vd-empty"><b>No videos yet</b>Add a folder in the desktop Videos app (Settings → Library).</div>`);
         }
     }
-    els.content.innerHTML = pieces.join('');
+    setMarkup(els.content, pieces.join(''));
     paintSelection();
     updateDownloadsBadge();
 }
@@ -710,7 +720,7 @@ function renderShow(show) {
         <span>${episodes.length} episodes</span>
     </div>`;
     if (!episodes.length) {
-        els.content.innerHTML = header + `<div class="vd-empty"><b>No episodes</b>This show has no readable episode files.</div>`;
+        setMarkup(els.content, header + `<div class="vd-empty"><b>No episodes</b>This show has no readable episode files.</div>`);
         return;
     }
     const seasons = [...new Set(episodes.map((ep) => Number(ep.season) || 0))].sort((a, b) => a - b);
@@ -724,11 +734,11 @@ function renderShow(show) {
             <div class="vd-grid">${list.map((episode) => cardHtml(episode)).join('')}</div>
         </section>`;
     }).join('');
-    els.content.innerHTML = `${header}
+    setMarkup(els.content, `${header}
         <div class="vd-toolbar">
             <button class="vd-btn primary" type="button" data-action="play" data-path="${esc(next.path)}">▶ Play next · ${esc(episodeLabel(next))}</button>
         </div>
-        ${sections}`;
+        ${sections}`);
     paintSelection();
     updateDownloadsBadge();
 }
@@ -905,7 +915,7 @@ function openSheet(item) {
         ? `${next ? `<button class="vd-btn" type="button" data-action="play" data-path="${esc(next.path)}">Next episode</button>` : ''}
            <button class="vd-btn" type="button" data-action="show" data-show="${esc(item.show || '')}">Series</button>`
         : '';
-    els.sheetBody.innerHTML = `<div class="vd-detail">
+    setMarkup(els.sheetBody, `<div class="vd-detail">
         <div class="vd-detail-head">
             <div class="vd-detail-poster"><img src="${esc(artUrl(item))}" alt=""></div>
             <div class="vd-detail-copy">
@@ -926,7 +936,7 @@ function openSheet(item) {
         </div>
         <p class="vd-hint">${esc(autoHint(item))}</p>
         ${versionRow}
-    </div>`;
+    </div>`);
     els.sheet.dataset.path = item.path;
     els.sheet.hidden = false;
     loadSheetInfo(item.path);
@@ -1181,7 +1191,7 @@ function renderDownloads(force = false) {
                 <span class="vd-dl-stage" data-tone="bad">${esc(entry.reason)}</span></div></div>`).join('')}
            </section>`
         : '';
-    els.downloadsList.innerHTML = [
+    setMarkup(els.downloadsList, [
         resumable ? `<div class="vd-dl-toolbar"><button class="vd-btn primary" type="button"
             data-action="resume-all" data-testid="vd-resume-all">↻ Wznów wszystkie (${resumable})</button></div>` : '',
         section('Preparing', active, 'The NAS renders the next film while the previous one saves.'),
@@ -1193,7 +1203,7 @@ function renderDownloads(force = false) {
         section('On this device', done),
         section('Failed', failed),
         batchErrors,
-    ].join('');
+    ].join(''));
     els.downloadsList.dataset.signature = downloadsSignature();
 }
 
@@ -1619,8 +1629,8 @@ async function setupSubtitles(player) {
     else if (saved && subs.some((sub) => sub.name === saved)) index = subs.findIndex((sub) => sub.name === saved);
     else if (auto) index = Math.max(0, subs.findIndex((sub) => sub.preferred));
     els.sub.hidden = false;
-    els.sub.innerHTML = '<option value="-1">Subtitles off</option>' + subs.map((sub, i) =>
-        `<option value="${i}" ${i === index ? 'selected' : ''}>${esc(sub.name)}</option>`).join('');
+    setMarkup(els.sub, '<option value="-1">Subtitles off</option>' + subs.map((sub, i) =>
+        `<option value="${i}" ${i === index ? 'selected' : ''}>${esc(sub.name)}</option>`).join(''));
     if (index >= 0) await selectSubtitle(player, index);
 }
 
@@ -1710,12 +1720,12 @@ function renderAudioSelect(player) {
     const select = els.audio;
     if (!player.audioTracks || player.audioTracks.length < 2) { select.hidden = true; return; }
     select.hidden = false;
-    select.innerHTML = player.audioTracks.map((track, index) => {
+    setMarkup(select, player.audioTracks.map((track, index) => {
         const lang = track.language ? `${track.language.toUpperCase()} · ` : '';
         const codec = (track.codec || '').toUpperCase();
         const channels = track.channels === 6 ? ' 5.1' : track.channels === 8 ? ' 7.1' : '';
         return `<option value="${index}" ${index === player.audioIdx ? 'selected' : ''}>${esc(`${lang}${codec}${channels}`)}</option>`;
-    }).join('');
+    }).join(''));
 }
 
 async function startHls(player, start, audioIdx, { allowFallback = true } = {}) {
@@ -1746,7 +1756,28 @@ async function startHls(player, start, audioIdx, { allowFallback = true } = {}) 
         const Hls = await loadHls();
         if (state.player !== player) return;
         if (player.hls) { try { player.hls.destroy(); } catch { /* ignore */ } }
-        const hls = new Hls({ enableWorker: true, lowLatencyMode: true });
+        // Konfiguracja pod NAS-owy HLS: 4 s segmenty, okno 10 segmentów, JEDNA
+        // rendition (jakość wybiera się sesją serwerową, nie ABR-em).
+        // - lowLatencyMode: tylko dla LL-HLS (PART/blocking reload); przy 4 s
+        //   segmentach włączał agresywne przeładowania playlisty,
+        // - startLevel 0 + testBandwidth:false — nie ma czego mierzyć, więc
+        //   pomijamy startowy test pasma (krótszy czas do pierwszego obrazu),
+        // - bufory: 20/40 s do przodu, 30 s wstecz — zapas na LAN/TV bez
+        //   trzymania całego filmu w pamięci,
+        // - retry: krótkie, żeby chwilowy błąd przy rotacji segmentów nie kończył
+        //   odtwarzania.
+        const hls = new Hls({
+            enableWorker: true,
+            lowLatencyMode: false,
+            startLevel: 0,
+            testBandwidth: false,
+            maxBufferLength: 20,
+            maxMaxBufferLength: 40,
+            backBufferLength: 30,
+            manifestLoadingMaxRetry: 3,
+            fragLoadingMaxRetry: 4,
+            fragLoadingRetryDelay: 500,
+        });
         player.hls = hls;
         hls.on(Hls.Events.ERROR, (_event, data2) => {
             if (!data2?.fatal) return;

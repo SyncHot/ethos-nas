@@ -338,6 +338,29 @@ oneVPL implementation is missing; libx264 remains the software fallback.
   `429 HLS unavailable` for the next movie; a stream still playing is refused as
   before. Idle TTL 120 s, dir TTL 600 s; sweeper registered with `task_registry`;
   `stop_all()` on app shutdown.
+- **Startup latency and GOP policy** (measured on the N150, 1080p → 720p, qsv,
+  hardware decode). An HLS segment can never be shorter than the encoder GOP and
+  ffmpeg only cuts on keyframes, so `-hls_init_time` alone did nothing until the
+  GOP was pinned too:
+
+  | Konfiguracja | Pierwszy grywalny segment |
+  |---|---|
+  | `-g 30` (1,25 s), bez init | 7,36 s |
+  | `-g 30` + `-hls_init_time 1` | 4,20 s |
+  | `-g 24` (=1 s) + `-hls_init_time 1` (obecnie) | **3,47 s** |
+  | `-g 96` (=4 s) + init 1 | 6,85 s |
+
+  `build_hls_cmd` therefore passes `gop_seconds=1.0` and `init_segment_seconds=1`
+  (first segments 1 s, steady state still 4 s once the init list is behind).
+  Files rendered for offline download use `gop_seconds=2.0` instead: fewer IDRs
+  is 4–9 % smaller at the same QP/CRF, and seek granularity on a finished file
+  does not need 1 s keyframes. `-async_depth` and `-readrate_initial_burst` were
+  measured too and made **no** difference on this GPU, so they are not used.
+- Client side: the PWA opens hls.js with `lowLatencyMode: false` (4 s segments
+  are not LL-HLS), `startLevel: 0` + `testBandwidth: false` (a single rendition
+  has nothing to measure, and skipping the startup probe removes one round)
+  and bounded buffers (20/40 s forward, 30 s back); every download-size estimate
+  now reads the caps from `/api/videos/download-settings`.
 - Endpoints (JWT + `path_scope.scope_request`, no public paths):
   `POST /api/videos/hls`, `GET /api/videos/hls/{sid}/index.m3u8` (rewrites
   segment URIs with `?token=` for API-key clients), `GET /hls/{sid}/{init.mp4|segNNNNN.m4s}`

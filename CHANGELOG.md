@@ -11,6 +11,26 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.41.0] - 2026-11-27
+
+### Changed
+
+- **Videos start ~2× faster.** The NAS now emits a 1-second first HLS segment (`-hls_init_time`) with the
+  encoder GOP pinned to 1 s, so the player shows the first frame after 3,5 s instead of 7,4 s (measured,
+  1080p → 720p, Quick Sync, hardware decode). Steady-state segments stay 4 s.
+- **Smaller offline files at the same quality.** Downloads are rendered with a 2 s GOP instead of a fixed
+  30-frame one: 4–9 % fewer bytes for the same QP/CRF.
+- **Correct bitrate cap for cropped 1080p sources.** A 1040/1042/1072-line "1080p" file was silently given
+  the 720p cap (2.8 Mb/s); it now buckets by the nearest standard height (5 Mb/s at ≥1000 lines).
+- `/videos` player: hls.js no longer runs in low-latency mode (these are 4 s segments), skips the startup
+  bandwidth probe, starts on the only rendition and keeps 20/40 s forward + 30 s back buffers with retries.
+- Android app: playback buffer tuned for NAS HLS (1 s to start, 30 s ahead) and a multi-audio file that the
+  phone can play directly no longer opens a transcode session until the user actually switches the track.
+
+### Fixed
+
+- `TranscodeLimiter` no longer trips the type checker on its lazily created lock.
+
 ## [2.40.0] - 2026-11-27
 
 ### Added

@@ -7,7 +7,7 @@ from pathlib import Path
 # The value shipped in the repo. Hitting it in production means every token is
 # forgeable — main.py checks for it at startup and raises a notification event.
 DEFAULT_JWT_SECRET = "change-this-in-production"
-APP_VERSION = "2.40.0"
+APP_VERSION = "2.41.0"
 
 # Checkout root (…/ethos-nas). APK locations resolve from here instead of a
 # hardcoded home directory, so a clone works for any user.
@@ -97,9 +97,7 @@ class Settings:
     # still starts, so an upgrade never takes an existing install down.
     ALLOW_INSECURE: bool = os.getenv("ETHOS_ALLOW_INSECURE", "false").lower() == "true"
     ALLOWED_ORIGINS: list[str] = [
-        o.strip()
-        for o in os.getenv("ETHOS_CORS_ORIGINS", "http://localhost,http://127.0.0.1").split(",")
-        if o.strip()
+        o.strip() for o in os.getenv("ETHOS_CORS_ORIGINS", "http://localhost,http://127.0.0.1").split(",") if o.strip()
     ]
     STATS_INTERVAL: float = 2.0  # WebSocket tick (seconds)
     JWT_SECRET: str = os.getenv("ETHOS_JWT_SECRET", DEFAULT_JWT_SECRET)
@@ -121,8 +119,7 @@ class Settings:
     # registered in ``DATA_DIR/trash_volumes.json`` so Trash/restore/retention
     # still find it. Set ``ETHOS_TRASH_VOLUME_LOCAL=0`` to keep everything under
     # DATA_DIR.
-    TRASH_VOLUME_LOCAL: bool = os.getenv(
-        "ETHOS_TRASH_VOLUME_LOCAL", "true").lower() in ("1", "true", "yes", "on")
+    TRASH_VOLUME_LOCAL: bool = os.getenv("ETHOS_TRASH_VOLUME_LOCAL", "true").lower() in ("1", "true", "yes", "on")
 
     # ── First-run setup ("claim this appliance") ────────────────────────────
     # The OS image writes this state file from ethos-firstboot (root). It holds
@@ -132,15 +129,13 @@ class Settings:
     SETUP_STATE_FILE: Path = Path(os.getenv("ETHOS_SETUP_STATE", "/etc/ethos-nas/setup.json"))
     # Only this helper may touch the password database (chpasswd needs root).
     # When the path is overridden (tests) it is executed directly, without sudo.
-    SET_PASSWORD_HELPER: str = os.getenv(
-        "ETHOS_SET_PASSWORD_HELPER", "/usr/local/bin/ethos-set-password")
+    SET_PASSWORD_HELPER: str = os.getenv("ETHOS_SET_PASSWORD_HELPER", "/usr/local/bin/ethos-set-password")
     SET_PASSWORD_VIA_SUDO: bool = not os.getenv("ETHOS_SET_PASSWORD_HELPER")
 
     # Linux account lifecycle (routers/users.py → deploy/ethos-user-accounts).
     # Same contract as SET_PASSWORD_HELPER: an overridden path (tests) runs
     # directly; production goes through the root-owned argument-free sudo rule.
-    USER_ACCOUNTS_HELPER: str = os.getenv(
-        "ETHOS_USER_ACCOUNTS_HELPER", "/usr/local/bin/ethos-user-accounts")
+    USER_ACCOUNTS_HELPER: str = os.getenv("ETHOS_USER_ACCOUNTS_HELPER", "/usr/local/bin/ethos-user-accounts")
     USER_ACCOUNTS_VIA_SUDO: bool = not os.getenv("ETHOS_USER_ACCOUNTS_HELPER")
 
     # Offsite backup replication (services/backup_remote.py). Credentials stay in
@@ -150,9 +145,19 @@ class Settings:
     # ── Packages repositories (services/package_repo.py) ────────────────────
     # Test-only: allow http://127.0.0.1 repos in isolated tests. Never enable
     # this on a real NAS.
-    PACKAGES_ALLOW_INSECURE: bool = os.getenv("ETHOS_PACKAGES_ALLOW_INSECURE", "false").lower() in ("1", "true", "yes", "on")
+    PACKAGES_ALLOW_INSECURE: bool = os.getenv("ETHOS_PACKAGES_ALLOW_INSECURE", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     # Allow catalog fetches from private/loopback addresses (LAN repos).
-    PACKAGES_ALLOW_PRIVATE: bool = os.getenv("ETHOS_PACKAGES_ALLOW_PRIVATE", "false").lower() in ("1", "true", "yes", "on")
+    PACKAGES_ALLOW_PRIVATE: bool = os.getenv("ETHOS_PACKAGES_ALLOW_PRIVATE", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     PACKAGES_MAX_INDEX_BYTES: int = int(os.getenv("ETHOS_PACKAGES_MAX_INDEX_BYTES", str(5 * 1024 * 1024)))
     PACKAGES_MAX_MANIFEST_BYTES: int = int(os.getenv("ETHOS_PACKAGES_MAX_MANIFEST_BYTES", str(2 * 1024 * 1024)))
     PACKAGES_MAX_ARTIFACT_BYTES: int = int(os.getenv("ETHOS_PACKAGES_MAX_ARTIFACT_BYTES", str(256 * 1024 * 1024)))
@@ -170,7 +175,12 @@ class Settings:
     PACKAGES_HEALTH_INTERVAL_SECONDS: int = int(os.getenv("ETHOS_PACKAGES_HEALTH_INTERVAL_SECONDS", "90"))
     # Seed the official signed source on a fresh install. Tests set this to 0
     # so they never depend on GitHub availability.
-    PACKAGES_DEFAULT_SOURCE: bool = os.getenv("ETHOS_PACKAGES_DEFAULT_SOURCE", "true").lower() in ("1", "true", "yes", "on")
+    PACKAGES_DEFAULT_SOURCE: bool = os.getenv("ETHOS_PACKAGES_DEFAULT_SOURCE", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     PACKAGES_DEFAULT_SOURCE_NAME: str = os.getenv("ETHOS_PACKAGES_DEFAULT_SOURCE_NAME", "EthOS Community Packages")
     PACKAGES_DEFAULT_SOURCE_URL: str = os.getenv(
         "ETHOS_PACKAGES_DEFAULT_SOURCE_URL",
@@ -203,8 +213,7 @@ class Settings:
     # `apks/extension/` is preferred (served by the NAS, shows its version).
     EXTENSION_DOWNLOAD_URL: str = os.getenv(
         "ETHOS_EXTENSION_DOWNLOAD_URL",
-        "https://github.com/SyncHot/ethos-nas-chrome-extensions/releases/latest/"
-        "download/ethos-nas-downloader.zip",
+        "https://github.com/SyncHot/ethos-nas-chrome-extensions/releases/latest/download/ethos-nas-downloader.zip",
     )
 
     # ── OS package updates (services/os_update_service.py, docs/os-updates.md) ─
@@ -266,10 +275,8 @@ class Settings:
     # PSI source; tests point this at a fixture file.
     PRESSURE_FILE: str = os.getenv("ETHOS_PRESSURE_FILE", "/proc/pressure/memory")
     # Soft pressure: log only. Hard: heavy work refuses to start until it clears.
-    PRESSURE_SOFT_AVAILABLE_PCT: float = float(
-        os.getenv("ETHOS_PRESSURE_SOFT_AVAILABLE_PCT", "8"))
-    PRESSURE_HARD_AVAILABLE_PCT: float = float(
-        os.getenv("ETHOS_PRESSURE_HARD_AVAILABLE_PCT", "4"))
+    PRESSURE_SOFT_AVAILABLE_PCT: float = float(os.getenv("ETHOS_PRESSURE_SOFT_AVAILABLE_PCT", "8"))
+    PRESSURE_HARD_AVAILABLE_PCT: float = float(os.getenv("ETHOS_PRESSURE_HARD_AVAILABLE_PCT", "4"))
     PRESSURE_SOFT_PSI_SOME: float = float(os.getenv("ETHOS_PRESSURE_SOFT_PSI_SOME", "25"))
     PRESSURE_HARD_PSI_FULL: float = float(os.getenv("ETHOS_PRESSURE_HARD_PSI_FULL", "10"))
     # How long a queued render may wait for pressure to clear before failing.
@@ -321,8 +328,7 @@ class Settings:
     }
     # Explicit override per app (ETHOS_MOMENTS_APK_PATH …).
     APK_PATHS: dict[str, str] = {
-        app: os.getenv(f"ETHOS_{app.upper()}_APK_PATH", "")
-        for app in ("moments", "music", "video")
+        app: os.getenv(f"ETHOS_{app.upper()}_APK_PATH", "") for app in ("moments", "music", "video")
     }
 
     # ── Browser extension delivery (routers/updates.py) ──────────────────────
