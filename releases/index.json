@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-27T10:10:31+00:00",
+  "generated_at": "2026-11-27T10:49:41+00:00",
   "latest": {
-    "version": "2.40.0",
-    "git_sha": "f55cc78",
-    "git_sha_full": "f55cc788c922af2eed323508cee4b8a12a79b1c4",
-    "build": 321,
-    "released_at": "2026-11-27T10:10:31+00:00",
-    "notes": "Videos: the Android app downloads offline through the NAS render queue (smaller ready-to-play files, resumable transfers, automatic retry) and `/videos` shows transfer speed and ETA"
+    "version": "2.41.0",
+    "git_sha": "895bf3b",
+    "git_sha_full": "895bf3b77da04af34394387bf076703632d88fbe",
+    "build": 324,
+    "released_at": "2026-11-27T10:49:41+00:00",
+    "notes": "Videos: HLS startuje 2x szybciej (3,5 s zamiast 7,4 s), pobierane pliki są 4-9% mniejsze przy tej samej jakości, a 1080p z czarnymi pasami dostaje właściwy bitrate"
   },
   "releases": [
+    {
+      "version": "2.41.0",
+      "git_sha": "895bf3b",
+      "git_sha_full": "895bf3b77da04af34394387bf076703632d88fbe",
+      "build": 324,
+      "released_at": "2026-11-27T10:49:41+00:00",
+      "notes": "Videos: HLS startuje 2x szybciej (3,5 s zamiast 7,4 s), pobierane pliki są 4-9% mniejsze przy tej samej jakości, a 1080p z czarnymi pasami dostaje właściwy bitrate"
+    },
     {
       "version": "2.40.0",
       "git_sha": "f55cc78",
@@ -201,14 +209,6 @@
       "build": 267,
       "released_at": "2026-11-24T16:09:02+00:00",
       "notes": "Packages: install-time settings — set a package's admin login and password in the install dialog or under Installed → Settings; Grafana 1.1.0 uses them for its administrator account."
-    },
-    {
-      "version": "2.33.0",
-      "git_sha": "b36e4d3",
-      "git_sha_full": "b36e4d33e60809f030851ba1fa9f58d4693e8f98",
-      "build": 261,
-      "released_at": "2026-11-23T11:55:29+00:00",
-      "notes": "Files: Move to Trash on a data disk is now an instant rename into <mount>/.@Recycle instead of copying onto the system SSD"
     }
   ]
 }
