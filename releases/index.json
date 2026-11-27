@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-27T08:21:51+00:00",
+  "generated_at": "2026-11-27T10:10:31+00:00",
   "latest": {
-    "version": "2.39.7",
-    "git_sha": "beab07a",
-    "git_sha_full": "beab07acee420ad3fdec68256ad0d66c3c3ff604",
-    "build": 318,
-    "released_at": "2026-11-27T08:21:51+00:00",
-    "notes": "Cameras, Downloads and Health Monitor: four edge-case crashes and type gaps closed"
+    "version": "2.40.0",
+    "git_sha": "f55cc78",
+    "git_sha_full": "f55cc788c922af2eed323508cee4b8a12a79b1c4",
+    "build": 321,
+    "released_at": "2026-11-27T10:10:31+00:00",
+    "notes": "Videos: the Android app downloads offline through the NAS render queue (smaller ready-to-play files, resumable transfers, automatic retry) and `/videos` shows transfer speed and ETA"
   },
   "releases": [
+    {
+      "version": "2.40.0",
+      "git_sha": "f55cc78",
+      "git_sha_full": "f55cc788c922af2eed323508cee4b8a12a79b1c4",
+      "build": 321,
+      "released_at": "2026-11-27T10:10:31+00:00",
+      "notes": "Videos: the Android app downloads offline through the NAS render queue (smaller ready-to-play files, resumable transfers, automatic retry) and `/videos` shows transfer speed and ETA"
+    },
     {
       "version": "2.39.7",
       "git_sha": "beab07a",
@@ -201,14 +209,6 @@
       "build": 261,
       "released_at": "2026-11-23T11:55:29+00:00",
       "notes": "Files: Move to Trash on a data disk is now an instant rename into <mount>/.@Recycle instead of copying onto the system SSD"
-    },
-    {
-      "version": "2.32.0",
-      "git_sha": "dab10fa",
-      "git_sha_full": "dab10facff06e4fb3d7b7cb257238b8fffa66216",
-      "build": 259,
-      "released_at": "2026-11-23T11:32:13+00:00",
-      "notes": "Files: plain 320 px video thumbnails; cinematic preview and face-detected crops removed"
     }
   ]
 }
