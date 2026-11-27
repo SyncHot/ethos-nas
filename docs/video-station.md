@@ -356,6 +356,21 @@ oneVPL implementation is missing; libx264 remains the software fallback.
   is 4–9 % smaller at the same QP/CRF, and seek granularity on a finished file
   does not need 1 s keyframes. `-async_depth` and `-readrate_initial_burst` were
   measured too and made **no** difference on this GPU, so they are not used.
+- **HDR / 4K capacity (measured on the N150, 2026-11-27).** Tone mapping is a CPU zscale chain and its
+  cost scales with pixels, so a 4K HDR10/Dolby Vision source cannot be transcoded live:
+
+  | pipeline | 10 s of 4K HDR | speed |
+  |---|---|---|
+  | tone map at 4K → downscale (old) | 63,8 s | 0,16× |
+  | downscale to 1080p → tone map (now) | 23,2 s | 0,43× |
+  | downscale to 720p → tone map | 17,0 s | 0,59× |
+
+  Therefore: (a) the filter chain downscales **before** tone mapping — 2,7–3,7× faster, which is what
+  makes a 4K HDR *offline render* finish inside the 6 h worker timeout; (b) `live_transcode_refusal()`
+  makes `/hls` answer **409** for HDR above 1440p with an actionable message instead of buffering
+  forever. Hardware decoders are used only for codecs that actually have one (`HW_DECODE_CODECS`) —
+  MPEG-4 Part 2 (XviD/DivX) has none, and asking for `-hwaccel qsv` there killed the encoder and
+  silently degraded the session to libx264 at 0,83× realtime (now 1,87× with SW decode + GPU encode).
 - Client side: the PWA opens hls.js with `lowLatencyMode: false` (4 s segments
   are not LL-HLS), `startLevel: 0` + `testBandwidth: false` (a single rendition
   has nothing to measure, and skipping the startup probe removes one round)

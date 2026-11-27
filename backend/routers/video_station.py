@@ -187,6 +187,19 @@ AUDIO_BITRATES = video_engine.AUDIO_BITRATES
 ALL_VIDEOS_MAX_DEPTH = 8
 ALL_VIDEOS_MAX_FILES = 10000
 
+# Najwyższe HDR, jakie ten NAS potrafi transkodować na żywo. Powyżej tego
+# tonemapowanie w CPU schodzi poniżej 0,5x realtime (mierzone na N150:
+# 4K HDR10/DV = 0,16x), więc sesja HLS tylko by wisiała.
+HDR_LIVE_MAX_HEIGHT = 1440
+
+
+def _safe_int(value) -> int:
+    """``int()`` bez wyjątku — ffprobe/metadane bywają ``None`` lub tekstem."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
 FFMPEG_BIN = shutil.which("ffmpeg")
 # Audio codecs browsers decode natively inside <video>. Anything else (AC3/EAC3/
 # DTS/TrueHD — common in movie rips) must be transcoded to AAC.
@@ -1002,6 +1015,13 @@ async def start_hls(payload: HlsRequest) -> dict:
     mode = _playback_mode(info, abs_path)
     if mode == "direct":
         raise HTTPException(status_code=400, detail="This file can be streamed directly")
+    # 4K HDR z tonemapowaniem nie ma szans na żywo na tym CPU: mierzone
+    # 0,16x realtime (1080p: 0,43x) — wąskim gardłem jest zscale, nie encoder.
+    # Zamiast puszczać sesję, która nigdy nie nadąży (player buforuje w kółko),
+    # mówimy wprost, że plik trzeba przygotować offline (render w tle).
+    refusal = video_engine.live_transcode_refusal(info, mode, HDR_LIVE_MAX_HEIGHT)
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
     duration = float(info.get("duration") or 0)
     start = max(0.0, float(payload.t))
     if duration and start >= duration - 1:

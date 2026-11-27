@@ -11,6 +11,25 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.41.1] - 2026-11-27
+
+### Fixed
+
+- **Transcoding picked a hardware decoder for codecs that do not have one.** MPEG-4 Part 2 (XviD/DivX)
+  and friends have no Quick Sync/VAAPI decoder, so the encoder died on the first frame and the HLS
+  session silently fell back to software libx264 — measured **0,83× realtime**, i.e. permanent
+  stuttering. Such files now decode in software and encode on the GPU: **1,87× realtime** measured on
+  the same title.
+- **4K HDR no longer pretends to stream.** A 2160p HDR10/Dolby Vision source needs CPU tone mapping and
+  measured **0,16× realtime** (0,43× when the tone map runs after downscaling, 0,59× at 720p) — a live
+  session could only stall. `POST /api/videos/hls` now answers **409** with an actionable message
+  ("download it offline, the NAS renders it in the background") instead of buffering forever.
+- **Tone mapping runs after downscaling** in the software filter chain: 2,7× faster at 1080p and 3,7× at
+  720p for HDR sources, which makes 4K HDR *offline renders* fit inside the 6 h worker timeout instead
+  of timing out.
+- `video_hls` failure logs no longer drown in `libva info:` noise — the real ffmpeg error is kept, which
+  is what made the software-fallback root cause invisible.
+
 ## [2.41.0] - 2026-11-27
 
 ### Changed

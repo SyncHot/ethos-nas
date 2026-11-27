@@ -76,7 +76,16 @@ class HlsSession:
     failure_reason: str = ""
 
     def tail(self, limit: int = 2000) -> str:
-        return b"".join(self.stderr).decode("utf-8", "replace")[-limit:]
+        """Ostatnie linie stderr BEZ szumu libva.
+
+        `libva info: …` potrafi zająć cały bufor (200+ znaków na każdą sesję
+        VAAPI) i wtedy w logu zostaje wyłącznie „va_openDriver() returns 0",
+        a prawdziwy błąd ffmpeg jest ucięty — dokładnie tak zginął powód
+        fallbacku na libx264 przy pliku XviD (2026-11-27).
+        """
+        text = b"".join(self.stderr).decode("utf-8", "replace")
+        keep = [ln for ln in text.splitlines() if "libva" not in ln and ln.strip()]
+        return "\n".join(keep)[-limit:]
 
     def failure_detail(self) -> str:
         """Short, user-safe reason for a session whose encoder died."""

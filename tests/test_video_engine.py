@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -300,11 +301,13 @@ def test_playlist_and_segments() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         Path(tmp, "init.mp4").write_bytes(b"x")
         Path(tmp, "seg00000.m4s").write_bytes(b"y")
-        session = type("S", (), {"directory": Path(tmp)})()
-        check("init is served", segment_path(session, "init.mp4") is not None)
-        check("segment is served", segment_path(session, "seg00000.m4s") is not None)
-        check("traversal is blocked", segment_path(session, "../init.mp4") is None)
-        check("playlist name is not a segment", segment_path(session, "index.m3u8") is None)
+        # Stub sesji: `segment_path` czyta tylko `session.directory`.
+        session = type("S", (), {"directory": Path(tmp)})()  # noqa: E731
+        session_any: Any = session
+        check("init is served", segment_path(session_any, "init.mp4") is not None)
+        check("segment is served", segment_path(session_any, "seg00000.m4s") is not None)
+        check("traversal is blocked", segment_path(session_any, "../init.mp4") is None)
+        check("playlist name is not a segment", segment_path(session_any, "index.m3u8") is None)
 
 
 async def test_probe_without_ffmpeg() -> None:
@@ -322,6 +325,34 @@ async def test_limiter() -> None:
     await limiter.release()
 
 
+
+def test_hdr_and_hw_decode() -> None:
+    """HDR: odmowa transmisji na żywo, kolejność filtrów, dekoder HW per kodek."""
+    hdr_4k = {"video_codec": "hevc", "height": 2160, "pix_fmt": "yuv420p10le",
+              "color_transfer": "smpte2084", "fps": 24.0, "width": 3840}
+    sdr_1080 = {"video_codec": "h264", "height": 1080, "pix_fmt": "yuv420p",
+                "color_transfer": "bt709", "fps": 24.0, "width": 1920}
+
+    refusal = ve.live_transcode_refusal(hdr_4k, "transcode")
+    check("4K HDR is refused for live transcode", bool(refusal), str(refusal))
+    check("1080p SDR is not refused",
+          ve.live_transcode_refusal(sdr_1080, "transcode") is None)
+    check("remux is never refused on HDR grounds",
+          ve.live_transcode_refusal(hdr_4k, "remux") is None)
+    check("1080p HDR stays below the cap",
+          ve.live_transcode_refusal({**hdr_4k, "height": 1080}, "transcode") is None)
+
+    _pre, _vid, filters = ve.build_video_args(hdr_4k, "transcode", "qsv", "balanced")
+    joined = ",".join(filters)
+    check("scale runs before tonemap (2.7-3.7x faster on 4K HDR)",
+          joined.index("scale=") < joined.index("zscale="), joined[:90])
+
+    check("mpeg4 has no hardware decoder",
+          "mpeg4" not in ve.HW_DECODE_CODECS["qsv"])
+    check("h264/hevc do have hardware decoders",
+          {"h264", "hevc"} <= ve.HW_DECODE_CODECS["qsv"])
+
+
 def main() -> int:
     test_modes()
     test_bitrate()
@@ -333,6 +364,7 @@ def main() -> int:
     test_render_command()
     test_download_mode()
     test_playlist_and_segments()
+    test_hdr_and_hw_decode()
     asyncio.run(test_probe_without_ffmpeg())
     asyncio.run(test_limiter())
     print(f"\n{_passed} passed, {_failed} failed")

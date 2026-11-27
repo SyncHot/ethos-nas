@@ -52,6 +52,16 @@ EXPORT_QUALITIES = ("auto", "tiny", "fast", "balanced", "original")
 # play nowhere on phones, so those always re-encode.
 COPY_SAFE_PIX_FMTS = {"yuv420p", "yuvj420p"}
 
+# Codecs the iGPU can decode in hardware. Anything outside this set (XviD /
+# MPEG-4 Part 2, WMV, Theora…) has NO hardware decoder: asking ffmpeg for
+# ``-hwaccel qsv`` makes the run die and the HLS manager silently fall back to
+# libx264 (measured: 0.83x realtime → stutter). Software decode + hardware
+# encode is the correct path for those files and is fast enough.
+HW_DECODE_CODECS = {
+    "qsv": {"h264", "hevc", "av1", "vp9", "vp8", "mpeg2video", "vc1", "jpeg"},
+    "vaapi": {"h264", "hevc", "av1", "vp9", "vp8", "mpeg2video", "vc1"},
+}
+
 QUALITY_PRESETS = {
     # Tuned for a 4-core Celeron-class CPU (Intel N150): libx264 veryfast does
     # ~8 fps at 1440p, so downscaling is what keeps live playback watchable.
@@ -223,6 +233,29 @@ def output_bitrate_bps(quality: str, info: dict | None = None) -> int:
     return parse_bitrate(bitrate_for(width, height, preset["max_height"]))
 
 
+def live_transcode_refusal(info: dict, mode: str, max_height: int = 1440) -> str | None:
+    """Dlaczego NIE da się tego filmu transkodować na żywo (None = można).
+
+    HDR wymaga tonemapowania w CPU, a jego koszt rośnie z liczbą pikseli.
+    Zmierzone na N150 (4K HDR10/DV → H.264): 0,16x realtime przy tonemapie na
+    4K, 0,43x po skalowaniu do 1080p, 0,59x dla 720p — czyli nigdy 1x. Taka
+    sesja HLS tylko by wisiała (player buforuje w kółko), więc mówimy wprost,
+    że plik trzeba przygotować offline (render w tle).
+    """
+    if mode != "transcode" or not needs_tonemap(info):
+        return None
+    try:
+        height = int(info.get("height") or 0)
+    except (TypeError, ValueError):
+        height = 0
+    if height <= max_height:
+        return None
+    return (
+        f"{height}p HDR nie nadaje się do transmisji na żywo na tym NAS-ie "
+        f"(wymaga tonemapowania w CPU) — pobierz film offline, NAS przygotuje go w tle"
+    )
+
+
 def needs_tonemap(info: dict) -> bool:
     return str(info.get("color_transfer") or "").lower() in HDR_TRANSFERS
 
@@ -270,10 +303,14 @@ def build_video_args(
         out: list[str] = []
         if cap_fps:
             out.append("fps=30")
-        if hdr:
-            out.append(TONEMAP_FILTER)
+        # KOLEJNOŚĆ MA ZNACZENIE: skalowanie PRZED tonemapowaniem. zscale na
+        # 4K to najdroższy element łańcucha, a jego koszt rośnie z liczbą
+        # pikseli — mierzone na N150 (4K HDR10/DV → 1080p): 0,16x realtime przy
+        # tonemapie na 4K, 0,43x po skalowaniu do 1080p, 0,59x dla 720p.
         if downscale:
             out.append(f"scale=-2:{max_height}")
+        if hdr:
+            out.append(TONEMAP_FILTER)
         if target != "yuv420p" or not hdr:
             out.append(f"format={target}")
         return out
@@ -908,6 +945,8 @@ class HardwareProbe:
         if not self.ffmpeg or not device or encoder not in ("vaapi", "qsv"):
             return False, "no hardware decoder"
         codec = (info.get("video_codec") or "").lower()
+        if codec not in HW_DECODE_CODECS[encoder]:
+            return False, f"no {encoder} decoder for {codec or 'unknown'} codec"
         key = (encoder, device, codec)
         now = time.monotonic()
         hit = self._decode.get(key)
@@ -973,6 +1012,7 @@ __all__ = [
     "build_transcode_cmd",
     "build_video_args",
     "copy_video_ok",
+    "live_transcode_refusal",
     "output_bitrate_bps",
     "parse_bitrate",
     "resolve_quality",
