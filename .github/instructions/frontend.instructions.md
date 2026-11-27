@@ -76,3 +76,9 @@ native package windows. No `<style>` injection, no hardcoded colours, no
 - Give every task a stable `testIdPrefix` (`fm-op`, `upload`, `pkg-job`,
   `docker-engine`, …) — UI tests select `[data-testid="<prefix>-progress"]`,
   `-percent`, `-title`, `-step`, `-error`, `-retry`.
+- **Footprint**: the panel publishes `--task-panel-h` / `--task-panel-w` and
+  `data-task-panel-state` (`hidden|idle|active`) on `document.documentElement`,
+  and collapses to its header when nothing runs. App surfaces reserve that strip
+  (`.window-body` in `index.html`) — never place content under the panel, never
+  hardcode an offset, never change its z-index (`docs/progress-ui.md` →
+  Footprint).

@@ -109,6 +109,10 @@
             --topbar-bg: #ffffff;
             --topbar-h: 42px;
             --taskbar-h: 52px;
+            /* Bottom inset of the app workspace (= the taskbar). Floating
+               overlays anchored to the workspace bottom read this; it is 0 on
+               phones, where the taskbar is hidden and windows are full-screen. */
+            --workspace-bottom: var(--taskbar-h);
             --sidebar-w: 216px;
         }
         :root.dark {
@@ -602,7 +606,11 @@
         .taskbar-item:hover { transform: translateY(-2px); box-shadow: 0 -4px 16px rgba(91,154,255,0.15); }
 
         /* ── Window Body ── */
-        .window-body { flex: 1; overflow: hidden; padding: 0; position: relative; }
+        /* Every window reserves the floating task panel's footprint: core/progress.js
+           publishes --task-panel-h (0px while the panel is hidden) so the last row
+           of any app stays clickable instead of sitting under the panel. The 40vh
+           cap keeps phones and short windows usable. */
+        .window-body { flex: 1; overflow: hidden; position: relative; padding: 0 0 calc(min(var(--task-panel-h, 0px), 40vh) + 12px); }
         .window-body::-webkit-scrollbar { width: 6px; }
         .window-body::-webkit-scrollbar-track { background: transparent; }
         .window-body::-webkit-scrollbar-thumb { background: var(--surface-2); border-radius: 3px; }
@@ -764,9 +772,12 @@
 
         /* ── Responsive ── */
         @media (max-width: 768px) {
-            .desktop-icons { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: calc(var(--topbar-h) + 12px) 20px 20px; overflow: visible; }
+            .desktop-icons { position: relative; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: calc(var(--topbar-h) + 12px) 20px calc(20px + min(var(--task-panel-h, 0px), 40vh)); overflow: visible; }
             /* Phones have no free placement — fall back to the auto grid. */
             .desktop-icon { position: static; width: auto; min-height: 0; }
+            /* No taskbar on phones: the workspace reaches the viewport bottom, so
+               floating overlays (task panel) anchor lower and reserve less. */
+            :root { --workspace-bottom: 0px; }
             .icon-img { width: 42px; height: 42px; font-size: 20px; border-radius: 12px; }
             .taskbar { display: none; }
             /* App windows go full-screen on mobile — drag/resize chrome is meaningless on touch */

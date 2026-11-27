@@ -33,6 +33,19 @@ let _eventTimer = null;
 // progress tick). Any new task or an explicit chip click re-opens it.
 let _panelDismissed = false;
 
+// Footprint contract (docs/progress-ui.md → Footprint). The panel is
+// `position: fixed` above every app window, so instead of fighting windows over
+// z-index it *publishes* the space it occupies and the shell reserves it:
+//   --task-panel-h / --task-panel-w   real panel box in px (0px while hidden)
+//   data-task-panel-state             hidden | idle | active
+// An idle panel (finished rows only) collapses to its header, so the reserved
+// strip shrinks back by itself; a running task always keeps it expanded.
+const PANEL_ID = 'taskProgressPanel';
+const PANEL_GAP_PX = 0;   // reserved space is exactly the measured box
+let _panelExpanded = false;   // user expanded the idle panel by hand
+let _metricsFrame = null;     // rAF handle for _schedulePanelMetrics()
+let _resizeBound = false;
+
 /**
  * Start a task and render its first state.
  *
@@ -100,8 +113,9 @@ export function showTaskPanel() {
     // the corner reads as a bug (the File Manager chip stays clickable when the
     // queue is empty), so keep the panel hidden instead of unhiding it blank.
     if (!_tasks.size) {
-        const panel = document.getElementById('taskProgressPanel');
+        const panel = document.getElementById(PANEL_ID);
         if (panel) panel.style.display = 'none';
+        _refreshPanelChrome();
         return;
     }
     _panelDismissed = false;
@@ -175,9 +189,10 @@ function _dismiss(taskId) {
     if (!task) return;
     task.dismissed = true;
     if (task.el && task.el.parentNode) task.el.remove();
-    if (task.host) task.host.innerHTML = '';
+    if (task.host) task.host.replaceChildren();
     _tasks.delete(taskId);
     _maybeHidePanel();
+    _refreshPanelChrome();
     _emit(true);
     try { if (typeof task.onDismiss === 'function') task.onDismiss(task); } catch { /* non-fatal */ }
 }
@@ -203,19 +218,51 @@ function _buildRow(task) {
     row.id = `task-entry-${task.id}`;
     row.dataset.app = task.appId;
     row.setAttribute('data-testid', `${p}-item`);
-    row.innerHTML =
-        '<div class="task-progress-head">' +
-            `<span class="task-progress-name" data-testid="${p}-title"></span>` +
-            `<span class="task-progress-pct" data-testid="${p}-percent"></span>` +
-        '</div>' +
-        `<div class="task-progress-bar-track" data-testid="${p}-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100">` +
-            `<div class="task-progress-bar" data-testid="${p}-fill"></div>` +
-        '</div>' +
-        `<span class="task-progress-label" data-testid="${p}-step"></span>` +
-        `<span class="task-progress-log" data-testid="${p}-log"></span>` +
-        `<div class="task-progress-error" data-testid="${p}-error"></div>` +
-        `<button type="button" class="task-progress-retry" data-testid="${p}-retry">Retry</button>`;
-    row.querySelector('.task-progress-retry').addEventListener('click', () => {
+
+    const head = document.createElement('div');
+    head.className = 'task-progress-head';
+
+    const name = document.createElement('span');
+    name.className = 'task-progress-name';
+    name.setAttribute('data-testid', `${p}-title`);
+
+    const percent = document.createElement('span');
+    percent.className = 'task-progress-pct';
+    percent.setAttribute('data-testid', `${p}-percent`);
+    head.append(name, percent);
+
+    const track = document.createElement('div');
+    track.className = 'task-progress-bar-track';
+    track.setAttribute('data-testid', `${p}-progress`);
+    track.setAttribute('role', 'progressbar');
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', '100');
+
+    const fill = document.createElement('div');
+    fill.className = 'task-progress-bar';
+    fill.setAttribute('data-testid', `${p}-fill`);
+    track.append(fill);
+
+    const label = document.createElement('span');
+    label.className = 'task-progress-label';
+    label.setAttribute('data-testid', `${p}-step`);
+
+    const log = document.createElement('span');
+    log.className = 'task-progress-log';
+    log.setAttribute('data-testid', `${p}-log`);
+
+    const error = document.createElement('div');
+    error.className = 'task-progress-error';
+    error.setAttribute('data-testid', `${p}-error`);
+
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'task-progress-retry';
+    retry.setAttribute('data-testid', `${p}-retry`);
+    retry.textContent = 'Retry';
+
+    row.append(head, track, label, log, error, retry);
+    retry.addEventListener('click', () => {
         if (typeof task.retry === 'function') task.retry();
     });
     return row;
@@ -282,7 +329,7 @@ function _renderInline(task) {
     const host = task.host;
     if (!host) return;
     if (!task.el || !host.contains(task.el)) {
-        host.innerHTML = '';
+        host.replaceChildren();
         task.el = _buildRow(task);
         task.el.classList.add('task-progress-item-inline');
         host.appendChild(task.el);
@@ -302,16 +349,54 @@ function _ensurePanel() {
     }
 
     if (!panel.querySelector('.task-progress-header')) {
-        panel.innerHTML = '';
+        panel.replaceChildren();
         const header = document.createElement('div');
         header.className = 'task-progress-header';
-        header.innerHTML =
-            '<span class="task-progress-title">\u{1F5C2} Tasks</span>' +
-            '<span class="task-progress-summary" data-testid="task-progress-summary"></span>' +
-            '<span class="task-progress-header-actions">' +
-                '<button type="button" class="task-progress-clear" data-testid="task-progress-clear" title="Clear finished tasks">&#10003;</button>' +
-                '<button type="button" class="task-progress-close" data-testid="task-progress-close" title="Hide">\u00d7</button>' +
-            '</span>';
+
+        // The header is the collapse toggle. It is a <button>, and the
+        // clear/close buttons stay in their own sibling <span> (never nested).
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'task-progress-toggle';
+        toggle.dataset.testid = 'task-progress-toggle';
+        toggle.setAttribute('aria-expanded', 'true');
+        toggle.setAttribute('aria-controls', 'taskProgressBody');
+        toggle.title = 'Show/hide task details';
+
+        const chevron = document.createElement('span');
+        chevron.className = 'task-progress-chevron';
+        chevron.setAttribute('aria-hidden', 'true');
+        chevron.textContent = '\u25be';
+
+        const title = document.createElement('span');
+        title.className = 'task-progress-title';
+        title.textContent = '\u{1F5C2} Tasks';
+
+        const summary = document.createElement('span');
+        summary.className = 'task-progress-summary';
+        summary.dataset.testid = 'task-progress-summary';
+
+        toggle.append(chevron, title, summary);
+
+        const actions = document.createElement('span');
+        actions.className = 'task-progress-header-actions';
+
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.className = 'task-progress-clear';
+        clearBtn.dataset.testid = 'task-progress-clear';
+        clearBtn.title = 'Clear finished tasks';
+        clearBtn.textContent = '\u2713';
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'task-progress-close';
+        closeBtn.dataset.testid = 'task-progress-close';
+        closeBtn.title = 'Hide';
+        closeBtn.textContent = '\u00d7';
+
+        actions.append(clearBtn, closeBtn);
+        header.append(toggle, actions);
 
         const body = document.createElement('div');
         body.className = 'task-progress-body';
@@ -319,11 +404,11 @@ function _ensurePanel() {
         body.setAttribute('role', 'status');
         body.setAttribute('aria-live', 'polite');
 
-        panel.appendChild(header);
-        panel.appendChild(body);
+        panel.append(header, body);
 
-        header.querySelector('.task-progress-close').addEventListener('click', _hidePanel);
-        header.querySelector('.task-progress-clear').addEventListener('click', () => {
+        toggle.addEventListener('click', _togglePanelBody);
+        closeBtn.addEventListener('click', _hidePanel);
+        clearBtn.addEventListener('click', () => {
             clearFinishedTasks(null, { globalOnly: true });
             _updateSummary();
         });
@@ -334,6 +419,12 @@ function _ensurePanel() {
     // it back while the same job is still running.
     if (!_panelDismissed) panel.style.display = '';
     panel.setAttribute('data-testid', 'task-progress-panel');
+
+    if (!_resizeBound) {
+        _resizeBound = true;
+        window.addEventListener('resize', _schedulePanelMetrics, { passive: true });
+    }
+    _refreshPanelChrome();
     return panel;
 }
 
@@ -346,20 +437,101 @@ function _renderPanelRow(task) {
     }
     _applyRow(task);
     _updateSummary();
+    _refreshPanelChrome();
 }
 
 function _hidePanel() {
     _panelDismissed = true;
-    const panel = document.getElementById('taskProgressPanel');
+    _panelExpanded = false;
+    const panel = document.getElementById(PANEL_ID);
     if (panel) panel.style.display = 'none';
     clearFinishedTasks(null, { globalOnly: true });
+    _refreshPanelChrome();
 }
 
 function _maybeHidePanel() {
     const hasGlobal = [..._tasks.values()].some(t => !t.host);
     if (hasGlobal) return;
-    const panel = document.getElementById('taskProgressPanel');
+    const panel = document.getElementById(PANEL_ID);
     if (panel) panel.style.display = 'none';
+}
+
+// ── Panel footprint (collapse + published size) ──────────────────────────────
+
+function _panelEl() {
+    return document.querySelector(`#${PANEL_ID}`);
+}
+
+function _panelIsVisible(panel) {
+    return !!panel && getComputedStyle(panel).display !== 'none';
+}
+
+function _hasRunningTasks() {
+    for (const task of _tasks.values()) {
+        if (task.status === 'running') return true;
+    }
+    return false;
+}
+
+/** Apply the collapsed/idle classes and the aria-expanded state (no layout reads). */
+function _syncCollapsed() {
+    const panel = _panelEl();
+    if (!panel) return;
+    const visible = _panelIsVisible(panel);
+    const running = _hasRunningTasks();
+    // Live progress is never hidden: a running task always resets the manual
+    // expansion, so the panel drops back to its chip the next time it goes idle.
+    if (running) _panelExpanded = false;
+    const collapsed = visible && !running && !_panelExpanded;
+    panel.classList.toggle('is-collapsed', collapsed);
+    panel.classList.toggle('is-idle', visible && !running);
+    const toggle = panel.querySelector('[data-testid="task-progress-toggle"]');
+    if (toggle) toggle.setAttribute('aria-expanded', String(!collapsed));
+}
+
+/** Measure the panel and publish --task-panel-h/-w + data-task-panel-state. */
+function _syncPanelMetrics() {
+    const root = document.documentElement;
+    if (!root) return;
+    const panel = _panelEl();
+    const visible = _panelIsVisible(panel);
+    const running = _hasRunningTasks();
+    let height = 0;
+    let width = 0;
+    if (visible) {
+        const rect = panel.getBoundingClientRect();
+        height = Math.round(rect.height) || 0;
+        width = Math.round(rect.width) || 0;
+    }
+    root.style.setProperty('--task-panel-h', `${height ? height + PANEL_GAP_PX : 0}px`);
+    root.style.setProperty('--task-panel-w', `${width}px`);
+    let state = 'hidden';
+    if (visible) state = running ? 'active' : 'idle';
+    root.dataset.taskPanelState = state;
+}
+
+/** rAF-throttled _syncPanelMetrics(): class toggles now, the layout read next frame. */
+function _schedulePanelMetrics() {
+    if (_metricsFrame != null) return;
+    const schedule = typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame
+        : (cb) => setTimeout(cb, 16);
+    _metricsFrame = schedule(() => {
+        _metricsFrame = null;
+        _syncPanelMetrics();
+    });
+}
+
+function _refreshPanelChrome() {
+    _syncCollapsed();
+    _schedulePanelMetrics();
+}
+
+/** Header click: expand an idle panel, collapse it again, never hide live work. */
+function _togglePanelBody() {
+    if (_hasRunningTasks()) return;
+    _panelExpanded = !_panelExpanded;
+    _refreshPanelChrome();
 }
 
 function _updateSummary() {

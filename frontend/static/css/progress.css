@@ -9,7 +9,10 @@
 
 .task-progress-panel {
     position: fixed;
-    bottom: 60px;
+    /* Anchored 8px above the workspace bottom (taskbar, 0 on phones) so the
+       strip core/progress.js measures (--task-panel-h) is exactly what the
+       shell reserves in .window-body. */
+    bottom: calc(var(--workspace-bottom, var(--taskbar-h, 52px)) + 8px);
     right: 16px;
     width: 360px;
     background: var(--surface-0);
@@ -34,6 +37,41 @@
     color: var(--text-1);
 }
 .task-progress-title { display: flex; align-items: center; gap: 8px; }
+/* The header is also the collapse toggle. It is a <button> so it is keyboard
+   reachable; the clear (✓) / close (×) buttons live in the sibling span. */
+.task-progress-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    background: none;
+    border: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+.task-progress-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 8px;
+}
+.task-progress-chevron {
+    flex: none;
+    font-size: 11px;
+    color: var(--text-3);
+    transition: transform 0.15s ease;
+}
+/* Idle = finished rows only: tint the header so the chip reads as "settled". */
+.task-progress-panel.is-idle .task-progress-title { color: var(--text-2); }
+/* Collapsed panel: header only, so the footprint it reserves stays tiny. */
+.task-progress-panel.is-collapsed { width: 230px; }
+.task-progress-panel.is-collapsed .task-progress-chevron { transform: rotate(-90deg); }
+.task-progress-panel.is-collapsed .task-progress-header { border-bottom: none; padding: 10px 14px; }
+.task-progress-panel.is-collapsed .task-progress-body { display: none; }
 .task-progress-close {
     background: none; border: none;
     color: var(--text-3);

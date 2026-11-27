@@ -4,7 +4,8 @@ The rule (AGENTS.md → Progress, `.github/instructions/frontend.instructions.md
 long-running actions report through `core/progress.js`; apps never hand-roll a
 progress card, floating panel or `role="progressbar"` markup. Finished rows
 persist until the user clears/closes the panel, failures carry a reason and can
-offer Retry.
+offer Retry. The panel also publishes its own footprint (`--task-panel-h`,
+`data-task-panel-state`) so no app surface hides under it.
 
 No server needed.
 
@@ -148,7 +149,42 @@ def main() -> int:
           "if (!_tasks.size)" in _function_body(progress, "showTaskPanel")
           and "_panelDismissed = false" in _function_body(progress, "showTaskPanel"))
 
-    # ── 6. Rules are documented (the user-facing part of this change) ──────
+    # ── 6. Footprint contract (panel is fixed above every window) ─────────
+    # The panel never lowers its z-index: it publishes the space it occupies and
+    # the shell reserves it, so the last row of any app stays clickable.
+    metrics_body = _function_body(progress, "_syncPanelMetrics")
+    check("panel publishes --task-panel-h / --task-panel-w",
+          "'--task-panel-h'" in metrics_body and "'--task-panel-w'" in metrics_body
+          and "document.documentElement" in metrics_body)
+    check("panel publishes data-task-panel-state hidden|idle|active",
+          "taskPanelState" in metrics_body and "'hidden'" in metrics_body
+          and "'idle'" in metrics_body and "'active'" in metrics_body)
+    check("footprint is measured in a rAF and re-measured on resize",
+          "requestAnimationFrame" in _function_body(progress, "_schedulePanelMetrics")
+          and "addEventListener('resize', _schedulePanelMetrics" in progress)
+
+    collapse_body = _function_body(progress, "_syncCollapsed")
+    check("an idle panel collapses (no running task)",
+          "_hasRunningTasks()" in collapse_body and "'is-collapsed'" in collapse_body
+          and "_panelExpanded" in collapse_body)
+    check("a running task never collapses the panel",
+          "if (running) _panelExpanded = false;" in collapse_body)
+    check("header button toggles the collapse",
+          "_togglePanelBody" in _function_body(progress, "_ensurePanel")
+          and "_panelExpanded = !_panelExpanded" in _function_body(progress, "_togglePanelBody")
+          and "aria-expanded" in collapse_body
+          and "task-progress-toggle" in progress)
+    check("collapse is announced and wired to the body",
+          "aria-controls" in progress and "taskProgressBody" in progress)
+    check("CSS collapses the panel body",
+          ".task-progress-panel.is-collapsed" in styles
+          and ".is-collapsed .task-progress-body { display: none" in styles)
+    check("windows reserve the panel footprint",
+          re.search(r"\.window-body\s*\{[^}]*var\(--task-panel-h", index_html) is not None)
+    check("phone desktop grid reserves the panel footprint",
+          re.search(r"\.desktop-icons\s*\{[^}]*var\(--task-panel-h", index_html) is not None)
+
+    # ── 7. Rules are documented (the user-facing part of this change) ──────
     check("frontend instructions document the progress rule",
           "## Progress UI" in instructions and "core/progress.js" in instructions)
     check("AGENTS.md hard rules mention core/progress.js",
@@ -156,6 +192,8 @@ def main() -> int:
     check("docs/progress-ui.md exists", (ROOT / DOC).is_file())
     doc = _read(DOC) if (ROOT / DOC).is_file() else ""
     check("doc lists the enforced rules", "tests/test_progress_ui.py" in doc)
+    check("doc documents the footprint contract",
+          "--task-panel-h" in doc and "data-task-panel-state" in doc)
 
     print(f"\n{len(failures)} failure(s)")
     return 1 if failures else 0

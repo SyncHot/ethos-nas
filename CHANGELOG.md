@@ -11,6 +11,19 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.39.5] - 2026-11-27
+
+### Fixed
+
+- **The task panel no longer hides the last button of a window** — the floating progress panel sits
+  above every window, so the bottom-right control (for example the `webbrowser` card's *Install* in
+  Packages) could end up underneath it. The panel now publishes the space it occupies
+  (`--task-panel-h` / `--task-panel-w`, `data-task-panel-state`) and every window — plus the phone
+  desktop grid — reserves that strip, so the last row always stays clickable. An idle panel (only
+  finished rows) collapses to its header chip and the reserved strip shrinks back automatically;
+  clicking the header expands it, and a running task always keeps it open (`docs/progress-ui.md` →
+  Footprint).
+
 ## [2.39.4] - 2026-11-25
 
 ### Changed
