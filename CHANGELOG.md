@@ -11,6 +11,18 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.39.6] - 2026-11-27
+
+### Fixed
+
+- **Packages: installing a package that needs a password now asks for it** — a manifest can declare a
+  setting that is required with no default (the Web Browser's login password). Clicking *Install* on
+  the card fired the install straight away, so it failed with the raw message *Password (at least 8
+  characters) is required* and no form ever appeared. The card now opens the package's setup dialog
+  with one field per declared setting, checks the required/length rules before starting the job, and
+  only then installs. Packages whose settings all have defaults still install in one click
+  (`docs/packages.md` → Install-time settings).
+
 ## [2.39.5] - 2026-11-27
 
 ### Fixed

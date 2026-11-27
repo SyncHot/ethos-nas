@@ -70,6 +70,32 @@ def make_repo(port: int) -> Path:
     }
     manifest_path = pkg / "manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    # Second package: its manifest requires a value only the admin can give (a
+    # login password with no default), so installing it must ask first.
+    setup = repo / "setup-pkg"
+    setup.mkdir(parents=True, exist_ok=True)
+    (setup / "docker-compose.yml").write_text(
+        "services:\n  app:\n    image: example/app:1\n", encoding="utf-8")
+    setup_manifest = {
+        "schema": 2, "id": "setup-pkg", "name": "Setup Package", "version": "1.0.0",
+        "description": "Test package that needs a password", "icon": "🔐", "category": "tools",
+        "author": "Test",
+        "compose": {"url": f"http://127.0.0.1:{port}/setup-pkg/docker-compose.yml",
+                    "sha256": sha(setup / "docker-compose.yml")},
+        "ui": {"mode": "window", "scheme": "http", "port": 8098, "path": "/",
+               "expose": "lan", "auth": "package"},
+        "settings": [
+            {"key": "admin_user", "env": "ADMIN_USER", "label": "Login",
+             "default": "ethos", "required": True, "max_length": 40},
+            {"key": "admin_password", "env": "ADMIN_PASSWORD",
+             "label": "Password (at least 8 characters)", "type": "password",
+             "required": True, "min_length": 8, "max_length": 128},
+        ],
+    }
+    setup_manifest_path = setup / "manifest.json"
+    setup_manifest_path.write_text(json.dumps(setup_manifest), encoding="utf-8")
+
     index = {
         "schema": 2, "name": "Test Repo",
         "packages": [{
@@ -78,6 +104,13 @@ def make_repo(port: int) -> Path:
             "author": "Test",
             "manifest_url": f"http://127.0.0.1:{port}/demo-pkg/manifest.json",
             "manifest_sha256": sha(manifest_path),
+            "channel": "stable",
+        }, {
+            "id": "setup-pkg", "name": "Setup Package", "version": "1.0.0",
+            "description": "Needs a password at install time", "icon": "🔐", "category": "tools",
+            "author": "Test",
+            "manifest_url": f"http://127.0.0.1:{port}/setup-pkg/manifest.json",
+            "manifest_sha256": sha(setup_manifest_path),
             "channel": "stable",
         }],
     }
@@ -125,7 +158,7 @@ def main() -> int:
             except OSError:
                 time.sleep(0.3)
         if proc.poll() is not None:
-            print(proc.stderr.read()[-2000:], file=sys.stderr)
+            print((proc.stderr.read() if proc.stderr else "")[-2000:], file=sys.stderr)
             return 1
 
         source_req = urllib.request.Request(
@@ -152,6 +185,66 @@ def main() -> int:
             page.wait_for_function("typeof window.openApp === 'function'", timeout=20000)
             page.evaluate("window.openApp('packages')")
 
+            # A manifest can require a value only the admin can give (the Web
+            # Browser's login password). The card's Install must ask for it
+            # instead of firing blind and failing with the raw label.
+            captured: list[dict] = []
+
+            def _capture_install(route):
+                captured.append(json.loads(route.request.post_data or "{}"))
+                route.fulfill(status=200, content_type="application/json",
+                              body=json.dumps({"job_id": "setup-job"}))
+
+            def _fake_job(route):
+                route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                    "id": "setup-job", "kind": "install", "package_id": "setup-pkg",
+                    "status": "success", "progress": 100, "step": "done",
+                    "step_index": 1, "step_total": 1, "log": ["done"],
+                }))
+
+            page.route("**/api/packages/install", _capture_install)
+            page.route("**/api/packages/jobs/setup-job", _fake_job)
+
+            page.locator('[data-testid="pkg-install-setup-pkg"]').click()
+            password = page.locator('[data-testid="pkg-setting-admin_password"]')
+            password.wait_for(timeout=10000)
+            check("a required setting opens the setup dialog before installing", not captured)
+            check("the setup field is a password input", password.get_attribute("type") == "password")
+            check("the setup dialog lists every declared setting",
+                  page.locator('[data-testid="pkg-setting-admin_user"]').count() == 1)
+            page.locator('[data-testid="modal-form-ok"]').click()
+            page.wait_for_function(
+                "() => document.body.innerText.includes('Password (at least 8 characters) is required.')",
+                timeout=5000,
+            )
+            check("an empty required setting is refused before any job starts", not captured)
+            password.fill("hunter22")
+            page.locator('[data-testid="modal-form-ok"]').click()
+            for _ in range(60):
+                if captured:
+                    break
+                page.wait_for_timeout(100)
+            body = captured[0] if captured else {}
+            settings = body.get("settings") or {}
+            check("the install carries the typed settings",
+                  settings.get("admin_password") == "hunter22"
+                  and settings.get("admin_user") == "ethos", json.dumps(body))
+            check("the setup install starts a job", body.get("package_id") == "setup-pkg", json.dumps(body))
+            page.wait_for_function(
+                "document.querySelector('[data-testid=\"pkg-job-title\"]')?.textContent?.includes('Setup Package')",
+                timeout=10000,
+            )
+            check("the setup job renders in the shared progress row", True)
+            # Let the (intercepted) job settle so its banner does not keep the
+            # other packages' buttons disabled.
+            page.wait_for_function(
+                "() => { const b = document.querySelector('[data-testid=\"pkg-install-demo-pkg\"]');"
+                " return !!b && !b.disabled; }",
+                timeout=20000,
+            )
+            page.unroute("**/api/packages/install")
+            page.unroute("**/api/packages/jobs/setup-job")
+
             install = page.locator('[data-testid="pkg-install-demo-pkg"]')
             install.wait_for(timeout=20000)
             install.click()
@@ -160,6 +253,11 @@ def main() -> int:
             bar.wait_for(timeout=10000)
             check("progress bar is a progressbar", bar.get_attribute("role") == "progressbar",
                   str(bar.get_attribute("role")))
+            # The shared row may still show the previous job for one frame.
+            page.wait_for_function(
+                "document.querySelector('[data-testid=\"pkg-job-title\"]')?.textContent?.includes('Demo Package')",
+                timeout=10000,
+            )
             title = page.locator('[data-testid="pkg-job-title"]').inner_text()
             check("install title", "Installing" in title and "Demo Package" in title, title)
             step = page.locator('[data-testid="pkg-job-step"]').inner_text().strip()

@@ -214,6 +214,13 @@ field per setting in the install dialog and the same list is editable later from
 (`packages/installed.json`) and hands them to `docker compose` as environment
 variables for `${VAR}` interpolation, so the signed compose file stays fixed.
 
+A setting that is `required` **and has no default** (a fresh login password, an
+API token) cannot be guessed, so the card's **Install** button opens that dialog
+instead of installing blind — otherwise the install fails with the raw label
+(“Password (at least 8 characters) is required”). The dialog validates the same
+rules the server does (required, `min_length`) before it starts the job, and
+packages whose settings all have defaults still install in one click.
+
 ```json
 "settings": [
   {"key": "admin_user", "env": "GF_SECURITY_ADMIN_USER", "label": "Admin login",

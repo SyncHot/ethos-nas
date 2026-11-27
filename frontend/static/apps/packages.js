@@ -4,9 +4,9 @@
 // live log, and a source manager that shows the trust level of each repository.
 
 import { escapeAttr, escapeHtml } from '../core/utils.js';
-import { apiFetch, apiJsonFetch } from '../core/api.js';
+import { apiJsonFetch } from '../core/api.js';
 import { addNotification } from '../core/notification-center.js';
-import { skeletonRows, emptyState, errorState, wireStateActions } from '../core/states.js';
+import { emptyState, errorState, wireStateActions } from '../core/states.js';
 import { showConfirm, showFormModal } from '../core/modal.js';
 import { startTask } from '../core/progress.js';
 import { logError } from '../core/logger.js';
@@ -315,7 +315,7 @@ async function _loadAll(force = false) {
             try {
                 const status = await apiJsonFetch(`/api/packages/${encodeURIComponent(pkg.id)}/status`);
                 statuses[pkg.id] = { status: status.status, health: status.health || 'none' };
-            } catch (_) {
+            } catch {
                 statuses[pkg.id] = { status: 'unknown', health: 'none' };
             }
         }));
@@ -542,6 +542,31 @@ function _hasSettings(pkg) {
     return _settingDefs(pkg).length > 0 || !!(pkg && pkg.data);
 }
 
+/** Does installing need a value only the admin can supply?
+ *
+ * A manifest can mark a setting `required` and ship no default (a login
+ * password, an API key). Installing straight from the card then sends nothing
+ * and the server answers with the raw label — "Password (at least 8 characters)
+ * is required" — so the card has to open the setup dialog first.
+ */
+function _needsSetup(pkg) {
+    return _settingDefs(pkg).some((def) => def.required && !def.default);
+}
+
+/** First missing or too-short value, as a message for the setup dialog. */
+function _settingsProblem(pkg, values) {
+    for (const def of _settingDefs(pkg)) {
+        const typed = String(values[`pkg_setting_${def.key}`] ?? '');
+        const value = typed !== '' ? typed : String(def.default || '');
+        const label = def.label || def.key;
+        if (def.required && value === '') return `${label} is required.`;
+        if (value !== '' && def.min_length && value.length < def.min_length) {
+            return `${label} must be at least ${def.min_length} characters.`;
+        }
+    }
+    return null;
+}
+
 // The folder a compose service keeps its data in. EthOS mounts it at the
 // manifest's `data.mount`; the default is a package-named folder in the data
 // store, and the admin may pick another path under /home, /mnt or /media.
@@ -594,7 +619,8 @@ function _settingsFields(pkg) {
         return `<label style="display:block;margin-top:8px;font-size:12px;color:var(--text-2);">
             <span style="display:block;margin-bottom:4px;">${escapeHtml(def.label || def.key)}${def.required ? ' *' : ''}</span>
             <input class="ui-input" style="width:100%;" type="${secret ? 'password' : 'text'}"
-                   name="pkg_setting_${escapeAttr(def.key)}" value="${escapeAttr(value)}"
+                   name="pkg_setting_${escapeAttr(def.key)}" data-testid="pkg-setting-${escapeAttr(def.key)}"
+                   value="${escapeAttr(value)}"
                    placeholder="${escapeAttr(hint)}" autocomplete="new-password" spellcheck="false">
             ${limits ? `<span class="ui-muted" style="font-size:11px;">${escapeHtml(limits)}</span>` : ''}
         </label>`;
@@ -636,7 +662,7 @@ async function _renderOrphanData(content) {
     let data;
     try {
         data = await apiJsonFetch('/api/packages/orphans');
-    } catch (_) {
+    } catch {
         return;  // the list is an extra; the Installed table already rendered
     }
     if (!shell || !content.isConnected || _pkg.tab !== 'installed') return;
@@ -712,17 +738,24 @@ function _installedRow(pkg) {
         </tr>`;
 }
 
-async function _openDetail(pkgId) {
-    const pkg = _pkg.catalog.find((p) => p.id === pkgId);
-    if (!pkg) return;
-    let detail = pkg;
+/** Catalogue entry merged with its manifest (the detail dialog needs both). */
+async function _fetchDetail(pkg) {
     try {
-        const data = await apiJsonFetch(`/api/packages/catalog/${encodeURIComponent(pkgId)}`);
+        const data = await apiJsonFetch(`/api/packages/catalog/${encodeURIComponent(pkg.id)}`);
         // The detail endpoint returns the manifest nested; flatten it so the
         // dialog sees the same fields an installed record has (settings, ui…).
-        detail = { ...pkg, ...(data.manifest || {}), ...data };
+        const detail = { ...pkg, ...(data.manifest || {}), ...data };
         delete detail.manifest;
-    } catch (_) { /* card data is enough when the detail fetch fails */ }
+        return detail;
+    } catch {
+        return null;   // card data is enough when the detail fetch fails
+    }
+}
+
+async function _openDetail(pkgId, preset = null) {
+    const pkg = _pkg.catalog.find((p) => p.id === pkgId);
+    if (!pkg) return;
+    const detail = preset || await _fetchDetail(pkg) || pkg;
     const canInstall = _pkg.isAdmin && !detail.installed && _blockedDeps(detail).length === 0;
     const canUpdate = _pkg.isAdmin && detail.update_available && _blockedDeps(detail).length === 0;
     const canUninstall = _pkg.isAdmin && detail.installed && !canUpdate;
@@ -755,6 +788,7 @@ async function _openDetail(pkgId) {
         </label>` : ''}
         ${_pythonRequires(detail).length ? `<div style="font-size:12px;margin-top:6px;">Package environment: ${_pythonRequires(detail).map(escapeHtml).join(', ')} — installed into a private virtualenv from bundled wheels, offline.</div>` : ''}
         ${canInstall ? _settingsFields(detail) : ''}
+        ${canInstall && _needsSetup(detail) ? '<p style="font-size:12px;color:var(--text-2);margin:6px 0 0;">Fill these in before installing — the package will not start without them.</p>' : ''}
         ${canInstall ? _dataDirField(detail, '', '') : ''}
         ${(detail.screenshots || []).length ? `<div style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;">${detail.screenshots.map((url) => `<a href="${escapeAttr(url)}" target="_blank" rel="noopener"><img src="${escapeAttr(url)}" alt="" style="height:90px;border-radius:8px;"></a>`).join('')}</div>` : ''}
         ${detail.installed && _pkg.isAdmin ? `<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn-ghost" data-testid="pkg-detail-logs" style="font-size:12px;padding:4px 10px;">📋 Open logs for ${escapeHtml(detail.name)}</button>${detail.runtime === 'compose' && detail.ui && detail.ui.port ? `<button class="btn-ghost" data-testid="pkg-detail-repair-ports" style="font-size:12px;padding:4px 10px;" title="Re-publish this package on a free port when another service took its port">🔌 Repair ports</button>` : ''}</div>` : ''}`;
@@ -777,6 +811,13 @@ async function _openDetail(pkgId) {
                     if (needsPortConsent && (canInstall || canUpdate) && values.ack_open_port !== true) {
                         setError(`Tick the box to confirm port ${detail.ui.port} is reachable without a login.`);
                         return false;
+                    }
+                    if (canInstall) {
+                        const problem = _settingsProblem(detail, values);
+                        if (problem) {
+                            setError(problem);
+                            return false;
+                        }
                     }
                     if (canUninstall) {
                         // The options dialog needs the screen; close this one first.
@@ -817,6 +858,15 @@ async function _repairPorts(pkgId) {
 async function _install(pkgId) {
     const pkg = _pkg.catalog.find((p) => p.id === pkgId);
     if (!pkg) return;
+    // The catalogue entry does not carry the manifest, so a card install used to
+    // fire blind and the server answered "Password (at least 8 characters) is
+    // required". Look the settings up and open the setup dialog (same fields as
+    // Settings) when the package needs a value only the admin can give.
+    const detail = _needsSetup(pkg) ? null : await _fetchDetail(pkg);
+    if (!detail || _needsSetup(detail)) {
+        await _openDetail(pkg.id, detail);
+        return;
+    }
     try {
         await _startJob('install', pkg);
     } catch (err) {
@@ -1090,7 +1140,7 @@ async function _resumeJob() {
         const pkg = _pkg.installed.find((p) => p.id === active.package_id)
             || _pkg.catalog.find((p) => p.id === active.package_id);
         _watchJob(active, pkg ? pkg.name : active.package_id);
-    } catch (_) { /* the job list is optional; polling still works after a new action */ }
+    } catch { /* the job list is optional; polling still works after a new action */ }
 }
 
 async function _action(pkgId, action) {
@@ -1113,7 +1163,7 @@ async function _uninstall(pkgId) {
     let inventory = { volumes: [], images: [], shared_images: [] };
     try {
         inventory = await apiJsonFetch(`/api/packages/${encodeURIComponent(pkgId)}/uninstall-preview`);
-    } catch (_) { /* the dialog still works without an inventory */ }
+    } catch { /* the dialog still works without an inventory */ }
     const volumes = inventory.volumes || [];
     const images = inventory.images || [];
     const shared = inventory.shared_images || [];
@@ -1226,10 +1276,6 @@ function _openUi(pkgId) {
 }
 
 // ── Sources ─────────────────────────────────────────────────────────────────
-
-async function _toggleSources(body) {
-    if (shell) _renderSources(shell.view);
-}
 
 function _renderSources(panel) {
     if (!_pkg.isAdmin) {

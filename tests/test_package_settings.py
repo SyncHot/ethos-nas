@@ -285,6 +285,37 @@ check("host data folder stays out of the package list", "data_dir" not in view)
 check("the stored record is not mutated",
       record["settings_values"]["admin_password"] == "hunter22")
 
+# ── Package Center must ask for a required value with no default ─────────────
+# The card's Install button used to fire blind, so a manifest like the Web
+# Browser's (a login password with no default) failed with the raw label
+# "Password (at least 8 characters) is required" and no dialog ever appeared.
+print("\nCard install asks for required settings first")
+import re  # noqa: E402
+
+packages_js = (ROOT / "frontend/static/apps/packages.js").read_text(encoding="utf-8")
+
+
+def _function_source(src: str, name: str) -> str:
+    """Body of `function <name>(…)` — stops at the first unindented closing brace."""
+    match = re.search(rf"function {name}\([^)]*\) \{{(.*?)\n\}}", src, re.S)
+    return match.group(1) if match else ""
+
+
+install_body = _function_source(packages_js, "_install")
+needs_setup_body = _function_source(packages_js, "_needsSetup")
+problem_body = _function_source(packages_js, "_settingsProblem")
+
+check("a setting is 'must ask' when required with no default",
+      "def.required && !def.default" in needs_setup_body)
+check("a card install opens the setup dialog instead of installing blind",
+      "_needsSetup(" in install_body and "_openDetail(pkg.id, detail)" in install_body)
+check("packages whose settings all have defaults still install in one click",
+      "_startJob('install', pkg)" in install_body)
+check("the dialog validates required/length before the job starts",
+      "is required." in problem_body and "def.min_length" in problem_body)
+check("the setup dialog renders one field per setting (password type kept)",
+      'data-testid="pkg-setting-' in packages_js and "type=\"${secret ? 'password' : 'text'}\"" in packages_js)
+
 failed = [n for n, ok, _ in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
 sys.exit(1 if failed else 0)
