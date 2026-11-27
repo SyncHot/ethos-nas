@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-24T23:12:05+00:00",
+  "generated_at": "2026-11-27T07:59:46+00:00",
   "latest": {
-    "version": "2.39.4",
-    "git_sha": "a475e2f",
-    "git_sha_full": "a475e2fc0fe6a068df9f1f4771c737de68546f26",
-    "build": 311,
-    "released_at": "2026-11-24T23:12:05+00:00",
-    "notes": "Books: covers are cached automatically in the background after every library load (downloaded titles immediately), so the phone is ready for airplane mode without pressing a button; Settings keeps the counter and a manual retry."
+    "version": "2.39.5",
+    "git_sha": "e232f45",
+    "git_sha_full": "e232f45b3aa999ac7203d59fc7ce6dd60f554094",
+    "build": 314,
+    "released_at": "2026-11-27T07:59:46+00:00",
+    "notes": "Progress: the task panel reserves its own space, so the last button of a window is always clickable"
   },
   "releases": [
+    {
+      "version": "2.39.5",
+      "git_sha": "e232f45",
+      "git_sha_full": "e232f45b3aa999ac7203d59fc7ce6dd60f554094",
+      "build": 314,
+      "released_at": "2026-11-27T07:59:46+00:00",
+      "notes": "Progress: the task panel reserves its own space, so the last button of a window is always clickable"
+    },
     {
       "version": "2.39.4",
       "git_sha": "a475e2f",
@@ -201,14 +209,6 @@
       "build": 253,
       "released_at": "2026-11-23T09:21:29+00:00",
       "notes": "Settings → Updates: a Download button links the published release's tagged source archive; every account can download it."
-    },
-    {
-      "version": "2.31.1",
-      "git_sha": "754eab5",
-      "git_sha_full": "754eab532a0ab2182bff1e32c1222661cc662095",
-      "build": 251,
-      "released_at": "2026-11-23T09:10:04+00:00",
-      "notes": "Download Manager: the browser extension's picked category is now kept for right-click sends and .torrent uploads; a category without a save path downloads into its own subfolder."
     }
   ]
 }
