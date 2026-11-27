@@ -98,14 +98,16 @@ Package Center states the exposure and asks for an explicit confirmation when a 
 | `ethos-monitor` | 3001 | Uptime Kuma, monitors other hosts/services and sends its own alerts |
 | `ethos-rss` | 8080 | FreshRSS news reader |
 | `ethos-welcome` | 8090 | static welcome page, deliberately no login (`ui.auth: "none"`) |
-| `webbrowser` | 8091 | LinuxServer Chromium (Selkies) rendered on the NAS and streamed into the window — a browser for a phone or a locked-down laptop; own login, kiosk-hardened, profile in a folder chosen at install time |
+| `webbrowser` | 8091 | LinuxServer Chromium (Selkies) rendered on the NAS and streamed into the window — a browser for a phone or a locked-down laptop; optional login, kiosk-hardened, profile in a folder chosen at install time |
 
 `webbrowser` is served over **HTTPS** on purpose: the streaming client decodes with WebCodecs, which
 browsers expose only in a secure context, so the plain-HTTP port of the image shows a black panel on
 every LAN address. The certificate is the image's own self-signed one, generated on first start and
 kept in the profile folder — accept it once in the browser (window toolbar → “Open in new tab” →
-proceed → “Reload UI”), or drop a trusted `ssl/cert.pem` / `ssl/cert.key` into that folder and
-restart the package. The container owns one Chromium profile, so every EthOS account sees the same
+proceed → “Reload UI”); the window shows a reminder for self-signed HTTPS packages. Or drop a
+trusted `ssl/cert.pem` / `ssl/cert.key` into that folder and restart the package. The login is
+optional: leave the password empty at install time and the image runs with no authentication (its
+own default). The container owns one Chromium profile, so every EthOS account sees the same
 bookmarks, history and logins: the profile belongs to the NAS, not to individual users.
 
 `ethos-kanban` is the reference **user-space app**: a native UI plus a stdlib-only service (no

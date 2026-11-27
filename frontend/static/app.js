@@ -350,6 +350,15 @@ async function _renderGenericPackage(winId, container = null) {
                 setTimeout(() => { frame.src = themedUiUrl(currentTheme()); }, 60);
             });
             toolbar.append(reload, openTab);
+            // A self-signed HTTPS package (a streaming browser is the classic
+            // case) renders a blank frame until its certificate is accepted once
+            // in a top-level tab — an iframe cannot show the browser's own
+            // certificate warning, so make the one-time step explicit here.
+            const selfSignedHttps = scheme === 'https' && uiExpose === 'lan';
+            const certHint = selfSignedHttps
+                ? el('div', { testid: `pkg-cert-hint-${pkg.id}`, style: 'padding:7px 14px;font-size:11px;line-height:1.5;color:#fbbf24;background:rgba(251,191,36,.08);border-bottom:1px solid rgba(251,191,36,.18);' },
+                    txt('This package uses its own self-signed certificate. If the window stays blank, click “Open in new tab”, accept the certificate warning, then press “Reload UI”.'))
+                : null;
             const frame = el('iframe', {
                 testid: `pkg-ui-frame-${pkg.id}`,
                 src: themedUiUrl(currentTheme()),
@@ -357,6 +366,7 @@ async function _renderGenericPackage(winId, container = null) {
                 sandbox: 'allow-scripts allow-forms allow-same-origin allow-popups allow-downloads',
                 style: 'flex:1;width:100%;min-height:0;border:0;background:#0b1220;display:block;',
             });
+            if (certHint) root.append(certHint);
             root.append(toolbar, frame);
             winEl.replaceChildren(root);
             frame.dataset.theme = currentTheme();
