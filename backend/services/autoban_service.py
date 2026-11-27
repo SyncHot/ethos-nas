@@ -392,7 +392,12 @@ def collect_candidates(cfg: dict, *, now: datetime | None = None,
                        existing: list[dict] | None = None) -> list[dict]:
     """Return IPs that crossed a threshold, newest evidence first."""
     now = now or _now()
+    # `json_store.load()` może zwrócić None dla pustego/uszkodzonego pliku —
+    # normalizujemy raz, żeby dalsze `state.get(...)` i `_cooldown_active(state, …)`
+    # nie operowały na Optional (i żeby logika nie różniła się od pustego stanu).
     state = state if state is not None else _STORE.load()
+    if not isinstance(state, dict):
+        state = {}
     cfg = normalize_config(cfg)
 
     pooled: dict[str, dict] = {}
