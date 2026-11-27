@@ -74,6 +74,11 @@ def main() -> int:
           "Preparing" in videos and "Ready to save" in videos and "On this device" in videos)
     check("default version comes from the server",
           "/api/videos/download-settings" in videos)
+    check("size estimates use the server's bitrate caps",
+          "applyDownloadSettings" in videos and "bps[entry.value]" in videos)
+    check("the transfer row shows speed and ETA",
+          "transferRate" in videos and "transferEta" in videos
+          and "fmtBytes(bps)" in videos)
     check("the old source-quality chip is gone",
           'data-q="high"' not in videos and "Source</button>" not in videos)
     check("polling is throttled and visibility-aware",

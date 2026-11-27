@@ -1,0 +1,11 @@
+{
+  "//": "The app runs from the repo root with the project venv (`backend.*` imports). Without this the editor/LSP resolves neither the package root nor the venv, so every file looked like a pile of missing imports.",
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": ["backend", "scripts", "tests"],
+  "exclude": ["**/.venv", "**/node_modules", "backend/data", "**/__pycache__"],
+  "extraPaths": ["."],
+  "executionEnvironments": [{ "root": ".", "extraPaths": ["."] }],
+  "typeCheckingMode": "basic",
+  "reportMissingModuleSource": "none"
+}

@@ -46,7 +46,9 @@ icon can be pinned.
    `GET/POST /api/videos/download-settings` (default `auto` = copy when the
    phone can play the file, otherwise a fast small encode). Many jobs may be
    queued: the NAS renders them **one at a time** and `queue_position` drives
-   the UI.
+   the UI. Both clients — this page **and the Android app** — use this same
+   endpoint, so a download started on one device reaches the same queue, the
+   same dedupe and the same `consumed`/TTL rules.
 2. `auto` (the default) is one tap and the fastest safe path: a playable
    H.264 4:2:0 source is copied (MKV → MP4 remux, or served as is when it
    already is a phone-playable MP4 — `mode=passthrough`), a HEVC source is
@@ -92,7 +94,12 @@ icon can be pinned.
 480p ≈ 1.5 Mbps, 720p ≈ 2.8 Mbps, 1080p ≈ 5 Mbps (plus 128 kbps AAC). Sources
 above 30 fps are capped to 30, and HDR10/HLG is tone-mapped to 8-bit H.264
 (`zscale`/`tonemap`) so the download is not washed out. The phone's preflight
-size estimate reads those same caps from `/api/videos/download-settings`.
+size estimate reads those same caps from `/api/videos/download-settings`, which
+returns them twice: per version inside `qualities[]` (`bps`) and as a lookup
+map `bps: {fast: 2800000, …}` (a copy — `auto`/`original` — is absent because
+its size is the source size). Every job additionally carries `expected_bytes`
+(the render's own estimate), so a client can show `≈ 1.4 GB` before the first
+byte moves and the real size once `done`.
 
 **HEVC copies.** iPhone/Safari reports HEVC support; the PWA sends `hevc: true`
 with the export and the NAS then copies a HEVC stream (MKV → MP4 remux with the
@@ -267,5 +274,9 @@ after a reload; nothing outside the caller's scope is ever returned.
 - [x] On-device resume (`resume` store, DB v2) and offline unlock without a
   session
 - [x] Retention hook, shutdown handling, `docs` + `CHANGELOG`
+- [x] Server-provided bitrate caps (`bps`) + `expected_bytes` and a transfer
+  speed/ETA line, shared with the Android app (core 2.40.0)
+- [x] Android app moved onto the same `/exports` pipeline (remux/transcode,
+  resumable transfer, auto-retry, `Pobierz folder`) — APK 1.5.1
 - [ ] Settings row that points phones at `/videos` (APK stays for Android TV)
 - [ ] Optional background sync of the resume queue while offline

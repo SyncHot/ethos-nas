@@ -192,7 +192,7 @@ def main() -> int:
             code, body = call(base, "POST", "/api/videos/hls", admin,
                               {"path": str(sample), "t": 0, "a": 0, "q": "balanced"}, timeout=60)
             hls = json.loads(body) if code == 200 else {}
-            check("HLS session starts", code == 200 and hls.get("session"), f"{code} {body[:300]}")
+            check("HLS session starts", bool(code == 200 and hls.get("session")), f"{code} {body[:300]}")
             sid = hls.get("session", "")
             if sid:
                 playlist_path = hls.get("playlist", "") + "?token=" + urllib.parse.quote(admin, safe="")
@@ -285,6 +285,10 @@ def main() -> int:
                   [q["value"] for q in settings.get("qualities", [])]
                   == ["auto", "original", "balanced", "fast", "tiny"],
                   str(settings.get("qualities")))
+            bps = settings.get("bps") or {}
+            check("download settings expose the encoder bitrate caps",
+                  (bps.get("balanced"), bps.get("fast"), bps.get("tiny"))
+                  == (5_000_000, 2_800_000, 1_500_000), str(bps))
             code, _ = call(base, "POST", "/api/videos/download-settings", admin,
                            {"quality": "original"})
             check("download default is saved", code == 200, str(code))
@@ -327,9 +331,9 @@ def main() -> int:
             listing = json.loads(body) if code == 200 else {}
             ids = [j["id"] for j in listing.get("jobs", [])]
             check("export list carries the default",
-                  listing.get("defaults", {}).get("quality") == "original", body[:300])
+                  listing.get("defaults", {}).get("quality") == "original", str(body[:300]))
             check("export list carries the queue limits",
-                  listing.get("limits", {}).get("queued", 0) > 1, body[:300])
+                  listing.get("limits", {}).get("queued", 0) > 1, str(body[:300]))
             check("export list is per-user",
                   code == 200 and job_id in ids, str(ids))
             for extra in (queued_default.get("id"), second.get("id")):
@@ -355,13 +359,15 @@ def main() -> int:
             code, _ = call(base, "DELETE", "/api/videos/resume?path=" + urllib.parse.quote(str(sample)), admin)
             check("resume delete works", code == 200, str(code))
             code, body = call(base, "GET", "/api/videos/resume?path=" + urllib.parse.quote(str(sample)), admin)
-            check("resume is cleared", code == 200 and json.loads(body).get("resume") is None, body[:200])
+            check("resume is cleared",
+                  bool(code == 200 and json.loads(body).get("resume") is None), str(body[:200]))
 
             code, body = call(base, "POST", "/api/videos/list", admin, {"path": str(sample), "add": True})
             paths = json.loads(body).get("paths", []) if code == 200 else []
             check("My List add works", code == 200 and str(sample) in paths, f"{code} {body[:200]}")
             code, body = call(base, "GET", "/api/videos/list", user)
-            check("My List is per-user", code == 200 and json.loads(body).get("paths") == [], body[:200])
+            check("My List is per-user",
+                  bool(code == 200 and json.loads(body).get("paths") == []), str(body[:200]))
             code, body = call(base, "DELETE", "/api/videos/list?path=" + urllib.parse.quote(str(sample)), admin)
             check("My List delete works", code == 200 and str(sample) not in json.loads(body).get("paths", []),
                   f"{code} {body[:200]}")

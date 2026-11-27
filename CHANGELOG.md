@@ -11,6 +11,30 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.40.0] - 2026-11-27
+
+### Added
+
+- **Offline downloads in the Android app now use the NAS export pipeline** (`/api/videos/exports`)
+  instead of pulling the raw file: the phone gets a ready-to-play MP4 (HEVC/AC3 MKV is remuxed or
+  cheaply re-encoded), the transfer resumes with `Range`, the NAS copy is reused („Gotowe na NAS")
+  and a failed transfer retries itself with backoff (5 s → 15 s → 45 s → 2 min); returning to Wi-Fi
+  or ending airplane mode resumes immediately. Batch downloading (`Pobierz folder`) and automatic
+  resume-on-reconnect are now identical on both clients.
+- `GET/POST /api/videos/download-settings` returns a `bps` map (the encoder's own bitrate caps per
+  version), and every export job exposes `expected_bytes` — one source of truth for the download
+  size estimate shared by the PWA and the Android app.
+- `/videos` shows the live transfer speed and ETA next to the progress bar.
+
+### Fixed
+
+- Package windows that talk to a self-signed HTTPS service now explain how to accept the
+  certificate instead of failing silently.
+- `/videos` no longer leaks per-open `<video>` listeners: reopening a film accumulated handlers
+  from previous players (duplicate resume saves, stale error handling).
+- `tests/test_video_render.py` waits for the queued render to take over instead of racing a fixed
+  100 ms sleep (flaky on a busy NAS).
+
 ## [2.39.7] - 2026-11-27
 
 ### Fixed

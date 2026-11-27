@@ -132,6 +132,11 @@ async def main() -> int:
                                  cmd_factory=fake_ffmpeg("slow"))
         check("a second job is queued instead of 429", second.status in ("queued", "rendering"),
               second.status)
+        # The phone sizes its pre-download hint from this estimate; a transcode
+        # follows the encoder cap × duration, a copy lands on the source size.
+        check("a transcode carries a size estimate",
+              first.public().get("expected_bytes", 0) > 0,
+              str(first.public().get("expected_bytes")))
         check("queue positions are FIFO",
               (first.queue_position, second.queue_position) == (1, 2),
               f"{first.queue_position},{second.queue_position}")
@@ -145,6 +150,12 @@ async def main() -> int:
         check("cancel removes the partial file",
               not (mgr.files_dir / f"{first.id}.mp4.part").exists())
         await asyncio.sleep(0.1)
+        # The limiter hands the slot over asynchronously; on a busy NAS 100 ms is
+        # not always enough, so poll briefly instead of racing the scheduler.
+        for _ in range(60):
+            if second.status in ("rendering", "done"):
+                break
+            await asyncio.sleep(0.05)
         check("the queued render takes over", second.status in ("rendering", "done"), second.status)
         await mgr.cancel(second.id, "carol")
         mgr.delete(first.id, "carol")
@@ -190,6 +201,9 @@ async def main() -> int:
             cmd_factory=lambda _p: [], mode="passthrough", note="Original file")
         await _wait(direct)
         check("passthrough finishes without ffmpeg", direct.status == "done", direct.status)
+        check("a passthrough estimate is the source size",
+              direct.public().get("expected_bytes") == source.stat().st_size,
+              f"{direct.public().get('expected_bytes')} vs {source.stat().st_size}")
         check("passthrough serves the original file",
               passthrough.download_path(direct.id, "heidi") == source, str(direct.path))
         passthrough.consume(direct.id, "heidi")

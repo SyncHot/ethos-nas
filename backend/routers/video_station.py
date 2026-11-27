@@ -1018,10 +1018,14 @@ async def start_hls(payload: HlsRequest) -> dict:
             abs_path, info, encoder, engine_status.get("device"),
         )
 
+    # Po sprawdzeniu `if not FFMPEG_BIN` powyżej typ jest już zawężony, ale
+    # domknięcie traci to zawężenie — bierzemy lokalną kopię.
+    ffmpeg_bin = FFMPEG_BIN
+
     def _factory(out_dir: str, use_encoder: str | None = encoder,
                  use_decode_hw: bool = decode_hw) -> list[str]:
         return video_engine.build_hls_cmd(
-            FFMPEG_BIN, abs_path, info, start, use_encoder, mode, payload.a, quality,
+            ffmpeg_bin, abs_path, info, start, use_encoder, mode, payload.a, quality,
             audio_bitrate, out_dir, decode_hw=use_decode_hw,
             device=engine_status.get("device"), loglevel=settings.FFMPEG_LOGLEVEL,
             acodec=acodec,
@@ -1144,6 +1148,20 @@ EXPORT_QUALITY_CHOICES = (
 )
 
 
+def _quality_bps() -> dict:
+    """Video bitrate cap per download version, in bits per second.
+
+    Both clients (the PWA and the Android app) size their pre-download estimate
+    from these numbers instead of keeping their own copy of the constants. A
+    copy (`auto`/`original`) is absent on purpose: its size is the source size.
+    """
+    return {
+        choice["value"]: video_engine.output_bitrate_bps(choice["value"])
+        for choice in EXPORT_QUALITY_CHOICES
+        if choice["value"] not in ("auto", "original")
+    }
+
+
 @router.get("/download-settings")
 async def get_download_settings() -> dict:
     """Default offline-download version for this account (shared by both UIs)."""
@@ -1151,6 +1169,7 @@ async def get_download_settings() -> dict:
     return {
         "quality": options.get("download_quality", "auto"),
         "qualities": list(EXPORT_QUALITY_CHOICES),
+        "bps": _quality_bps(),
     }
 
 
@@ -1174,7 +1193,8 @@ async def set_download_settings(payload: DownloadSettings) -> dict:
     logger.info("Download settings saved | quality=%s user=%s",
                 options["download_quality"], user_data.current_username())
     return {"quality": options["download_quality"],
-            "qualities": list(EXPORT_QUALITY_CHOICES)}
+            "qualities": list(EXPORT_QUALITY_CHOICES),
+            "bps": _quality_bps()}
 
 
 @router.post("/exports", status_code=202)
@@ -1216,11 +1236,13 @@ async def create_export(payload: RenderRequest) -> dict:
             abs_path, info, encoder, engine_status.get("device"),
         )
 
+    ffmpeg_bin = FFMPEG_BIN  # narrowed by the guard above; closures lose narrowing
+
     def _factory(out_path: str) -> list[str]:
         if mode == "passthrough":
             return []  # the original file is served as is — ffmpeg never runs
         return video_engine.build_render_cmd(
-            FFMPEG_BIN, abs_path, info, encoder, payload.a, quality,
+            ffmpeg_bin, abs_path, info, encoder, payload.a, quality,
             audio_bitrate, out_path, decode_hw=decode_hw,
             device=engine_status.get("device"), loglevel=settings.FFMPEG_LOGLEVEL,
             mode=mode,

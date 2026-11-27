@@ -189,6 +189,37 @@ def bitrate_for(width: int, height: int, max_height: int = 0) -> str:
     return "1.2M"
 
 
+def parse_bitrate(value: str) -> int:
+    """``"5M"`` → ``5_000_000`` — the caps above, for client size estimates."""
+    text = str(value or "").strip().upper().replace("BPS", "").replace("B", "")
+    scale = 1
+    if text.endswith("M"):
+        scale, text = 1_000_000, text[:-1]
+    elif text.endswith("K"):
+        scale, text = 1_000, text[:-1]
+    try:
+        return int(float(text) * scale)
+    except (TypeError, ValueError):
+        return 0
+
+
+def output_bitrate_bps(quality: str, info: dict | None = None) -> int:
+    """Video bitrate cap the render will aim for, in bits per second.
+
+    Mirrors the encoder's own cap ([bitrate_for] on the preset's target height),
+    so a phone's pre-download estimate uses the same numbers the file will land
+    on instead of a second, drifting copy of the constants.
+    """
+    preset = QUALITY_PRESETS.get(str(quality or "")) or QUALITY_PRESETS["balanced"]
+    source = info or {}
+    try:
+        width = int(source.get("width") or 0)
+        height = int(source.get("height") or 0)
+    except (TypeError, ValueError):
+        width = height = 0
+    return parse_bitrate(bitrate_for(width, height, preset["max_height"]))
+
+
 def needs_tonemap(info: dict) -> bool:
     return (str(info.get("color_transfer") or "").lower() in HDR_TRANSFERS)
 
@@ -764,6 +795,8 @@ __all__ = [
     "build_transcode_cmd",
     "build_video_args",
     "copy_video_ok",
+    "output_bitrate_bps",
+    "parse_bitrate",
     "resolve_quality",
     "download_mode",
     "prune_decode_cache",

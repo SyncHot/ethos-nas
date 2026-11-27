@@ -28,7 +28,6 @@ setLogContext({ app: 'videos' });
 const $ = (id) => document.getElementById(id);
 const HLS_SCRIPT = '/static/vendor/hls.min.js';
 const RESUME_EVERY_MS = 5000;
-const WAKE_LOCK_MS = 15 * 60 * 1000; // informational only; the browser decides
 
 const state = {
     library: null,
@@ -356,6 +355,24 @@ const SOURCE_BPS = { '480p': 1_500_000, '720p': 3_000_000, '1080p': 5_000_000, '
 function qualityBps(quality) {
     const hit = (state.downloadQualities || []).find((entry) => entry.value === quality);
     return Number(hit?.bps) || QUALITY_BPS[quality] || QUALITY_BPS.balanced;
+}
+
+/**
+ * Apply `/api/videos/download-settings` to local state.
+ *
+ * The server ships the encoder's own bitrate caps (`bps`, one entry per
+ * version) so this page and the Android app size their estimate from the same
+ * numbers; older cores answer without it and the local constants stay as the
+ * fallback.
+ */
+function applyDownloadSettings(data) {
+    if (!data) return;
+    if (data.quality) state.downloadQuality = data.quality;
+    if (!Array.isArray(data.qualities) || !data.qualities.length) return;
+    const bps = data.bps || {};
+    state.downloadQualities = data.qualities.map((entry) => (
+        bps[entry.value] ? { ...entry, bps: Number(bps[entry.value]) } : entry
+    ));
 }
 
 function sourceBps(item) {
@@ -983,13 +1000,47 @@ function stageText(d) {
     }
     if (d.status === 'ready') return 'Ready on the NAS — saving to this device…';
     if (d.status === 'downloading') {
+        const bps = transferRate(d);
+        const eta = transferEta(d, bps);
+        const rate = bps > 0
+            ? ` · ${fmtBytes(bps)}/s${eta > 0 ? ` · ~${formatEta(eta)}` : ''}`
+            : '';
         return d.bytesTotal
-            ? `Saving… ${Math.round(progress)}% · ${fmtBytes(d.bytesDone)} / ${fmtBytes(d.bytesTotal)}`
-            : `Saving… ${Math.round(progress)}%`;
+            ? `Saving… ${Math.round(progress)}% · ${fmtBytes(d.bytesDone)} / ${fmtBytes(d.bytesTotal)}${rate}`
+            : `Saving… ${Math.round(progress)}%${rate}`;
     }
     if (d.status === 'done') return d.size ? `${fmtBytes(d.size)} · offline` : 'Offline';
     if (d.status === 'failed') return d.error || 'Failed';
     return d.status;
+}
+
+// ── transfer rate (for the "Saving…" line) ───────────────────────────────
+// Sampled from the byte counters both transfer paths already update, so the
+// label costs nothing extra: no timer, no second request.
+const dlRates = new Map(); // path → { at, bytes, bps }
+
+function transferRate(d) {
+    const now = Date.now();
+    const bytes = Number(d.bytesDone) || 0;
+    const prev = dlRates.get(d.path);
+    if (!prev || bytes < prev.bytes) {
+        dlRates.set(d.path, { at: now, bytes, bps: 0 });
+        return 0;
+    }
+    const dt = now - prev.at;
+    if (dt < 700) return prev.bps; // same paint cycle — keep the last measure
+    const bps = Math.max(0, (bytes - prev.bytes) / (dt / 1000));
+    const smoothed = prev.bps > 0 ? prev.bps * 0.6 + bps * 0.4 : bps;
+    dlRates.set(d.path, { at: now, bytes, bps: smoothed });
+    if (dlRates.size > 40) dlRates.clear(); // bounded: old rows leave the list
+    return smoothed;
+}
+
+function transferEta(d, bps) {
+    const total = Number(d.bytesTotal) || 0;
+    const done = Number(d.bytesDone) || 0;
+    if (!total || !bps || done >= total) return 0;
+    return (total - done) / bps;
 }
 
 function stageTone(d) {
@@ -1299,8 +1350,7 @@ async function resumeAll() {
 async function loadDownloadSettings() {
     try {
         const data = await apiJson('/api/videos/download-settings');
-        if (data?.quality) state.downloadQuality = data.quality;
-        if (Array.isArray(data?.qualities) && data.qualities.length) state.downloadQualities = data.qualities;
+        applyDownloadSettings(data);
         if (els.selectBar) paintSelection();
         renderSettings();
     } catch (error) {
@@ -1318,11 +1368,21 @@ function renderSettings() {
         { value: 'fast', label: '720p · small' },
         { value: 'tiny', label: '480p · tiny' },
     ];
-    els.qualityOptions.innerHTML = choices.map((q) => `<label class="vd-choice">
-        <input type="radio" name="vd-download-quality" value="${esc(q.value)}"
-               ${state.downloadQuality === q.value ? 'checked' : ''}>
-        <span>${esc(q.label)}</span>
-    </label>`).join('');
+    // DOM zamiast innerHTML: wartości pochodzą z serwera, więc nie wstawiamy
+    // ich do HTML-a — `textContent`/`value` są odporne bez żadnego escapowania.
+    els.qualityOptions.replaceChildren(...choices.map((q) => {
+        const label = document.createElement('label');
+        label.className = 'vd-choice';
+        const input = document.createElement('input');
+        input.type = 'radio';
+        input.name = 'vd-download-quality';
+        input.value = q.value;
+        input.checked = state.downloadQuality === q.value;
+        const text = document.createElement('span');
+        text.textContent = q.label;
+        label.append(input, text);
+        return label;
+    }));
 }
 
 async function openSettings() {
@@ -1336,7 +1396,7 @@ async function saveDownloadQuality(value) {
     try {
         const data = await apiPost('/api/videos/download-settings', { quality: value });
         state.downloadQuality = data.quality || value;
-        state.downloadQualities = Array.isArray(data.qualities) ? data.qualities : state.downloadQualities;
+        applyDownloadSettings({ ...data, quality: data.quality || value });
         renderSettings();
         if (els.selectBar) paintSelection();
         toast('Default download version saved', 'success');
@@ -1828,6 +1888,10 @@ function stopPlayer({ quiet = false } = {}) {
     }
     clearUpNext(player);
     clearSubtitleTrack(player);
+    // Każde otwarcie woła bindPlayerEvents() i dokłada 6 listenerów na wspólny
+    // <video>; bez tego zdjęcia po kilku filmach stare domknięcia dalej pisały
+    // do stanu zamkniętego playera (podwójny zapis pozycji, złe obsługiwanie błędów).
+    unbindPlayerEvents(player);
     try { els.video.pause(); } catch { /* ignore */ }
     if (player.hls) { try { player.hls.destroy(); } catch { /* ignore */ } }
     let stopped = Promise.resolve();

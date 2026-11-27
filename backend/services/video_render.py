@@ -37,7 +37,7 @@ from pathlib import Path
 
 from backend.config import settings
 from backend.services import child_limits, json_store, pressure_guard, shutdown_state, task_registry
-from backend.services.video_engine import TranscodeLimiter
+from backend.services.video_engine import TranscodeLimiter, output_bitrate_bps
 
 logger = logging.getLogger("ethos-nas.services.video_render")
 
@@ -50,6 +50,9 @@ CONSUMED_TTL = 7 * 86400        # a stored copy stays re-downloadable for a week
 MAX_TOTAL_BYTES = 50 * 1024 ** 3  # 50 GiB of prepared downloads
 MIN_FREE_BYTES = 5 * 1024 ** 3    # refuse to start below 5 GiB free
 WORKER_TIMEOUT = 6 * 3600
+# AAC estimate for the size hint — the encoder uses the account's audio bitrate,
+# but the cap below is what a phone needs to know *before* queueing.
+ESTIMATE_AUDIO_BPS = 128_000
 MAX_JOBS_KEPT = 300
 QUALITY_LABELS = {"tiny": "480p", "fast": "720p", "balanced": "1080p",
                   "high": "source", "original": "Original"}
@@ -91,6 +94,7 @@ class RenderJob:
     eta_s: float = 0.0          # remaining seconds at the current speed
     duration: float = 0.0
     size: int = 0
+    expected_bytes: int = 0   # size estimate before the render finishes
     error: str = ""
     queue_position: int = 0
     created_at: float = field(default_factory=time.time)
@@ -131,6 +135,9 @@ class RenderJob:
             "eta_s": round(float(self.eta_s or 0.0), 1),
             "duration": self.duration,
             "size": self.size,
+            # Estimate shown by both clients *before* the transfer; 0 when the
+            # source could not be probed.
+            "expected_bytes": int(self.expected_bytes or 0),
             "error": self.error,
             "queue_position": self.queue_position,
             "created_at": self.created_at,
@@ -139,6 +146,35 @@ class RenderJob:
             "download_url": (f"/api/videos/exports/{self.id}/download"
                              if self.status in ("done", "consumed") else None),
         }
+
+
+def estimate_output_bytes(
+    info: dict, source_bytes: int, mode: str, quality: str,
+) -> int:
+    """Rough size of the prepared file, for the phone's pre-download hint.
+
+    A copy (passthrough/remux) lands on the source size; a re-encode follows the
+    encoder's own bitrate cap scaled by duration. Never fatal: ``0`` means
+    "unknown" and both clients render a dash instead of a fake number.
+    """
+    try:
+        if mode in ("passthrough", "remux"):
+            return max(0, int(source_bytes or 0))
+        duration = float(info.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        return 0
+    if duration <= 0:
+        return max(0, int(source_bytes or 0))
+    bps = output_bitrate_bps(quality, info) + ESTIMATE_AUDIO_BPS
+    return int(duration * bps / 8) if bps > 0 else 0
+
+
+def _file_size(path: str) -> int:
+    """Source size for the estimate — a missing file is not an error here."""
+    try:
+        return int(os.stat(path).st_size)
+    except OSError:
+        return 0
 
 
 class RenderManager:
@@ -353,6 +389,8 @@ class RenderManager:
                 id=uuid.uuid4().hex, owner=owner, path=abs_path, quality=quality,
                 audio_idx=max(0, int(audio_idx or 0)), source_key=source_key,
                 duration=float(info.get("duration") or 0), mode=mode, note=note,
+                expected_bytes=estimate_output_bytes(
+                    info, _file_size(abs_path), mode, quality),
             )
             self._jobs[job.id] = job
             self._refresh_positions_locked()
