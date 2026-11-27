@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-27T08:11:49+00:00",
+  "generated_at": "2026-11-27T08:21:51+00:00",
   "latest": {
-    "version": "2.39.6",
-    "git_sha": "426d009",
-    "git_sha_full": "426d009c84cd460fc5aadbaf3936389524dd8278",
-    "build": 316,
-    "released_at": "2026-11-27T08:11:49+00:00",
-    "notes": "Packages: installing a package that needs a password asks for it first, in a setup dialog"
+    "version": "2.39.7",
+    "git_sha": "beab07a",
+    "git_sha_full": "beab07acee420ad3fdec68256ad0d66c3c3ff604",
+    "build": 318,
+    "released_at": "2026-11-27T08:21:51+00:00",
+    "notes": "Cameras, Downloads and Health Monitor: four edge-case crashes and type gaps closed"
   },
   "releases": [
+    {
+      "version": "2.39.7",
+      "git_sha": "beab07a",
+      "git_sha_full": "beab07acee420ad3fdec68256ad0d66c3c3ff604",
+      "build": 318,
+      "released_at": "2026-11-27T08:21:51+00:00",
+      "notes": "Cameras, Downloads and Health Monitor: four edge-case crashes and type gaps closed"
+    },
     {
       "version": "2.39.6",
       "git_sha": "426d009",
@@ -201,14 +209,6 @@
       "build": 259,
       "released_at": "2026-11-23T11:32:13+00:00",
       "notes": "Files: plain 320 px video thumbnails; cinematic preview and face-detected crops removed"
-    },
-    {
-      "version": "2.31.4",
-      "git_sha": "284287e",
-      "git_sha_full": "284287ed3346440d145e9a9dca65783618d86810",
-      "build": 257,
-      "released_at": "2026-11-23T09:47:39+00:00",
-      "notes": "Settings → Updates: a Browser-extension card downloads the EthOS NAS Downloader zip from the NAS (or GitHub as fallback), with the deployed version shown."
     }
   ]
 }
