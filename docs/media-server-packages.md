@@ -62,6 +62,10 @@ QuickSync vs ~0,8× with software (`CHANGELOG.md`, 2.41.1).
   NVENC env vars ship in the signed compose file (inert without the nvidia runtime).
 - `ui.expose: "lan"`, `ui.auth: "package"`, `ui.embed: false` — Jellyfin refuses framing, so the
   window shows the tab card. Enable hardware transcoding in Jellyfin → Playback.
+- Published on host port **8094** while the container listens on 8096: `ethos-music-engine` owns 8096
+  and 8097–8100 are taken by other packages (QA rule S06 rejects a duplicate declared port, and the
+  Music engine's loopback service port cannot be remapped).
+- The icon ships in `files[]` (QA rule S02), so it is part of the signed artifact.
 - No `network_mode: host` (policy): client auto-discovery and DLNA are unavailable; add the server
   by address/port.
 
@@ -83,7 +87,13 @@ QuickSync vs ~0,8× with software (`CHANGELOG.md`, 2.41.1).
 docker inspect ethos-jellyfin --format '{{json .HostConfig.Devices}}'
 docker exec ethos-jellyfin /usr/lib/jellyfin-ffmpeg/vainfo     # iHD/i965 present
 curl -s -H "Authorization: Bearer $TOKEN" localhost:9002/api/packages/jellyfin/status
+.venv/bin/python scripts/ethos-qa static --repo ~/apps/compose/ethos-packages --live
 ```
+
+Measured on this NAS (2026-11-28): install job `success`, `HostConfig.Devices` contains
+`/dev/dri/renderD128`, `group_add = ["990","44"]`, `vainfo` reports *Intel iHD driver 25.4.6*,
+container health `healthy`, `POST /api/packages/{id}/status` → `running`. Plex: same device set,
+health `healthy` on port 32400. Plex hardware transcoding itself needs a Plex Pass (not testable here).
 
 ## Status
 
@@ -92,8 +102,9 @@ curl -s -H "Authorization: Bearer $TOKEN" localhost:9002/api/packages/jellyfin/s
 - [x] GPU override materialisation with CPU fallback and re-probe on start/repair
 - [x] `ui.embed: false` window mode
 - [x] Packages UI: capability badges, GPU line, device repair label
-- [x] `jellyfin` package published
-- [x] `plex` package published
+- [x] `jellyfin` package published (1.0.1 — host port 8094, icon in `files[]`)
+- [x] `plex` package published (1.0.1)
+- [x] Packages QA clean for both (`ethos-qa static`: 0 errors on jellyfin/plex)
 - [ ] NVIDIA end-to-end verification on real hardware (no NVIDIA GPU on the dev host)
 - [ ] Plex NVENC official support (upstream documents Quick Sync only)
 
