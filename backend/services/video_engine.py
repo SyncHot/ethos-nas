@@ -19,7 +19,7 @@ import os
 import time
 
 from backend.config import settings
-from backend.services import child_limits
+from backend.services import child_limits, gpu_host
 
 logger = logging.getLogger("ethos-nas.services.video_engine")
 
@@ -697,22 +697,10 @@ class TranscodeLimiter:
 
 LIMITER = TranscodeLimiter(2)
 
-
-def _list_dri_nodes() -> list[str]:
-    try:
-        return sorted(f"/dev/dri/{name}" for name in os.listdir("/dev/dri") if name.startswith("renderD"))
-    except OSError:
-        return []
-
-
-def _openable(node: str) -> bool:
-    """Open the render node the same way ffmpeg will (not just os.access)."""
-    try:
-        fd = os.open(node, os.O_RDWR | os.O_CLOEXEC)
-    except OSError:
-        return False
-    os.close(fd)
-    return True
+# The render-node helpers live in `gpu_host` so Packages (`capabilities: ["dri"]`)
+# and the Videos engine agree on what counts as a usable GPU.
+_list_dri_nodes = gpu_host.dri_nodes
+_openable = gpu_host.dri_openable
 
 
 class HardwareProbe:

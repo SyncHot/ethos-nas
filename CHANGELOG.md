@@ -11,6 +11,42 @@ All notable, user-visible changes to EthOS NAS are documented here.
 
 ## [Unreleased]
 
+## [2.42.0] - 2026-11-28
+
+### Added
+
+- **Jellyfin and Plex packages with hardware transcoding.** Two new signed packages
+  (`jellyfin` 1.0.0, `plex` 1.0.0) stream the NAS film library and hand transcoding to the host GPU
+  instead of the CPU. VAAPI/QuickSync comes from `/dev/dri`, NVENC from an NVIDIA card — both are
+  materialised by EthOS in the package's generated `docker-compose.override.yml`, never in the signed
+  compose file, so the same package installs on a NAS **without** a GPU and simply transcodes in
+  software. Measured on this NAS with the core Videos engine: ~1,9× realtime for 4K H.264 with
+  QuickSync vs ~0,8× software.
+- **GPU capabilities for packages** (`docs/packages.md` → “Hardware transcoding”). A manifest now
+  declares `capabilities: ["dri"]` (Intel/AMD render nodes) and/or `["nvidia"]` (NVENC); without the
+  matching capability the compose policy keeps rejecting `devices`, and it now also gates
+  `runtime:`, `gpus:` and GPU `deploy…devices[]` reservations, which were previously unchecked.
+- **Host GPU probe.** `GET /api/system/status` reports a `gpu` object (render nodes, whether the EthOS
+  account can open them, `render`/`video` gids, card vendor/driver from sysfs, and whether Docker has
+  the `nvidia` runtime). `GET /api/packages/catalog/{id}` adds `gpu_status`, so Package Center warns
+  **before** the install instead of leaving a container that cannot see the GPU. Compose files also get
+  `ETHOS_RENDER_GID`, `ETHOS_VIDEO_GID`, `ETHOS_GPU_VAAPI` and `ETHOS_GPU_NVIDIA` for interpolation.
+- **`ui.embed: false`** for apps that refuse to be framed (`X-Frame-Options`), as Jellyfin and Plex do:
+  the package window shows the “Open this UI in a browser tab” card with the reason instead of a
+  permanently blank iframe. A blocked frame fires no event, so the browser cannot be asked.
+- Packages detail dialog shows the hardware-transcoding state (“VAAPI/QuickSync available”, “requested
+  but unavailable — CPU fallback”, or the exact `usermod -aG render,video` fix) and the installed
+  record keeps the applied devices. **Repair ports** is now **Repair ports & devices**: it re-probes
+  the GPU on demand, and a plain Stop → Start re-detects a driver or a group change too.
+
+### Changed
+
+- The generated compose override now carries the GPU passthrough next to the port remap; a package
+  that needs neither gets no override file at all. The recorded `port_remap` also keeps the full
+  mapping (health port included) so a rewritten override can never re-publish a busy port.
+- NVIDIA driver/toolkit installation stays manual: the catalog prints the exact commands rather than
+  running `apt` behind the operator's back.
+
 ## [2.41.1] - 2026-11-27
 
 ### Fixed

@@ -4,9 +4,10 @@ Packages run as containers, but a compose file can still ask for host
 namespaces, devices, privileged mode or arbitrary host binds. These checks
 reject the dangerous shapes before anything is deployed or started.
 
-The only device exception is `/dev/kvm`, and only for a manifest that declares
-`"capabilities": ["kvm"]` — hardware-assisted virtual machines cannot work
-without it. Every other device stays rejected.
+The device exceptions are the hardware ones a media/virtualisation package
+cannot emulate: `/dev/kvm` (`capabilities: ["kvm"]`), the `/dev/dri` render
+nodes (`["dri"]`, Intel/AMD VAAPI/QuickSync) and `/dev/nvidia*`
+(`["nvidia"]`, NVENC). Every other device stays rejected.
 """
 
 import logging
@@ -25,8 +26,23 @@ _ALLOWED_BIND_ROOTS = tuple(
     os.path.realpath(p) for p in ("/home", "/mnt", "/media")
 )
 _FORBIDDEN_DEVICES = ("/dev/", "/var/run/docker.sock", "/run/docker.sock")
-# Devices a package may request, each gated by a manifest capability.
-_DEVICE_CAPABILITIES = {"/dev/kvm": "kvm"}
+# Container runtimes a package may ask for. `nvidia` is the only non-default one
+# and it needs the `nvidia` capability; anything else (kata, sysbox, …) is an
+# unvetted escape hatch and stays rejected.
+_ALLOWED_RUNTIMES = {"runc", "nvidia"}
+# `deploy.resources.reservations.devices[].capabilities` the NVIDIA runtime takes.
+_NVIDIA_DEVICE_CAPABILITIES = {"gpu", "video", "compute", "utility"}
+
+
+def _device_capability(source: str) -> str | None:
+    """Manifest capability that unlocks a `devices:` source path, or None."""
+    if source == "/dev/kvm":
+        return "kvm"
+    if source == "/dev/dri" or source.startswith("/dev/dri/"):
+        return "dri"
+    if source.startswith("/dev/nvidia"):
+        return "nvidia"
+    return None
 
 
 def _allowed_bind_roots(package_id: str | None = None,
@@ -90,7 +106,7 @@ def _check_devices(devices: Any, service: str, capabilities: set[str],
         else:
             # Compose short syntax: "<host>:<container>[:perms]"
             source = str(entry or "").split(":", 1)[0].strip()
-        required = _DEVICE_CAPABILITIES.get(source)
+        required = _device_capability(source)
         if required is not None and required in capabilities:
             continue
         if required is not None:
@@ -147,6 +163,109 @@ def _declares_container_uid(service: dict) -> bool:
     return "ETHOS_SERVICE_UID" in text or "ETHOS_SERVICE_GID" in text
 
 
+def _check_gpu(service: dict, name: str, capabilities: set[str],
+               errors: list[str]) -> None:
+    """Gate `runtime:`, `gpus:` and GPU `deploy:` reservations on `nvidia`.
+
+    The NVIDIA path needs a runtime the manifest cannot create, so it is a
+    capability like the device exceptions: without it the manifest is rejected
+    instead of silently starting a container that cannot see the GPU.
+    """
+    runtime = str(service.get("runtime") or "").strip().lower()
+    if runtime:
+        if runtime not in _ALLOWED_RUNTIMES:
+            errors.append(f"{name}: runtime {runtime!r} is not allowed")
+        elif runtime == "nvidia" and "nvidia" not in capabilities:
+            errors.append(
+                f'{name}: runtime nvidia requires capabilities: ["nvidia"] in the manifest'
+            )
+
+    gpus = service.get("gpus")
+    if gpus is not None:
+        if "nvidia" not in capabilities:
+            errors.append(f'{name}: gpus requires capabilities: ["nvidia"] in the manifest')
+        else:
+            for entry in (gpus if isinstance(gpus, list) else [gpus]):
+                text = str(entry or "").strip()
+                if text != "all" and not text.startswith("device="):
+                    errors.append(f"{name}: gpus entries must be 'all' or 'device=<ids>': {entry}")
+
+    deploy = service.get("deploy")
+    if deploy is None:
+        return
+    if "nvidia" not in capabilities:
+        errors.append(
+            f'{name}: deploy device reservations require capabilities: ["nvidia"] in the manifest'
+        )
+        return
+    _check_deploy_devices(deploy, name, errors)
+
+
+def _check_deploy_devices(deploy: Any, name: str, errors: list[str]) -> None:
+    """Only GPU device reservations may appear under `deploy`."""
+    if not isinstance(deploy, dict):
+        errors.append(f"{name}: deploy must be a mapping")
+        return
+    for key in sorted(deploy):
+        if key != "resources":
+            errors.append(f"{name}: deploy.{key} is not allowed; only GPU device reservations are")
+            return
+    resources = deploy.get("resources")
+    if not isinstance(resources, dict):
+        errors.append(f"{name}: deploy.resources must be a mapping")
+        return
+    for key in sorted(resources):
+        if key != "reservations":
+            errors.append(f"{name}: deploy.resources.{key} is not allowed; only device reservations are")
+            return
+    reservations = resources.get("reservations")
+    if not isinstance(reservations, dict):
+        errors.append(f"{name}: deploy.resources.reservations must be a mapping")
+        return
+    for key in sorted(reservations):
+        if key != "devices":
+            errors.append(
+                f"{name}: deploy.resources.reservations.{key} is not allowed; only devices are"
+            )
+            return
+    devices = reservations.get("devices")
+    if not isinstance(devices, list) or not devices:
+        errors.append(f"{name}: deploy.resources.reservations.devices must be a non-empty list")
+        return
+    for entry in devices:
+        _check_deploy_device_entry(entry, name, errors)
+
+
+def _check_deploy_device_entry(entry: Any, name: str, errors: list[str]) -> None:
+    """One `deploy…devices[]` reservation: driver nvidia, sane count/capabilities."""
+    if not isinstance(entry, dict):
+        errors.append(f"{name}: deploy device reservation must be a mapping")
+        return
+    driver = str(entry.get("driver") or "").strip().lower()
+    if driver != "nvidia":
+        errors.append(f"{name}: deploy device driver must be 'nvidia', got {driver or 'nothing'}")
+    count = entry.get("count", "all")
+    if str(count).strip().lower() != "all":
+        try:
+            valid_count = int(count) >= 0
+        except (TypeError, ValueError):
+            valid_count = False
+        if not valid_count:
+            errors.append(f"{name}: deploy device count must be 'all' or a number: {count}")
+    declared = entry.get("capabilities")
+    if declared is None:
+        return
+    if not isinstance(declared, list) or not all(isinstance(item, str) for item in declared):
+        errors.append(f"{name}: deploy device capabilities must be a list of strings")
+        return
+    unknown = sorted({item for item in declared if item not in _NVIDIA_DEVICE_CAPABILITIES})
+    if unknown:
+        errors.append(
+            f"{name}: deploy device capability {unknown[0]!r} is not allowed "
+            f"(known: {', '.join(sorted(_NVIDIA_DEVICE_CAPABILITIES))})"
+        )
+
+
 def lint_compose(text_or_dict: Any,
                  capabilities: Any = None,
                  package_id: str | None = None,
@@ -154,7 +273,8 @@ def lint_compose(text_or_dict: Any,
     """Return (errors, warnings) for a docker-compose document.
 
     `capabilities` are the manifest capabilities; they unlock per-device
-    exceptions such as `/dev/kvm` for `kvm`. `package_id`/`package_dir` add
+    exceptions (`/dev/kvm` for `kvm`, `/dev/dri` for `dri`, `/dev/nvidia*` and
+    the `nvidia` runtime for `nvidia`). `package_id`/`package_dir` add
     the package's own directory and data dir to the bind allowlist; without
     them only the shared data mounts are allowed.
     """
@@ -192,6 +312,7 @@ def lint_compose(text_or_dict: Any,
             if service.get(key):
                 errors.append(f"{name}: {key} is not allowed")
         _check_devices(service.get("devices"), name, caps, errors)
+        _check_gpu(service, name, caps, errors)
         if service.get("extends"):
             errors.append(f"{name}: extends is not allowed")
 

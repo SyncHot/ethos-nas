@@ -95,7 +95,10 @@ def update(job_id: str, **fields) -> None:
             job.update(fields)
 
 
-def log(job_id: str, message: str) -> None:
+def log(job_id: str | None, message: str) -> None:
+    """Append one log line to a job. A missing job id (system-scope call) is a no-op."""
+    if job_id is None:
+        return
     line = str(message).strip()[:500]
     if not line:
         return

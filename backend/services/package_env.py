@@ -18,7 +18,7 @@ import os
 from typing import Optional
 
 from backend.config import settings
-from backend.services import packages_store
+from backend.services import gpu_host, packages_store
 
 logger = logging.getLogger("ethos-nas.services.package_env")
 
@@ -41,6 +41,14 @@ def compose_env(pkg_id: Optional[str] = None,
     env.setdefault("ETHOS_SERVICE_UID", str(os.getuid()))
     env.setdefault("ETHOS_SERVICE_GID", str(os.getgid()))
     env.setdefault("ETHOS_DATA_DIR", str(settings.DATA_DIR))
+    # GPU facts a signed compose file may reference with `${VAR:-}`: the render
+    # node's group ids (a container must join them to open /dev/dri) and two
+    # booleans. Missing hardware simply exports 0, so the package still starts.
+    try:
+        env.update(gpu_host.compose_env())
+    except Exception:  # noqa: BLE001 — compose must not fail on a probe error
+        logger.warning("GPU probe failed while building the compose environment",
+                       exc_info=True)
     if record is None and pkg_id:
         record = packages_store.get_package(pkg_id)
     if record:

@@ -166,8 +166,53 @@ function _capabilityBadges(pkg) {
     const caps = _capabilities(pkg);
     const badges = [];
     if (caps.includes('kvm')) badges.push(_badge('/dev/kvm', 'badge-blue'));
+    if (caps.includes('dri')) badges.push(_badge('/dev/dri', 'badge-blue'));
+    if (caps.includes('nvidia')) badges.push(_badge('NVIDIA', 'badge-blue'));
     for (const dep of _systemRequires(pkg)) badges.push(_badge(_systemLabel(dep), 'badge-blue'));
     return badges.join(' ');
+}
+
+const GPU_VENDOR_LABELS = { intel: 'Intel', amd: 'AMD', nvidia: 'NVIDIA' };
+
+/** Hardware-transcoding state of a package (`capabilities: ["dri"]` / `["nvidia"]`).
+ *  The core probes the host; a missing GPU costs speed, never the install. */
+function _gpuText(pkg) {
+    const caps = _capabilities(pkg);
+    const wanted = ['dri', 'nvidia'].filter((cap) => caps.includes(cap));
+    if (!wanted.length) return null;
+    const state = pkg.gpu || pkg.gpu_status || null;
+    const vendor = GPU_VENDOR_LABELS[(state && state.vendor) || ''] || '';
+    if (!state) {
+        return { tone: 'var(--text-3)', text: 'Hardware transcoding: the GPU is probed when this package installs.' };
+    }
+    if (state.applied) {
+        const parts = [];
+        if (state.runtime === 'nvidia') parts.push('NVIDIA GPU (NVENC)');
+        if ((state.devices || []).some((node) => String(node).startsWith('/dev/dri'))) {
+            parts.push(`${vendor ? `${vendor} ` : ''}GPU on /dev/dri (VAAPI/QuickSync)`);
+        }
+        return { tone: 'var(--ui-accent)', text: `Hardware transcoding available: ${parts.join(' + ') || 'GPU'} — enable it in the app's own settings.` };
+    }
+    return {
+        tone: 'var(--text-3)',
+        text: `Hardware transcoding requested but unavailable on this NAS (${state.reason || 'no GPU'}) — the package still works, transcoding falls back to the CPU.`,
+    };
+}
+
+/** One block: the hardware badges plus why the host can (not) accelerate it. */
+function _capabilityNotes(pkg) {
+    const caps = _capabilities(pkg);
+    const gpu = _gpuText(pkg);
+    const hasKvm = caps.includes('kvm');
+    if (!hasKvm && !gpu) return '';
+    const lines = [];
+    if (hasKvm) {
+        lines.push('<div style="font-size:11px;color:var(--text-3);margin-top:4px;">Requires /dev/kvm (hardware virtualization); falls back to slow software emulation without it.</div>');
+    }
+    if (gpu) {
+        lines.push(`<div data-testid="pkg-gpu-status" style="font-size:11px;color:${gpu.tone};margin-top:4px;">${escapeHtml(gpu.text)}</div>`);
+    }
+    return `<div style="font-size:11px;color:var(--text-3);margin-top:4px;">${_capabilityBadges(pkg)}</div>${lines.join('')}`;
 }
 
 function _statusBadge(status) {
@@ -770,7 +815,7 @@ async function _openDetail(pkgId, preset = null) {
             <div>
                 <div style="font-size:16px;font-weight:700;">${escapeHtml(detail.name)}</div>
                 <div style="font-size:12px;color:var(--text-3);">v${escapeHtml(detail.version)} · ${escapeHtml(detail.author || 'unknown')} · ${_trustBadge(detail)}</div>
-                ${_capabilities(detail).includes('kvm') ? `<div style="font-size:11px;color:var(--text-3);margin-top:4px;">${_capabilityBadges(detail)} Requires /dev/kvm (hardware virtualization); falls back to slow software emulation without it.</div>` : ''}
+                ${_capabilityNotes(detail)}
             </div>
         </div>
         <p style="font-size:13px;line-height:1.55;color:var(--text-2);">${escapeHtml(detail.description || '')}</p>
@@ -791,7 +836,7 @@ async function _openDetail(pkgId, preset = null) {
         ${canInstall && _needsSetup(detail) ? '<p style="font-size:12px;color:var(--text-2);margin:6px 0 0;">Fill these in before installing — the package will not start without them.</p>' : ''}
         ${canInstall ? _dataDirField(detail, '', '') : ''}
         ${(detail.screenshots || []).length ? `<div style="display:flex;gap:6px;margin-top:10px;overflow-x:auto;">${detail.screenshots.map((url) => `<a href="${escapeAttr(url)}" target="_blank" rel="noopener"><img src="${escapeAttr(url)}" alt="" style="height:90px;border-radius:8px;"></a>`).join('')}</div>` : ''}
-        ${detail.installed && _pkg.isAdmin ? `<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn-ghost" data-testid="pkg-detail-logs" style="font-size:12px;padding:4px 10px;">📋 Open logs for ${escapeHtml(detail.name)}</button>${detail.runtime === 'compose' && detail.ui && detail.ui.port ? `<button class="btn-ghost" data-testid="pkg-detail-repair-ports" style="font-size:12px;padding:4px 10px;" title="Re-publish this package on a free port when another service took its port">🔌 Repair ports</button>` : ''}</div>` : ''}`;
+        ${detail.installed && _pkg.isAdmin ? `<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn-ghost" data-testid="pkg-detail-logs" style="font-size:12px;padding:4px 10px;">📋 Open logs for ${escapeHtml(detail.name)}</button>${detail.runtime === 'compose' && detail.ui && detail.ui.port ? `<button class="btn-ghost" data-testid="pkg-detail-repair-ports" style="font-size:12px;padding:4px 10px;" title="Re-publish this package on a free port and re-detect its GPU (after installing a driver, or joining the render group)">🔌 Repair ports &amp; devices</button>` : ''}</div>` : ''}`;
     await showFormModal({
         title: detail.name,
         width: '620px',

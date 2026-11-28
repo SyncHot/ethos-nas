@@ -199,6 +199,68 @@ check("other devices rejected even with kvm capability",
 check("mixed devices rejected", bool(_devices(["/dev/kvm", "/dev/sda"], ["kvm"])))
 check("devices must be a list", bool(_devices("/dev/kvm", ["kvm"])))
 
+print("Compose policy — GPU capabilities")
+check("dri render node allowed with capability",
+      not _devices(["/dev/dri/renderD128"], ["compose", "dri"]))
+check("whole /dev/dri allowed with capability", not _devices(["/dev/dri"], ["dri"]))
+check("dri node rejected without capability", bool(_devices(["/dev/dri/renderD128"], ["compose"])))
+check("dri message names the capability",
+      '"dri"' in " ".join(_devices(["/dev/dri/renderD128"], ["compose"])))
+check("nvidia node allowed with capability",
+      not _devices(["/dev/nvidia0"], ["compose", "nvidia"]))
+check("nvidia node rejected without capability", bool(_devices(["/dev/nvidia0"], ["compose"])))
+check("dri capability does not unlock nvidia devices",
+      bool(_devices(["/dev/nvidia0"], ["dri"])))
+
+
+def _service(**keys):
+    return lint_compose({"services": {"app": {"image": "x:1", **keys}}})[0], \
+        lint_compose({"services": {"app": {"image": "x:1", **keys}}},
+                     ["compose", "nvidia"])[0]
+
+plain, nvidia = _service(runtime="nvidia")
+check("runtime nvidia needs the capability", bool(plain))
+check("runtime nvidia allowed with the capability", not nvidia)
+check("unknown runtime rejected",
+      bool(_service(runtime="kata")[1]))
+check("runtime runc is fine", not _service(runtime="runc")[0])
+check("gpus needs the capability", bool(_service(gpus="all")[0]))
+check("gpus: all allowed with the capability", not _service(gpus="all")[1])
+check("gpus entries validated", bool(_service(gpus="nonsense")[1]))
+
+NVIDIA_DEPLOY = {"deploy": {"resources": {"reservations": {"devices": [
+    {"driver": "nvidia", "count": "all", "capabilities": ["gpu"]}]}}}}
+check("nvidia deploy needs the capability", bool(_service(**NVIDIA_DEPLOY)[0]))
+check("nvidia deploy allowed with the capability", not _service(**NVIDIA_DEPLOY)[1])
+check("deploy of anything else is rejected",
+      bool(_service(deploy={"resources": {"limits": {"cpus": "2"}}})[1]))
+check("deploy driver must be nvidia", bool(_service(**{"deploy": {"resources": {
+      "reservations": {"devices": [{"driver": "amd", "count": "all"}]}}}})[1]))
+check("deploy capabilities validated", bool(_service(**{"deploy": {"resources": {
+      "reservations": {"devices": [{"driver": "nvidia", "capabilities": ["root"]}]}}}})[1]))
+check("deploy count validated", bool(_service(**{"deploy": {"resources": {
+      "reservations": {"devices": [{"driver": "nvidia", "count": "lots"}]}}}})[1]))
+
+print("Manifest — GPU capabilities and ui.embed")
+check("dri capability accepted",
+      validate_manifest({**BASE, "capabilities": ["compose", "dri"]})["capabilities"]
+      == ["compose", "dri"])
+check("nvidia capability accepted",
+      validate_manifest({**BASE, "capabilities": ["compose", "dri", "nvidia"]})["capabilities"]
+      == ["compose", "dri", "nvidia"])
+check("unknown capability still rejected",
+      not _ok(lambda: validate_manifest({**BASE, "capabilities": ["gpu"]})))
+
+WINDOW = {"mode": "window", "port": 8096, "expose": "lan", "auth": "package"}
+check("ui.embed defaults to true",
+      validate_manifest({**BASE, "ui": WINDOW})["ui"]["embed"] is True)
+check("ui.embed false accepted",
+      validate_manifest({**BASE, "ui": {**WINDOW, "embed": False}})["ui"]["embed"] is False)
+check("ui.embed must be a bool",
+      not _ok(lambda: validate_manifest({**BASE, "ui": {**WINDOW, "embed": "no"}})))
+check("ui.embed is meaningless for native UIs",
+      not _ok(lambda: validate_manifest({**native, "ui": {**native["ui"], "embed": False}})))
+
 print("Uninstall cleanup")
 from backend.services.package_cleanup import split_images  # noqa: E402
 

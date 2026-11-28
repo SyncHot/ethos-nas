@@ -325,17 +325,39 @@ async function _renderGenericPackage(winId, container = null) {
             const themedUiUrl = (theme) => `${uiUrl}${uiUrl.includes('?') ? '&' : '?'}theme=${theme}`;
             const toolbar = el('div', { style: 'padding:8px 14px;border-bottom:1px solid rgba(255,255,255,.06);display:flex;gap:8px;justify-content:flex-end;background:rgba(15,23,42,.6);' });
             const openTab = el('button', { class: 'btn-ghost', testid: `pkg-open-tab-${pkg.id}`, style: 'padding:5px 10px;font-size:11px;border-radius:7px;' }, txt('Open in new tab'));
-            openTab.addEventListener('click', () => window.open(themedUiUrl(currentTheme()), '_blank', 'noopener'));
+            openTab.addEventListener('click', () => {
+                // Only the package's own http(s) UI on this NAS may be opened: the
+                // scheme is schema-validated (http|https) and the port/path come
+                // from the manifest. Built as an anchor so no URL from any other
+                // origin can ever be navigated to.
+                let target;
+                try {
+                    target = new URL(`${scheme}://${uiHost}:${uiPort}${uiPath}`);
+                } catch {
+                    return;
+                }
+                if (target.protocol !== 'http:' && target.protocol !== 'https:') return;
+                if (target.hostname !== location.hostname && target.hostname !== 'localhost') return;
+                target.searchParams.set('theme', currentTheme());
+                const link = el('a', { href: target.href, target: '_blank', rel: 'noopener', style: 'display:none;' });
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+            });
             const reload = el('button', { class: 'btn-ghost', testid: `pkg-reload-ui-${pkg.id}`, style: 'padding:5px 10px;font-size:11px;border-radius:7px;' }, txt('Reload UI'));
             // EthOS cannot authenticate a page served from the package's own port,
-            // and a browser refuses an http frame inside an https page. Embed only
-            // when the manifest declares LAN exposure and the desktop is plain http.
+            // a browser refuses an http frame inside an https page, and some apps
+            // send X-Frame-Options (a blocked frame fires no event, so the manifest
+            // declares `ui.embed: false` instead of showing a blank pane).
             const mixedContent = scheme === 'http' && location.protocol === 'https:';
-            const canEmbed = uiExpose === 'lan' && !mixedContent;
+            const embeddable = (pkg.ui && pkg.ui.embed) !== false;
+            const canEmbed = uiExpose === 'lan' && !mixedContent && embeddable;
             if (!canEmbed) {
                 const reason = mixedContent
                     ? 'Your EthOS session runs over HTTPS, so the browser blocks this package\u2019s http page inside the window.'
-                    : 'This package serves its UI on the NAS loopback only.';
+                    : !embeddable
+                        ? 'This app does not allow being embedded in another page.'
+                        : 'This package serves its UI on the NAS loopback only.';
                 const card = el('div', { style: 'flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:32px;text-align:center;' },
                     el('div', { style: 'font-size:44px;line-height:1;' }, txt('🔗')),
                     el('div', { style: 'font-size:15px;font-weight:700;color:#f8fafc;' }, txt('Open this UI in a browser tab')),

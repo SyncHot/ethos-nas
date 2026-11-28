@@ -31,8 +31,11 @@ REQUIRED_MANIFEST_FIELDS = ("id", "name", "version", "description", "icon")
 REQUIRED_INDEX_FIELDS = ("id", "name", "version", "description", "icon", "manifest_url")
 CHANNELS = ("stable", "beta")
 # Manifest capabilities a package may declare. `kvm` unlocks the /dev/kvm
-# device exception in services/compose_policy.py — nothing else does.
-PACKAGE_CAPABILITIES = frozenset({"compose", "kvm"})
+# device exception in services/compose_policy.py; `dri` unlocks the /dev/dri
+# render nodes (Intel/AMD VAAPI/QuickSync) and `nvidia` the /dev/nvidia* nodes
+# plus `runtime: nvidia` / `deploy…devices[driver: nvidia]`. Hardware is still
+# materialised by EthOS from the host probe (services/package_gpu.py).
+PACKAGE_CAPABILITIES = frozenset({"compose", "kvm", "dri", "nvidia"})
 # Host dependencies a package may declare in `system_requires`. The allowlist is
 # the registry in services/system_deps.py: each id maps to the binaries EthOS
 # probes and the apt package the operator is told to install. EthOS never runs
@@ -142,7 +145,7 @@ def require_sha256(value: Optional[str], field: str) -> str:
     return value
 
 
-def safe_relative_path(path: str, field: str = "path") -> str:
+def safe_relative_path(path: Any, field: str = "path") -> str:
     """Reject absolute paths and traversal; return a POSIX-style relative path."""
     raw = str(path or "").strip().replace("\\", "/")
     pure = PurePosixPath(raw)
@@ -223,6 +226,16 @@ def _validate_ui(value: Any) -> Optional[dict]:
         )
     if expose == "loopback" and auth:
         raise PackageError("ui.auth is only valid with ui.expose: 'lan'", 400)
+    # Some apps refuse to be framed (X-Frame-Options/CSP). The browser gives the
+    # window no event to detect that, so the package declares it and EthOS shows
+    # the "Open in a browser tab" card instead of a permanently blank pane.
+    embed = value.get("embed")
+    if embed is None:
+        embed = True
+    if not isinstance(embed, bool):
+        raise PackageError("ui.embed must be true or false", 400)
+    if not embed and mode != "window":
+        raise PackageError("ui.embed is only meaningful for ui.mode 'window'", 400)
     entry = None
     ribbon = None
     if mode == "native":
@@ -242,7 +255,7 @@ def _validate_ui(value: Any) -> Optional[dict]:
     elif value.get("ribbon") is not None:
         raise PackageError("ui.ribbon requires ui.mode 'native'", 400)
     return {"mode": mode, "entry": entry, "port": port or None, "path": path, "scheme": scheme,
-            "expose": expose, "auth": auth or None, "ribbon": ribbon}
+            "expose": expose, "auth": auth or None, "embed": embed, "ribbon": ribbon}
 
 
 # ── User-supplied settings (optional, compose packages) ────────────────────

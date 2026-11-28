@@ -13,6 +13,8 @@ Verified against the code on 2026-11-22.
 | Schema/version rules | `backend/services/package_schema.py` |
 | Signed repository fetch/verify | `backend/services/package_repo.py` |
 | Compose policy | `backend/services/compose_policy.py` |
+| Host GPU probe | `backend/services/gpu_host.py` |
+| GPU override fragment | `backend/services/package_gpu.py` |
 | Job registry | `backend/services/package_jobs.py` |
 | Installer/state machine | `backend/services/package_installer.py` |
 | Offline wheelhouse | `backend/services/package_wheels.py` |
@@ -128,6 +130,10 @@ repo/
     - `ui.auth` — `"package"` (the app has its own login) or `"none"` (it does not). Required
       whenever `expose` is `"lan"`, so shipping an unauthenticated panel on the LAN is a
       deliberate, visible decision.
+    - `ui.embed` — `false` when the app refuses to be framed (`X-Frame-Options`/`CSP
+      frame-ancestors`, as Jellyfin and Plex do). The window then shows the “Open this UI in a
+      browser tab” card with the reason instead of a permanently blank pane: a blocked iframe
+      fires no event, so the browser cannot be asked. Default `true`; `window` UIs only.
     - **A busy port is re-mapped, not fatal.** The compose file is signed, so the
       published port cannot be edited — but it can be *overridden*. When
       `ui.port` (or `healthcheck.port`) is already taken on the host — another
@@ -144,9 +150,10 @@ repo/
       with “Port 3000 is already used by <container>”. Implementation:
       `services/package_ports.py` + `_port_plan` in `services/package_installer.py`.
       If the port is lost later (a boot race with another compose project),
-      Package Center's **Repair ports** action
+      Package Center's **Repair ports & devices** action
       (`POST /api/packages/<id>/repair-ports`, admin) re-plans the mapping,
-      rewrites the override and recreates the service; the detail dialog shows
+      rewrites the override (including any GPU passthrough — see
+      “Hardware transcoding”) and recreates the service; the detail dialog shows
       the recorded `port_remap` so the effective port is never a surprise.
     When EthOS itself is served over HTTPS, the browser blocks an `http` frame (mixed content);
     the window then offers the tab-only card instead of a blank pane.
@@ -378,6 +385,58 @@ carries the same list (`ethos-pack build` copies it) and Packages shows a badge 
 |---|---|
 | `compose` | implied by shipping a compose file; nothing extra |
 | `kvm` | the **only** `devices:` exception: `/dev/kvm` (optionally `"/dev/kvm:/dev/kvm:rwm"`) |
+| `dri` | `/dev/dri` and `/dev/dri/renderD*` devices (Intel/AMD VAAPI/QuickSync) — passed through only when the host has an openable render node |
+| `nvidia` | `/dev/nvidia*` devices plus `runtime: nvidia`, `gpus:` and GPU `deploy…devices[]` reservations — only when the driver **and** the Docker nvidia runtime are present |
+
+### Hardware transcoding (GPUs)
+
+A media server cannot ship a GPU: the *host* has one or it does not. A package therefore declares
+the capability and EthOS materialises the devices at install/start time
+(`services/gpu_host.py` probes, `services/package_gpu.py` builds the fragment):
+
+```json
+{
+  "capabilities": ["compose", "dri", "nvidia"],
+  "system_requires": ["docker"]
+}
+```
+
+```yaml
+# what EthOS writes into the package's docker-compose.override.yml — never into
+# the signed compose file, because a GPU-less NAS must still be able to install
+services:
+  jellyfin:
+    devices: ["/dev/dri/renderD128"]
+    group_add: ["990", "44"]          # render/video gids read from the host
+```
+
+Rules:
+
+- The **manifest only names capabilities**; the device list, the group ids and `runtime: nvidia` are
+  computed from the probe, so a package cannot request an arbitrary host device. The signed compose
+  file may also declare `/dev/dri` itself — the policy accepts it only with the `dri` capability — but
+  then the install fails on a NAS without a GPU, which is why the override is the recommended path.
+- **No hardware, no failure.** Without an openable render node (or without the NVIDIA runtime) the
+  fragment is empty, no override is written, the package installs and transcodes on the CPU. The
+  detail dialog and `GET /api/packages/catalog/{id}` (`gpu_status`) explain which case applies, and
+  the job log records it (`GPU requested (dri) but unavailable — software transcoding only`).
+- **NVIDIA is probe-only.** EthOS never installs a driver or the container toolkit; the catalog
+  shows the exact commands (`nvidia-container-toolkit`, `nvidia-ctk runtime configure`, restart
+  Docker). A driver without that runtime reports *unavailable* instead of starting a container that
+  cannot see the GPU.
+- **Re-probe without reinstalling.** The override is regenerated on install, update,
+  `POST /api/packages/{id}/repair-ports` (Packages: “Repair ports & devices”) and on
+  start/restart, so installing a driver or joining the `render` group is a Stop → Start.
+- The probe is also published as `gpu` in `GET /api/system/status` (`dri.available`, `dri.nodes`,
+  `dri.openable`, `dri.render_gid`, `dri.video_gid`, `dri.vendor`, `nvidia.available`, …).
+- Compose interpolation gets `ETHOS_RENDER_GID`, `ETHOS_VIDEO_GID`, `ETHOS_GPU_VAAPI` (`1`/`0`) and
+  `ETHOS_GPU_NVIDIA` (`1`/`0`) next to `ETHOS_SERVICE_UID/GID` and `ETHOS_PACKAGE_DATA_DIR`.
+- Jellyfin and Plex are the reference packages (`docs/media-server-packages.md`).
+
+Without the capability the install fails with “device /dev/dri requires capabilities: [\"dri\"] in the
+manifest”, and `runtime: nvidia`/GPU `deploy` blocks are rejected the same way. The `/dev/dri`
+render node itself is the VRAM probe: the host may expose it but the account running the container
+must be able to open it (root:render 0660 → `usermod -aG render,video ethos-nas`).
 
 `compose_policy.lint_compose(text, capabilities)` keeps rejecting every other device. Without the
 capability the install fails with “device /dev/kvm requires capabilities: ["kvm"] in the manifest”.
@@ -538,11 +597,27 @@ results and skipped shared images are written to the job log.
 ## Compose policy
 
 Rejected before deploy: `privileged`, `network_mode/pid/ipc: host`, `cap_add`, `security_opt`,
-`devices`, `volumes_from`, `build`, `extends`, `include`, `docker.sock`, and `env_file` paths
+`volumes_from`, `build`, `extends`, `include`, `docker.sock`, and `env_file` paths
 outside the package directory. Host binds are limited to `/home`, `/mnt`, `/media` and the
 package's **own** package/data root; every other path inside the package store (another
 package, `installed.json`, `sources.json`) is rejected even when `DATA_DIR` itself lives under
 `/home`. Unpinned images (`:latest` or no tag/digest) produce a warning.
+
+`devices`, `runtime:`, `gpus:` and `deploy:` are capability-gated instead of banned outright:
+
+| Key | Allowed with | Notes |
+|---|---|---|
+| `devices: [/dev/kvm…]` | `kvm` | hardware VMs |
+| `devices: [/dev/dri…]` | `dri` | Intel/AMD VAAPI/QuickSync |
+| `devices: [/dev/nvidia…]` | `nvidia` | NVENC |
+| `runtime: nvidia` | `nvidia` | only `runc`/`nvidia` are accepted values |
+| `gpus: all \| device=…` | `nvidia` | |
+| `deploy.resources.reservations.devices[]` | `nvidia` | driver must be `nvidia`, capabilities ⊆ `gpu/video/compute/utility`; every other `deploy` key is rejected |
+
+Anything else under `devices`, an unknown `runtime` (kata, sysbox, …) or a foreign driver is
+rejected with a message naming the missing capability. The generated
+`docker-compose.override.yml` (port remap + GPU passthrough) is written by EthOS from the host
+probe, never from manifest input.
 
 ## API
 
@@ -663,6 +738,8 @@ CI runs the same checks in `.github/scripts/validate_repo.py`.
 - [x] Background update check publishes one Notification Center event per package version
 - [x] App-data preview, opt-in purge (`remove_data=1`) and orphan-data cleanup
 - [x] Window UIs declare `ui.expose`/`ui.auth`; loopback and mixed-content frames fall back to a tab
+- [x] `ui.embed: false` for apps that refuse framing (Jellyfin, Plex)
+- [x] GPU capabilities `dri`/`nvidia`: host probe, `gpu_status`, override passthrough, CPU fallback
 - [x] `ethos-pack lint` / `readme` + CI drift guards (pins, restart policies, README table)
 - [x] Container health in `/status`, aggregate badge and unhealthy/recovery notifications
 - [x] `ETHOS_SERVICE_UID/GID` exported to compose; policy warns about share writes without PUID

@@ -20,8 +20,8 @@ from pydantic import BaseModel
 from backend.config import settings
 from backend.routers.auth import require_admin
 from backend.services import (
-    json_store, package_cleanup, package_installer, package_jobs, package_repo, package_state,
-    packages_store, system_deps,
+    json_store, package_cleanup, package_gpu, package_installer, package_jobs, package_repo,
+    package_state, packages_store, system_deps,
 )
 from backend.services.notifications_service import emit_event
 from backend.services.package_schema import PackageError, check_pkg_id, safe_relative_path
@@ -290,9 +290,11 @@ async def catalog_detail(pkg_id: str) -> dict:
     except PackageError as exc:
         raise _http_error(exc) from None
     # Preflight for the Install button: which host binaries the package needs and
-    # whether this NAS has them. Probing is a few stat() calls, no subprocess.
+    # whether this NAS has them. Probing is a few stat() calls, no subprocess —
+    # except the cached `docker info` used for the NVIDIA runtime check.
     return {**entry, "manifest": manifest,
-            "system_status": system_deps.probe(manifest.get("system_requires"))}
+            "system_status": system_deps.probe(manifest.get("system_requires")),
+            "gpu_status": package_gpu.summary(manifest) if package_gpu.requested(manifest) else None}
 
 
 @router.get("/updates")

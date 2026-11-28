@@ -148,6 +148,13 @@ async def get_system_status() -> dict:
         logger.debug("Could not read download engine state", exc_info=True)
     # Hardware virtualization decides whether the `vmm` package can use KVM.
     data["virtualization"] = {"kvm": os.path.exists("/dev/kvm"), "device": "/dev/kvm"}
+    # GPUs a package with `capabilities: ["dri"]`/`["nvidia"]` could use. The probe
+    # is cached (60 s) and runs off the event loop because it may call `docker info`.
+    try:
+        from backend.services import gpu_host
+        data["gpu"] = await asyncio.to_thread(gpu_host.probe)
+    except Exception:  # noqa: BLE001 — a status snapshot must never fail on a probe
+        logger.warning("GPU probe failed for the system status", exc_info=True)
     return data
 
 

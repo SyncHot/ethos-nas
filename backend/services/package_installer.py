@@ -20,7 +20,7 @@ import yaml
 
 from backend.config import APP_VERSION, settings
 from backend.services import (
-    package_cleanup, package_env, package_jobs, package_ports, package_repo,
+    package_cleanup, package_env, package_gpu, package_jobs, package_ports, package_repo,
     package_runtime, package_state, package_wheels, packages_store, system_deps,
 )
 from backend.services.compose_policy import enforce_compose
@@ -163,6 +163,90 @@ def _reserved_ports(pkg_id: str) -> set:
     return reserved
 
 
+def _read_compose(package_dir: Path) -> Optional[dict]:
+    """Parsed compose document of a deployed package, or None when unreadable."""
+    compose_path = Path(package_dir) / "docker-compose.yml"
+    try:
+        return yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        logger.error("Could not read %s for the override: %s", compose_path, exc,
+                     exc_info=True)
+        return None
+
+
+def _recorded_mapping(record: Optional[dict]) -> dict[int, int]:
+    """Port remap a record already carries, as `{old: new}` for the override.
+
+    New records keep the full mapping (`port_remap.mapping`, health port
+    included); older ones only know the UI port, which is still enough to keep
+    the published port stable when the override is rewritten for the GPU.
+    """
+    remap = (record or {}).get("port_remap") or {}
+    raw = remap.get("mapping")
+    if isinstance(raw, dict):
+        mapping: dict[int, int] = {}
+        for key, value in raw.items():
+            try:
+                mapping[int(key)] = int(value)
+            except (TypeError, ValueError):
+                continue
+        return mapping
+    try:
+        old = int(remap.get("from") or 0)
+        new = int(remap.get("to") or 0)
+    except (TypeError, ValueError):
+        return {}
+    return {old: new} if old and new and old != new else {}
+
+
+def _write_overrides(pkg_id: str, manifest: dict, package_dir: Path,
+                     mapping: Optional[dict[int, int]] = None) -> tuple[str, dict]:
+    """Write the generated compose override (port remap + GPU passthrough).
+
+    Returns `(text, gpu_summary)`; text is "" when the package needs neither, in
+    which case a stale override file is removed.
+    """
+    compose = _read_compose(package_dir)
+    gpu_fragment = package_gpu.fragment(manifest)
+    gpu_state = package_gpu.summary(manifest, additions=gpu_fragment)
+    text = ""
+    if compose is not None:
+        text = package_ports.build_override(compose, mapping or {}, gpu_fragment)
+        package_ports.write_override(package_dir, text)
+    return text, gpu_state
+
+
+def _refresh_gpu_override(pkg_id: str, record: Optional[dict]) -> tuple[bool, dict]:
+    """Re-plan the GPU part before a start/restart.
+
+    A driver or a GPU can appear after the install, and `/dev/dri` permissions
+    change with a `usermod` — so the devices are re-probed on every start. The
+    published port is *not* re-planned here (that stays with `repair_ports`, so
+    a briefly busy port can never silently move the UI).
+    """
+    if not record or not package_gpu.requested(record):
+        return False, {}
+    package_dir = packages_store.package_dir(pkg_id)
+    compose = _read_compose(package_dir)
+    if compose is None:
+        return False, {}
+    before = ""
+    try:
+        path = package_ports.override_path(package_dir)
+        if path.exists():
+            before = path.read_text(encoding="utf-8")
+    except OSError:
+        logger.debug("Could not read the previous override for %s", pkg_id, exc_info=True)
+    gpu_fragment = package_gpu.fragment(record)
+    gpu_state = package_gpu.summary(record, additions=gpu_fragment)
+    text = package_ports.build_override(compose, _recorded_mapping(record), gpu_fragment)
+    if text != before:
+        package_ports.write_override(package_dir, text)
+        logger.info("Package %s: GPU override refreshed (applied=%s devices=%s)",
+                    pkg_id, gpu_state.get("applied"), gpu_state.get("devices"))
+    return text != before, gpu_state
+
+
 def _port_plan(pkg_id: str, manifest: dict, package_dir: Path, *,
                previous: Optional[dict] = None) -> dict:
     """Effective host ports for a package, re-mapping a busy one instead of failing.
@@ -225,7 +309,6 @@ def _port_plan(pkg_id: str, manifest: dict, package_dir: Path, *,
         logger.warning("Package %s: port %d is busy but no compose mapping uses it",
                        pkg_id, ui_port)
         return plan
-    package_ports.write_override(package_dir, text)
     owner = package_ports.port_owner(ui_port)
     logger.info("Package %s: host port %d is in use%s — published on %d instead",
                 pkg_id, ui_port, f" by {owner}" if owner else "", new_port)
@@ -233,6 +316,7 @@ def _port_plan(pkg_id: str, manifest: dict, package_dir: Path, *,
     if health_port == ui_port:
         plan["healthcheck"] = new_port
     plan["remap"] = {ui_port: new_port}
+    plan["mapping"] = mapping
     plan["reserved"] = sorted(mapping.values())
     return plan
 
@@ -251,6 +335,7 @@ def _apply_port_plan(record: dict, plan: dict) -> dict:
             "from": next(iter(plan["remap"])),
             "to": ui_port,
             "reserved": plan.get("reserved") or [],
+            "mapping": {str(old): str(new) for old, new in (plan.get("mapping") or {}).items()},
         }
     return record
 
@@ -619,7 +704,7 @@ async def package_status(pkg_id: str) -> dict:
 
 
 async def repair_ports(pkg_id: str) -> dict:
-    """Re-align a package's published host port with reality.
+    """Re-align a package's published host port (and GPU devices) with reality.
 
     The port is chosen at install time, but it can be lost later: a NAS boot may
     start another compose project first, a user starts a dev server, or someone
@@ -627,6 +712,10 @@ async def repair_ports(pkg_id: str) -> dict:
     longer bind. This re-plans the mapping (keeping the current remap while it is
     free, otherwise picking a new one), rewrites the override, updates the record
     and recreates the service when the published port changed.
+
+    The same pass re-probes the GPU: installing a driver or joining the `render`
+    group takes effect here, which is why Packages labels the action “Repair
+    ports & devices”.
     """
     check_pkg_id(pkg_id)
     record = packages_store.get_package(pkg_id)
@@ -642,20 +731,31 @@ async def repair_ports(pkg_id: str) -> dict:
     changed = bool(new_port and new_port != previous_port)
     if changed or plan.get("remap"):
         packages_store.replace_package(updated)
+    _, gpu_state = _write_overrides(pkg_id, updated, target,
+                                    plan.get("mapping") or _recorded_mapping(updated))
+    gpu_changed = gpu_state != (record.get("gpu") or {})
+    if gpu_state and (gpu_changed or updated.get("gpu") != gpu_state):
+        updated = {**updated, "gpu": gpu_state}
+        packages_store.replace_package(updated)
     if record.get("data"):
         folder = validate_data_dir(pkg_id, record.get("data_dir"))
         await asyncio.to_thread(ensure_data_dir, folder, record.get("data"))
-    await _compose(pkg_id, compose_file(pkg_id), "up", "-d",
-                   *(["--force-recreate"] if changed else []))
-    logger.info("Package %s: port repair finished (port %s -> %s, recreated=%s)",
-                pkg_id, previous_port, new_port or previous_port, changed)
+    path = compose_file(pkg_id)
+    if path is None:  # pragma: no cover - guarded above
+        raise PackageError("Only compose packages publish a host port", 400)
+    recreated = changed or gpu_changed
+    await _compose(pkg_id, path, "up", "-d", *(["--force-recreate"] if recreated else []))
+    logger.info("Package %s: port/device repair finished (port %s -> %s, gpu=%s, recreated=%s)",
+                pkg_id, previous_port, new_port or previous_port,
+                gpu_state.get("applied"), recreated)
     return {
         "id": pkg_id,
         "name": updated.get("name") or pkg_id,
         "port": new_port or previous_port,
         "previous_port": previous_port,
         "remapped": bool(plan.get("remap")),
-        "recreated": changed,
+        "gpu": gpu_state or None,
+        "recreated": recreated,
     }
 
 
@@ -684,6 +784,12 @@ async def compose_action(pkg_id: str, action: str) -> dict:
         # in the manifest, and a start is the natural moment to repair it.
         folder = validate_data_dir(pkg_id, record.get("data_dir"))
         await asyncio.to_thread(ensure_data_dir, folder, record.get("data"))
+    if action in {"start", "restart"} and record and package_gpu.requested(record):
+        # A GPU or driver can appear after the install; keep the record in sync
+        # and let `up -d` recreate the container when the devices changed.
+        gpu_changed, gpu_state = _refresh_gpu_override(pkg_id, record)
+        if gpu_state and (gpu_changed or record.get("gpu") != gpu_state):
+            packages_store.replace_package({**record, "gpu": gpu_state})
     args = {"start": ("up", "-d"), "stop": ("down",), "restart": ("up", "-d", "--force-recreate")}[action]
     await _compose(pkg_id, path, *args)
     status = await _status(pkg_id)
@@ -923,7 +1029,8 @@ async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = 
 
     source = next((s for s in packages_store.load_sources() if s.get("url") == entry.get("source")), {})
     record = _write_record(manifest, entry, source, provided_settings, data_folder)
-    if compose_file(pkg_id):
+    compose_path = compose_file(pkg_id)
+    if compose_path:
         plan = _port_plan(pkg_id, manifest, target)
         record = _apply_port_plan(record, plan)
         if plan.get("remap"):
@@ -932,16 +1039,23 @@ async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = 
                 f"host port {next(iter(plan['remap']))} is busy — "
                 f"publishing on {plan['ui']} instead",
             )
+        # Hardware passthrough (capabilities `dri`/`nvidia`) lives in the same
+        # generated override: a GPU-less host simply gets no devices.
+        _, gpu_state = _write_overrides(pkg_id, record, target, plan.get("mapping") or {})
+        for line in package_gpu.log_lines(manifest, gpu_state):
+            package_jobs.log(job_id, line)
+        if gpu_state:
+            record["gpu"] = gpu_state
     if data_folder is not None:
         await asyncio.to_thread(ensure_data_dir, data_folder, manifest.get("data"))
         package_jobs.log(job_id, f"data folder ready: {data_folder}")
     packages_store.add_package(record)
     package_jobs.log(job_id, "files deployed")
 
-    if compose_file(pkg_id):
+    if compose_path:
         package_jobs.set_step(job_id, "start")
         try:
-            await _compose(pkg_id, compose_file(pkg_id), "up", "-d")
+            await _compose(pkg_id, compose_path, "up", "-d")
         except PackageError as exc:
             packages_store.remove_package(pkg_id)
             _discard_dir(target, "failed")
@@ -995,8 +1109,9 @@ async def update(pkg_id: str, job_id: str) -> None:
     package_jobs.set_step(job_id, "backup")
     if _runtime(old) == "venv":
         await package_runtime.stop(pkg_id)
-    if compose_file(pkg_id):
-        await _compose(pkg_id, compose_file(pkg_id), "down")
+    old_path = compose_file(pkg_id)
+    if old_path:
+        await _compose(pkg_id, old_path, "down")
     if target.exists():
         shutil.move(str(target), str(backup))
     shutil.move(str(staging), str(target))
@@ -1018,7 +1133,8 @@ async def update(pkg_id: str, job_id: str) -> None:
                            pkg_id, exc_info=True)
             data_folder = default_data_dir(pkg_id)
     record = _write_record(manifest, entry, source, preserved, data_folder)
-    if compose_file(pkg_id):
+    compose_path = compose_file(pkg_id)
+    if compose_path:
         plan = _port_plan(pkg_id, manifest, target, previous=old.get("port_remap"))
         record = _apply_port_plan(record, plan)
         if plan.get("remap"):
@@ -1027,6 +1143,11 @@ async def update(pkg_id: str, job_id: str) -> None:
                 f"host port {next(iter(plan['remap']))} is busy — "
                 f"publishing on {plan['ui']} instead",
             )
+        _, gpu_state = _write_overrides(pkg_id, record, target, plan.get("mapping") or {})
+        for line in package_gpu.log_lines(manifest, gpu_state):
+            package_jobs.log(job_id, line)
+        if gpu_state:
+            record["gpu"] = gpu_state
     if data_folder is not None:
         await asyncio.to_thread(ensure_data_dir, data_folder, manifest.get("data"))
         package_jobs.log(job_id, f"data folder ready: {data_folder}")
@@ -1034,9 +1155,9 @@ async def update(pkg_id: str, job_id: str) -> None:
     package_jobs.log(job_id, f"deployed v{manifest['version']}")
 
     try:
-        if compose_file(pkg_id):
+        if compose_path:
             package_jobs.set_step(job_id, "start")
-            await _compose(pkg_id, compose_file(pkg_id), "up", "-d")
+            await _compose(pkg_id, compose_path, "up", "-d")
         elif _runtime(record) == "venv":
             package_jobs.set_step(job_id, "venv")
             await package_runtime.build(target, record, job_id)
@@ -1055,10 +1176,12 @@ async def update(pkg_id: str, job_id: str) -> None:
             except PackageError as rollback_exc:
                 logger.error("Rollback start failed for %s: %s", pkg_id, rollback_exc.detail)
         elif compose_file(pkg_id):
-            try:
-                await _compose(pkg_id, compose_file(pkg_id), "up", "-d")
-            except PackageError as rollback_exc:
-                logger.error("Rollback start failed for %s: %s", pkg_id, rollback_exc.detail)
+            rollback_path = compose_file(pkg_id)
+            if rollback_path is not None:
+                try:
+                    await _compose(pkg_id, rollback_path, "up", "-d")
+                except PackageError as rollback_exc:
+                    logger.error("Rollback start failed for %s: %s", pkg_id, rollback_exc.detail)
         raise PackageError(f"Update failed to start; previous version restored: {exc.detail}", exc.status) from exc
 
     shutil.rmtree(backup, ignore_errors=True)
