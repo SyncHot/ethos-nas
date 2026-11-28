@@ -1,15 +1,23 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-27T16:17:24+00:00",
+  "generated_at": "2026-11-28T10:55:48+00:00",
   "latest": {
-    "version": "2.41.1",
-    "git_sha": "bb3598c",
-    "git_sha_full": "bb3598c6b85843741107fa3ea33eac43a125fb65",
-    "build": 327,
-    "released_at": "2026-11-27T16:17:24+00:00",
-    "notes": "Videos: 4K HDR nie udaje już transmisji na żywo (jasny komunikat + pobieranie offline), poprawiony wybór dekodera sprzętowego (XviD 0,8x → 1,9x realtime)"
+    "version": "2.42.0",
+    "git_sha": "a8dedea",
+    "git_sha_full": "a8dedeabc5608e3e2fd44f9d2d5bbbc9cd8de9b5",
+    "build": 329,
+    "released_at": "2026-11-28T10:55:48+00:00",
+    "notes": "Jellyfin and Plex packages with hardware transcoding (VAAPI/QuickSync via /dev/dri, NVENC via the Docker nvidia runtime) and the GPU capability model behind them; ui.embed for apps that refuse framing."
   },
   "releases": [
+    {
+      "version": "2.42.0",
+      "git_sha": "a8dedea",
+      "git_sha_full": "a8dedeabc5608e3e2fd44f9d2d5bbbc9cd8de9b5",
+      "build": 329,
+      "released_at": "2026-11-28T10:55:48+00:00",
+      "notes": "Jellyfin and Plex packages with hardware transcoding (VAAPI/QuickSync via /dev/dri, NVENC via the Docker nvidia runtime) and the GPU capability model behind them; ui.embed for apps that refuse framing."
+    },
     {
       "version": "2.41.1",
       "git_sha": "bb3598c",
@@ -201,14 +209,6 @@
       "build": 271,
       "released_at": "2026-11-24T16:17:26+00:00",
       "notes": "Packages: choose the folder a package keeps its data in (install dialog or Installed → Settings); defaults to a package-named folder under /home, /mnt or /media. Grafana 1.2.0 stores its database and dashboards there."
-    },
-    {
-      "version": "2.34.1",
-      "git_sha": "04a78a3",
-      "git_sha_full": "04a78a3f0a40cfef410c7cfe5c2a65a56da4dcab",
-      "build": 269,
-      "released_at": "2026-11-24T16:10:38+00:00",
-      "notes": "Packages: the install dialog now shows the package's settings fields (admin login, password) and system requirements."
     }
   ]
 }
