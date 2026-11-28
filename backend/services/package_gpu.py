@@ -80,11 +80,13 @@ def fragment(manifest: Optional[dict], gpu: Optional[dict] = None) -> dict:
             additions["deploy"] = {
                 "resources": {
                     "reservations": {
-                        "devices": [{
-                            "driver": NVIDIA_RUNTIME,
-                            "count": "all",
-                            "capabilities": ["gpu"],
-                        }],
+                        "devices": [
+                            {
+                                "driver": NVIDIA_RUNTIME,
+                                "count": "all",
+                                "capabilities": ["gpu"],
+                            }
+                        ],
                     },
                 },
             }
@@ -94,8 +96,7 @@ def fragment(manifest: Optional[dict], gpu: Optional[dict] = None) -> dict:
     return additions
 
 
-def summary(manifest: Optional[dict], gpu: Optional[dict] = None,
-            additions: Optional[dict] = None) -> dict:
+def summary(manifest: Optional[dict], gpu: Optional[dict] = None, additions: Optional[dict] = None) -> dict:
     """GPU state stored with the package record and shown by Package Center."""
     wanted = requested(manifest)
     if not wanted:
@@ -126,9 +127,12 @@ def log_lines(manifest: Optional[dict], summary_data: dict) -> list[str]:
     if summary_data.get("applied"):
         parts = []
         if summary_data.get("devices"):
-            parts.append("/dev/dri/" + ", /dev/dri/".join(
-                node.rsplit("/", 1)[-1] for node in summary_data["devices"]
-                if node.startswith(gpu_host.DRI_DIR)))
+            parts.append(
+                "/dev/dri/"
+                + ", /dev/dri/".join(
+                    node.rsplit("/", 1)[-1] for node in summary_data["devices"] if node.startswith(gpu_host.DRI_DIR)
+                )
+            )
         if summary_data.get("runtime"):
             parts.append(f"runtime {summary_data['runtime']}")
         detail = "; ".join(part for part in parts if part) or "no device"

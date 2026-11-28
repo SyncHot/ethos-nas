@@ -21,8 +21,17 @@ from pathlib import Path
 from typing import Optional
 
 import psutil
-from fastapi import (APIRouter, BackgroundTasks, Depends, File, HTTPException, Response,
-                     UploadFile, WebSocket, WebSocketDisconnect)
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import BaseModel, Field
 
 from backend.config import APP_VERSION, INSTALL_DIR, settings
@@ -108,6 +117,7 @@ def collect_system_stats() -> dict:
     }
     try:
         from backend.services import pressure_guard
+
         stats["pressure"] = pressure_guard.snapshot()
     except Exception:  # noqa: BLE001 — a stats read must never fail on this
         logger.debug("Pressure snapshot failed", exc_info=True)
@@ -143,6 +153,7 @@ async def get_system_status() -> dict:
     data = await asyncio.to_thread(collect_system_stats)
     try:
         from backend.routers.downloads import engine_ready
+
         data["download_engine_ready"] = engine_ready()
     except Exception:  # downloads router unavailable — not fatal
         logger.debug("Could not read download engine state", exc_info=True)
@@ -152,6 +163,7 @@ async def get_system_status() -> dict:
     # is cached (60 s) and runs off the event loop because it may call `docker info`.
     try:
         from backend.services import gpu_host
+
         data["gpu"] = await asyncio.to_thread(gpu_host.probe)
     except Exception:  # noqa: BLE001 — a status snapshot must never fail on a probe
         logger.warning("GPU probe failed for the system status", exc_info=True)
@@ -164,6 +176,7 @@ async def ws_stats(websocket: WebSocket) -> None:
     # Validate JWT from query params before accepting connection
     token = websocket.url.query.split("token=")[-1] if "token=" in websocket.url.query else ""
     from backend.routers.auth import _verify_token
+
     payload = _verify_token(token)
     if not payload:
         await websocket.close(code=4001, reason="Authentication required")
@@ -172,9 +185,9 @@ async def ws_stats(websocket: WebSocket) -> None:
     try:
         while True:
             data = _stats_cache.get("data")
-            stale = (data is None
-                     or _time.monotonic() - float(_stats_cache.get("at") or 0.0)
-                     > 3 * max(0.5, settings.STATS_INTERVAL))
+            stale = data is None or _time.monotonic() - float(_stats_cache.get("at") or 0.0) > 3 * max(
+                0.5, settings.STATS_INTERVAL
+            )
             if stale:
                 # Sampler not running (tests, early startup): compute directly.
                 data = await asyncio.to_thread(collect_system_stats)
@@ -200,6 +213,7 @@ async def _stats_loop() -> None:
 async def start_stats_sampler() -> None:
     global _stats_task
     from backend.services import task_registry
+
     if _stats_task is None or _stats_task.done():
         _stats_task = task_registry.spawn(_stats_loop(), name="system-stats-sampler")
 
@@ -216,6 +230,7 @@ async def stop_stats_sampler() -> None:
 
 
 # ── Lifecycle endpoints ──────────────────────────────────────────────────────
+
 
 class _LifecycleRequest(BaseModel):
     action: str  # reboot | shutdown
@@ -311,8 +326,9 @@ def _version_info() -> dict:
     root = Path(__file__).resolve().parent.parent.parent
     sha = ""
     try:
-        sha = _sp.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
-                      capture_output=True, text=True, timeout=3).stdout.strip()
+        sha = _sp.run(
+            ["git", "-C", str(root), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=3
+        ).stdout.strip()
     except Exception:
         logger.debug("git rev-parse unavailable", exc_info=True)
     built_at = datetime.fromtimestamp(Path(__file__).stat().st_mtime, tz=timezone.utc).isoformat()
@@ -321,8 +337,7 @@ def _version_info() -> dict:
         fhash = hashlib.sha256((root / "frontend" / "static" / "app.js").read_bytes()).hexdigest()[:12]
     except OSError:
         logger.debug("frontend hash unavailable", exc_info=True)
-    return {"version": APP_VERSION, "git_sha": sha, "backend_built_at": built_at,
-            "frontend_hash": fhash}
+    return {"version": APP_VERSION, "git_sha": sha, "backend_built_at": built_at, "frontend_hash": fhash}
 
 
 def _doctor_checks() -> dict:
@@ -346,9 +361,15 @@ def _doctor_checks() -> dict:
 
     # JWT secret
     from backend.config import DEFAULT_JWT_SECRET
+
     secure = settings.JWT_SECRET != DEFAULT_JWT_SECRET
-    add("jwt-secret", secure, "default" if not secure else "custom",
-        "Set ETHOS_JWT_SECRET via systemctl edit ethos-nas", required=False)
+    add(
+        "jwt-secret",
+        secure,
+        "default" if not secure else "custom",
+        "Set ETHOS_JWT_SECRET via systemctl edit ethos-nas",
+        required=False,
+    )
 
     # External tools
     for tool, why, required in [
@@ -364,53 +385,81 @@ def _doctor_checks() -> dict:
 
     # Docker Engine + Compose v2 (Docker Manager app / Packages stacks)
     from backend.services import docker_host
+
     try:
         engine = docker_host.engine_status()
     except Exception:
         logger.error("Docker engine probe failed", exc_info=True)
         engine = {}
-    add("docker-engine", bool(engine.get("daemon")),
+    add(
+        "docker-engine",
+        bool(engine.get("daemon")),
         (f"v{engine['version']}" if engine.get("version") else "not reachable"),
-        "Open Docker Manager and install Docker Engine", required=False)
-    add("docker-compose", bool(engine.get("compose")), engine.get("compose") or "not found",
-        "Install the Docker Compose v2 plugin (Docker Manager)", required=False)
-    add("docker-group", bool(engine.get("group_member")),
+        "Open Docker Manager and install Docker Engine",
+        required=False,
+    )
+    add(
+        "docker-compose",
+        bool(engine.get("compose")),
+        engine.get("compose") or "not found",
+        "Install the Docker Compose v2 plugin (Docker Manager)",
+        required=False,
+    )
+    add(
+        "docker-group",
+        bool(engine.get("group_member")),
         "member" if engine.get("group_member") else "not a member",
         "Re-run setup_scripts/setup_service.sh and restart EthOS to join the docker group",
-        required=False)
+        required=False,
+    )
 
     # OS package update helper (Settings → System). Optional: an install that
     # never re-ran setup_service.sh simply cannot install Ubuntu updates yet.
     from backend.services import os_update_service
-    add("os-update-helper", os_update_service.helper_available(), settings.OS_UPDATE_HELPER,
-        "Run: sudo bash setup_scripts/setup_service.sh (installs the OS update helper "
-        "and its two sudoers rules)", required=False)
+
+    add(
+        "os-update-helper",
+        os_update_service.helper_available(),
+        settings.OS_UPDATE_HELPER,
+        "Run: sudo bash setup_scripts/setup_service.sh (installs the OS update helper and its two sudoers rules)",
+        required=False,
+    )
 
     # Privileged configuration applied from the signed release (deploy/ethos-provision).
     import json as _json
+
     try:
-        provision = _json.loads(
-            (settings.DATA_DIR / "provision" / "result.json").read_text(encoding="utf-8"))
+        provision = _json.loads((settings.DATA_DIR / "provision" / "result.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         provision = {}
     provision_status = str(provision.get("status") or "not run")
-    add("system-provisioning", provision_status in ("ok", "noop"),
+    add(
+        "system-provisioning",
+        provision_status in ("ok", "noop"),
         f"{provision_status} {provision.get('at') or ''}".strip(),
         "Run: sudo bash setup_scripts/setup_service.sh once — core updates apply "
-        "the signed configuration automatically afterwards", required=False)
+        "the signed configuration automatically afterwards",
+        required=False,
+    )
 
     # The updater installs root helpers from the checkout. The backend must not
     # be able to modify it, or the service could plant its own root helper.
     deploy_dir = Path(INSTALL_DIR) / "deploy"
     writable = os.access(deploy_dir, os.W_OK)
-    add("checkout-writable", not writable, str(deploy_dir),
+    add(
+        "checkout-writable",
+        not writable,
+        str(deploy_dir),
         "Remove the service user from the repository owner's group "
         "(sudo gpasswd -d <service-user> <owner-group>): a writable checkout lets "
-        "the backend plant root helpers", required=False)
+        "the backend plant root helpers",
+        required=False,
+    )
 
     # User store reachable
     try:
         from backend.services import users_store
+
         users = users_store.load()
         add("user-store", True, f"{len(users)} account(s) — {users_store.path()}")
     except Exception as exc:
@@ -419,11 +468,15 @@ def _doctor_checks() -> dict:
     # Store schema versions (TODO.md P5-05)
     try:
         from backend.services import json_store
+
         report = json_store.store_registry_report()
         versioned = [e for e in report if e["version"] is not None]
-        add("store-versions", True,
+        add(
+            "store-versions",
+            True,
             f"{len(report)} store(s) registered, {len(versioned)} schema-versioned",
-            "Add `version=`/`migrate=` when a store's shape changes")
+            "Add `version=`/`migrate=` when a store's shape changes",
+        )
     except Exception as exc:
         add("store-versions", False, str(exc), "json_store registry unavailable", required=False)
 
@@ -477,10 +530,13 @@ async def config_snapshots() -> dict:
     from backend.services import config_archive
 
     items = await asyncio.to_thread(config_archive.list_snapshots)
-    return {"snapshots": items, "count": len(items),
-            "enabled": settings.CONFIG_SNAPSHOT_ENABLED,
-            "keep": settings.CONFIG_SNAPSHOT_KEEP,
-            "interval": settings.CONFIG_SNAPSHOT_INTERVAL}
+    return {
+        "snapshots": items,
+        "count": len(items),
+        "enabled": settings.CONFIG_SNAPSHOT_ENABLED,
+        "keep": settings.CONFIG_SNAPSHOT_KEEP,
+        "interval": settings.CONFIG_SNAPSHOT_INTERVAL,
+    }
 
 
 @router.post("/config-snapshots", dependencies=[Depends(require_admin)])
@@ -492,6 +548,7 @@ async def config_snapshot_now() -> dict:
     if path is None:
         raise HTTPException(status_code=503, detail="Snapshot disabled or failed — see App Events")
     return {"ok": True, "name": path.name, "bytes": path.stat().st_size}
+
 
 @router.get("/version")
 async def app_version() -> dict:
@@ -555,11 +612,13 @@ async def retention_sweep(req: RetentionSweepRequest | None = None) -> dict:
     freed = int(summary.get("freed_bytes") or 0)
     removed = int(summary.get("removed_files") or 0)
     if removed:
-        emit_event("success", "Caches cleaned",
-                   f"Removed {removed} item(s), freed {freed / 1_048_576:.1f} MB",
-                   source="storage")
-    logger.info("Manual retention sweep: %d item(s), %.1f MB freed",
-                removed, freed / 1_048_576)
+        emit_event(
+            "success",
+            "Caches cleaned",
+            f"Removed {removed} item(s), freed {freed / 1_048_576:.1f} MB",
+            source="storage",
+        )
+    logger.info("Manual retention sweep: %d item(s), %.1f MB freed", removed, freed / 1_048_576)
     return {"ok": True, **summary}
 
 
@@ -576,12 +635,10 @@ async def install_host_dependency(requirement: str) -> dict:
 
     meta = system_deps.SYSTEM_REQUIREMENTS.get(requirement)
     if not meta or not meta.get("serviceable"):
-        raise HTTPException(status_code=400,
-                            detail=f"{requirement} cannot be installed by EthOS")
+        raise HTTPException(status_code=400, detail=f"{requirement} cannot be installed by EthOS")
     if requirement == "docker":
         # Docker has its own fingerprinted helper and daemon checks.
-        raise HTTPException(status_code=400,
-                            detail="Install Docker from the Docker Manager")
+        raise HTTPException(status_code=400, detail="Install Docker from the Docker Manager")
 
     try:
         await asyncio.to_thread(system_deps.install, requirement, None)
@@ -617,9 +674,7 @@ async def system_restart(background_tasks: BackgroundTasks) -> dict:
 async def system_shutdown(req: _LifecycleRequest) -> dict:
     """Reboot or shutdown the server via sudo systemctl."""
     if not req.confirm:
-        raise HTTPException(
-            status_code=400, detail="Must set confirm=true to proceed"
-        )
+        raise HTTPException(status_code=400, detail="Must set confirm=true to proceed")
 
     target = req.action.lower() if req.action else "reboot"
     if target not in ("reboot", "shutdown"):
@@ -630,13 +685,13 @@ async def system_shutdown(req: _LifecycleRequest) -> dict:
         await asyncio.to_thread(
             subprocess.run,
             ["sudo", "-n", "systemctl", target],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return {"ok": True, "status": "success", "action": target, "message": f"Server will {target}"}
     except FileNotFoundError:
-        raise HTTPException(
-            status_code=500, detail="sudo or systemctl not available on this system"
-        )
+        raise HTTPException(status_code=500, detail="sudo or systemctl not available on this system")
     except subprocess.TimeoutExpired:
         logger.error("systemctl %s timed out", target)
         return {"ok": True, "status": "success", "action": target, "message": f"Server will {target}"}

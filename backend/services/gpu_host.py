@@ -113,8 +113,7 @@ def _card_details() -> list[dict]:
     """Vendor/driver per card, read from sysfs — no subprocess, no lspci."""
     details: list[dict] = []
     try:
-        names = sorted(name for name in os.listdir("/sys/class/drm")
-                       if name.startswith("card") and "-" not in name)
+        names = sorted(name for name in os.listdir("/sys/class/drm") if name.startswith("card") and "-" not in name)
     except OSError:
         return details
     for name in names:
@@ -159,7 +158,9 @@ def _docker_runtimes() -> list[str]:
     try:
         proc = subprocess.run(
             ["docker", "info", "--format", "{{json .Runtimes}}"],
-            capture_output=True, text=True, timeout=DOCKER_INFO_TIMEOUT,
+            capture_output=True,
+            text=True,
+            timeout=DOCKER_INFO_TIMEOUT,
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("docker info runtime probe failed", exc_info=True)
@@ -227,8 +228,7 @@ def _nvidia_status(runtimes: list[str] | None = None) -> dict:
     elif not driver:
         reason = "NVIDIA device nodes exist but the driver binaries are missing"
     else:
-        reason = ("the NVIDIA driver is installed but Docker has no nvidia runtime — "
-                  f"run: {_NVIDIA_HINT}")
+        reason = f"the NVIDIA driver is installed but Docker has no nvidia runtime — run: {_NVIDIA_HINT}"
     return {
         "available": available,
         "nodes": nodes,

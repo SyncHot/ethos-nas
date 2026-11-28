@@ -23,8 +23,7 @@ from backend.services import gpu_host, packages_store
 logger = logging.getLogger("ethos-nas.services.package_env")
 
 
-def compose_env(pkg_id: Optional[str] = None,
-                record: Optional[dict] = None) -> dict[str, str]:
+def compose_env(pkg_id: Optional[str] = None, record: Optional[dict] = None) -> dict[str, str]:
     """Environment for `docker compose`, including the EthOS service identity.
 
     Compose interpolates `${VAR}` from this environment, so a manifest can run its
@@ -47,8 +46,7 @@ def compose_env(pkg_id: Optional[str] = None,
     try:
         env.update(gpu_host.compose_env())
     except Exception:  # noqa: BLE001 — compose must not fail on a probe error
-        logger.warning("GPU probe failed while building the compose environment",
-                       exc_info=True)
+        logger.warning("GPU probe failed while building the compose environment", exc_info=True)
     if record is None and pkg_id:
         record = packages_store.get_package(pkg_id)
     if record:
@@ -82,8 +80,7 @@ def compose_vars(record: Optional[dict]) -> dict[str, str]:
                 # Settings → Packages (built-in <DATA_DIR>/packages/data).
                 chosen = str(packages_store.data_root() / pkg_id)
             except Exception:
-                logger.warning("Cannot resolve the default data folder for %s", pkg_id,
-                               exc_info=True)
+                logger.warning("Cannot resolve the default data folder for %s", pkg_id, exc_info=True)
         if chosen:
             env["ETHOS_PACKAGE_DATA_DIR"] = chosen
     return env

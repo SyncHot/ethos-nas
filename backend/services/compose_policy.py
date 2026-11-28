@@ -22,9 +22,7 @@ from backend.services.packages_store import APPS_DIR, PACKAGES_ROOT
 
 logger = logging.getLogger("ethos-nas.services.compose_policy")
 
-_ALLOWED_BIND_ROOTS = tuple(
-    os.path.realpath(p) for p in ("/home", "/mnt", "/media")
-)
+_ALLOWED_BIND_ROOTS = tuple(os.path.realpath(p) for p in ("/home", "/mnt", "/media"))
 _FORBIDDEN_DEVICES = ("/dev/", "/var/run/docker.sock", "/run/docker.sock")
 # Container runtimes a package may ask for. `nvidia` is the only non-default one
 # and it needs the `nvidia` capability; anything else (kata, sysbox, …) is an
@@ -45,8 +43,7 @@ def _device_capability(source: str) -> str | None:
     return None
 
 
-def _allowed_bind_roots(package_id: str | None = None,
-                       package_dir: str | Path | None = None) -> tuple[str, ...]:
+def _allowed_bind_roots(package_id: str | None = None, package_dir: str | Path | None = None) -> tuple[str, ...]:
     """Bind roots for one package.
 
     Shared data mounts are always allowed. The package store itself is not:
@@ -69,14 +66,15 @@ def _path_allowed(path: str, roots: tuple[str, ...]) -> bool:
         # Inside the package store only the package's own roots are allowed —
         # even when DATA_DIR itself sits under /home (the repo default), the
         # broad /home root must not expose installed.json or another package.
-        return any(real == root or real.startswith(root + os.sep)
-                   for root in roots
-                   if root == packages_root or root.startswith(packages_root + os.sep))
+        return any(
+            real == root or real.startswith(root + os.sep)
+            for root in roots
+            if root == packages_root or root.startswith(packages_root + os.sep)
+        )
     return any(real == root or real.startswith(root + os.sep) for root in roots)
 
 
-def _check_bind(source: str, service: str, errors: list[str],
-                roots: tuple[str, ...]) -> None:
+def _check_bind(source: str, service: str, errors: list[str], roots: tuple[str, ...]) -> None:
     source = str(source or "").strip()
     if not source or source.startswith("$"):
         return
@@ -92,8 +90,7 @@ def _check_bind(source: str, service: str, errors: list[str],
         errors.append(f"{service}: relative bind mount must stay inside the package directory: {source}")
 
 
-def _check_devices(devices: Any, service: str, capabilities: set[str],
-                   errors: list[str]) -> None:
+def _check_devices(devices: Any, service: str, capabilities: set[str], errors: list[str]) -> None:
     """Reject every `devices:` entry except the capability-gated allowlist."""
     if not devices:
         return
@@ -110,9 +107,7 @@ def _check_devices(devices: Any, service: str, capabilities: set[str],
         if required is not None and required in capabilities:
             continue
         if required is not None:
-            errors.append(
-                f"{service}: device {source} requires capabilities: [\"{required}\"] in the manifest"
-            )
+            errors.append(f'{service}: device {source} requires capabilities: ["{required}"] in the manifest')
             continue
         errors.append(f"{service}: devices are not allowed: {entry}")
 
@@ -154,8 +149,7 @@ def _declares_container_uid(service: dict) -> bool:
             return True
         text = " ".join(str(value) for value in env.values())
     elif isinstance(env, list):
-        if any(str(item).split("=", 1)[0] in {"PUID", "PGID", "USER_UID", "USER_GID"}
-               for item in env):
+        if any(str(item).split("=", 1)[0] in {"PUID", "PGID", "USER_UID", "USER_GID"} for item in env):
             return True
         text = " ".join(str(item) for item in env)
     else:
@@ -163,8 +157,7 @@ def _declares_container_uid(service: dict) -> bool:
     return "ETHOS_SERVICE_UID" in text or "ETHOS_SERVICE_GID" in text
 
 
-def _check_gpu(service: dict, name: str, capabilities: set[str],
-               errors: list[str]) -> None:
+def _check_gpu(service: dict, name: str, capabilities: set[str], errors: list[str]) -> None:
     """Gate `runtime:`, `gpus:` and GPU `deploy:` reservations on `nvidia`.
 
     The NVIDIA path needs a runtime the manifest cannot create, so it is a
@@ -176,16 +169,14 @@ def _check_gpu(service: dict, name: str, capabilities: set[str],
         if runtime not in _ALLOWED_RUNTIMES:
             errors.append(f"{name}: runtime {runtime!r} is not allowed")
         elif runtime == "nvidia" and "nvidia" not in capabilities:
-            errors.append(
-                f'{name}: runtime nvidia requires capabilities: ["nvidia"] in the manifest'
-            )
+            errors.append(f'{name}: runtime nvidia requires capabilities: ["nvidia"] in the manifest')
 
     gpus = service.get("gpus")
     if gpus is not None:
         if "nvidia" not in capabilities:
             errors.append(f'{name}: gpus requires capabilities: ["nvidia"] in the manifest')
         else:
-            for entry in (gpus if isinstance(gpus, list) else [gpus]):
+            for entry in gpus if isinstance(gpus, list) else [gpus]:
                 text = str(entry or "").strip()
                 if text != "all" and not text.startswith("device="):
                     errors.append(f"{name}: gpus entries must be 'all' or 'device=<ids>': {entry}")
@@ -194,9 +185,7 @@ def _check_gpu(service: dict, name: str, capabilities: set[str],
     if deploy is None:
         return
     if "nvidia" not in capabilities:
-        errors.append(
-            f'{name}: deploy device reservations require capabilities: ["nvidia"] in the manifest'
-        )
+        errors.append(f'{name}: deploy device reservations require capabilities: ["nvidia"] in the manifest')
         return
     _check_deploy_devices(deploy, name, errors)
 
@@ -224,9 +213,7 @@ def _check_deploy_devices(deploy: Any, name: str, errors: list[str]) -> None:
         return
     for key in sorted(reservations):
         if key != "devices":
-            errors.append(
-                f"{name}: deploy.resources.reservations.{key} is not allowed; only devices are"
-            )
+            errors.append(f"{name}: deploy.resources.reservations.{key} is not allowed; only devices are")
             return
     devices = reservations.get("devices")
     if not isinstance(devices, list) or not devices:
@@ -266,10 +253,9 @@ def _check_deploy_device_entry(entry: Any, name: str, errors: list[str]) -> None
         )
 
 
-def lint_compose(text_or_dict: Any,
-                 capabilities: Any = None,
-                 package_id: str | None = None,
-                 package_dir: str | Path | None = None) -> tuple[list[str], list[str]]:
+def lint_compose(
+    text_or_dict: Any, capabilities: Any = None, package_id: str | None = None, package_dir: str | Path | None = None
+) -> tuple[list[str], list[str]]:
     """Return (errors, warnings) for a docker-compose document.
 
     `capabilities` are the manifest capabilities; they unlock per-device
@@ -359,9 +345,9 @@ def lint_compose(text_or_dict: Any,
     return errors, warnings
 
 
-def enforce_compose(text_or_dict: Any, capabilities: Any = None,
-                    package_id: str | None = None,
-                    package_dir: str | Path | None = None) -> list[str]:
+def enforce_compose(
+    text_or_dict: Any, capabilities: Any = None, package_id: str | None = None, package_dir: str | Path | None = None
+) -> list[str]:
     """Raise PackageError on policy violations; return warnings."""
     errors, warnings = lint_compose(text_or_dict, capabilities, package_id, package_dir)
     if errors:

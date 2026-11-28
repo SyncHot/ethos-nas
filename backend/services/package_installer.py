@@ -20,13 +20,25 @@ import yaml
 
 from backend.config import APP_VERSION, settings
 from backend.services import (
-    package_cleanup, package_env, package_gpu, package_jobs, package_ports, package_repo,
-    package_runtime, package_state, package_wheels, packages_store, system_deps,
+    package_cleanup,
+    package_env,
+    package_gpu,
+    package_jobs,
+    package_ports,
+    package_repo,
+    package_runtime,
+    package_state,
+    package_wheels,
+    packages_store,
+    system_deps,
 )
 from backend.services.compose_policy import enforce_compose
 from backend.services.notifications_service import emit_event
 from backend.services.package_schema import (
-    PackageError, check_min_ethos_version, check_pkg_id, version_gt,
+    PackageError,
+    check_min_ethos_version,
+    check_pkg_id,
+    version_gt,
 )
 
 logger = logging.getLogger("ethos-nas.services.package_installer")
@@ -82,7 +94,9 @@ def _docker_root() -> Optional[Path]:
         try:
             proc = subprocess.run(
                 ["docker", "info", "--format", "{{.DockerRootDir}}"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             _DOCKER_ROOT_CACHE = (proc.stdout or "").strip() if proc.returncode == 0 else ""
         except (OSError, subprocess.TimeoutExpired):
@@ -96,7 +110,9 @@ def _port_owner(port: int) -> str:
     try:
         proc = subprocess.run(
             ["docker", "ps", "--format", "{{.Names}}\t{{.Ports}}"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("docker ps probe failed for the port preflight", exc_info=True)
@@ -122,8 +138,7 @@ def _preflight_ports(manifest: dict, pkg_id: str) -> None:
     the container holding it instead.
     """
     ports = []
-    for candidate in ((manifest.get("ui") or {}).get("port"),
-                      (manifest.get("healthcheck") or {}).get("port")):
+    for candidate in ((manifest.get("ui") or {}).get("port"), (manifest.get("healthcheck") or {}).get("port")):
         try:
             port = int(candidate or 0)
         except (TypeError, ValueError):
@@ -158,7 +173,7 @@ def _reserved_ports(pkg_id: str) -> set:
                 port = 0
             if port:
                 reserved.add(port)
-        for port in ((record.get("port_remap") or {}).get("reserved") or []):
+        for port in (record.get("port_remap") or {}).get("reserved") or []:
             reserved.add(int(port))
     return reserved
 
@@ -169,8 +184,7 @@ def _read_compose(package_dir: Path) -> Optional[dict]:
     try:
         return yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as exc:
-        logger.error("Could not read %s for the override: %s", compose_path, exc,
-                     exc_info=True)
+        logger.error("Could not read %s for the override: %s", compose_path, exc, exc_info=True)
         return None
 
 
@@ -199,8 +213,9 @@ def _recorded_mapping(record: Optional[dict]) -> dict[int, int]:
     return {old: new} if old and new and old != new else {}
 
 
-def _write_overrides(pkg_id: str, manifest: dict, package_dir: Path,
-                     mapping: Optional[dict[int, int]] = None) -> tuple[str, dict]:
+def _write_overrides(
+    pkg_id: str, manifest: dict, package_dir: Path, mapping: Optional[dict[int, int]] = None
+) -> tuple[str, dict]:
     """Write the generated compose override (port remap + GPU passthrough).
 
     Returns `(text, gpu_summary)`; text is "" when the package needs neither, in
@@ -242,13 +257,16 @@ def _refresh_gpu_override(pkg_id: str, record: Optional[dict]) -> tuple[bool, di
     text = package_ports.build_override(compose, _recorded_mapping(record), gpu_fragment)
     if text != before:
         package_ports.write_override(package_dir, text)
-        logger.info("Package %s: GPU override refreshed (applied=%s devices=%s)",
-                    pkg_id, gpu_state.get("applied"), gpu_state.get("devices"))
+        logger.info(
+            "Package %s: GPU override refreshed (applied=%s devices=%s)",
+            pkg_id,
+            gpu_state.get("applied"),
+            gpu_state.get("devices"),
+        )
     return text != before, gpu_state
 
 
-def _port_plan(pkg_id: str, manifest: dict, package_dir: Path, *,
-               previous: Optional[dict] = None) -> dict:
+def _port_plan(pkg_id: str, manifest: dict, package_dir: Path, *, previous: Optional[dict] = None) -> dict:
     """Effective host ports for a package, re-mapping a busy one instead of failing.
 
     Signed compose files publish a fixed port, and that port is regularly taken
@@ -258,8 +276,8 @@ def _port_plan(pkg_id: str, manifest: dict, package_dir: Path, *,
     probe read. Returns `{"ui": port|None, "healthcheck": port|None, "remap": {}}`
     — `remap` is `{old: new}` and empty when nothing changed.
     """
-    ui = (manifest.get("ui") or {})
-    health = (manifest.get("healthcheck") or {})
+    ui = manifest.get("ui") or {}
+    health = manifest.get("healthcheck") or {}
 
     def _as_port(value) -> int:
         try:
@@ -287,7 +305,8 @@ def _port_plan(pkg_id: str, manifest: dict, package_dir: Path, *,
             where = f" by {owner}" if owner else ""
             raise PackageError(
                 f"Port {ui_port} is already used{where} and no free port was found "
-                f"nearby. Free the port or stop that container first.", 409,
+                f"nearby. Free the port or stop that container first.",
+                409,
             ) from None
     else:
         return plan
@@ -296,8 +315,7 @@ def _port_plan(pkg_id: str, manifest: dict, package_dir: Path, *,
     try:
         compose = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError) as exc:
-        logger.error("Package %s: could not read the compose file for the port remap: %s",
-                     pkg_id, exc, exc_info=True)
+        logger.error("Package %s: could not read the compose file for the port remap: %s", pkg_id, exc, exc_info=True)
         compose = {}
     mapping = {ui_port: new_port}
     if health_port and health_port != ui_port and not package_ports.port_free(health_port):
@@ -306,12 +324,16 @@ def _port_plan(pkg_id: str, manifest: dict, package_dir: Path, *,
     if not text:
         # Nothing in the compose file publishes that port (e.g. the UI is served
         # through the package proxy) — leave the record alone.
-        logger.warning("Package %s: port %d is busy but no compose mapping uses it",
-                       pkg_id, ui_port)
+        logger.warning("Package %s: port %d is busy but no compose mapping uses it", pkg_id, ui_port)
         return plan
     owner = package_ports.port_owner(ui_port)
-    logger.info("Package %s: host port %d is in use%s — published on %d instead",
-                pkg_id, ui_port, f" by {owner}" if owner else "", new_port)
+    logger.info(
+        "Package %s: host port %d is in use%s — published on %d instead",
+        pkg_id,
+        ui_port,
+        f" by {owner}" if owner else "",
+        new_port,
+    )
     plan["ui"] = new_port
     if health_port == ui_port:
         plan["healthcheck"] = new_port
@@ -328,8 +350,7 @@ def _apply_port_plan(record: dict, plan: dict) -> dict:
         return record
     record["ui"] = {**(record.get("ui") or {}), "port": ui_port}
     if record.get("healthcheck") and plan.get("healthcheck"):
-        record["healthcheck"] = {**(record.get("healthcheck") or {}),
-                                 "port": plan["healthcheck"]}
+        record["healthcheck"] = {**(record.get("healthcheck") or {}), "port": plan["healthcheck"]}
     if plan.get("remap"):
         record["port_remap"] = {
             "from": next(iter(plan["remap"])),
@@ -400,9 +421,9 @@ def _settings_defs(record: Optional[dict]) -> list[dict]:
     return [d for d in defs if isinstance(d, dict) and d.get("key") and d.get("env")]
 
 
-def validate_settings_values(definitions: list[dict], provided: Optional[dict], *,
-                             base: Optional[dict] = None,
-                             enforce_required: bool = True) -> dict:
+def validate_settings_values(
+    definitions: list[dict], provided: Optional[dict], *, base: Optional[dict] = None, enforce_required: bool = True
+) -> dict:
     """Merge settings over their current values/defaults and validate them.
 
     `provided` may only contain declared keys. Values are always strings and the
@@ -463,7 +484,8 @@ def _validate_host_folder(raw: str, field: str = "Data folder") -> Path:
     roots = (Path("/home"), Path("/mnt"), Path("/media"), data_root)
     if not any(resolved == root or root in resolved.parents for root in roots):
         raise PackageError(
-            f"{field} must be inside /home, /mnt, /media or the EthOS data folder", 400,
+            f"{field} must be inside /home, /mnt, /media or the EthOS data folder",
+            400,
         )
     if resolved in (Path("/home"), Path("/mnt"), Path("/media"), data_root):
         raise PackageError("Choose a folder below that path, not the root itself", 400)
@@ -517,14 +539,14 @@ def ensure_data_dir(path: Path, data: Optional[dict] = None) -> None:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise PackageError(
-            f"Cannot create the data folder {path}: {exc.strerror or exc}", 400,
+            f"Cannot create the data folder {path}: {exc.strerror or exc}",
+            400,
         ) from exc
     if created:
         try:
             path.chmod(0o775)
         except OSError:
-            logger.warning("Could not set permissions on the data folder %s", path,
-                           exc_info=True)
+            logger.warning("Could not set permissions on the data folder %s", path, exc_info=True)
     uid = (data or {}).get("uid")
     gid = (data or {}).get("gid")
     if uid is None and gid is None:
@@ -545,13 +567,11 @@ def ensure_data_dir(path: Path, data: Optional[dict] = None) -> None:
         if proc.returncode != 0:
             raise OSError((proc.stderr or proc.stdout or "setfacl failed").strip())
     except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("Could not set the data folder ACL on %s (%s); "
-                       "falling back to world-writable", path, exc)
+        logger.warning("Could not set the data folder ACL on %s (%s); falling back to world-writable", path, exc)
         try:
             path.chmod(0o777)
         except OSError:
-            logger.warning("Could not relax permissions on %s either", path,
-                           exc_info=True)
+            logger.warning("Could not relax permissions on %s either", path, exc_info=True)
         return
     logger.info("Data folder %s: ACL granted to uid=%s gid=%s", path, uid, gid)
 
@@ -570,14 +590,12 @@ def _compose_env(pkg_id: Optional[str] = None) -> dict:
 
 
 def _run_compose(cmd: list[str], env: Optional[dict] = None):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=COMPOSE_TIMEOUT,
-                          env=env)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=COMPOSE_TIMEOUT, env=env)
 
 
 async def _compose(pkg_id: str, path: Path, *args: str) -> None:
     try:
-        proc = await asyncio.to_thread(_run_compose, _compose_cmd(pkg_id, path, *args),
-                                       _compose_env(pkg_id))
+        proc = await asyncio.to_thread(_run_compose, _compose_cmd(pkg_id, path, *args), _compose_env(pkg_id))
     except FileNotFoundError:
         raise PackageError("docker is not available on this system", 503) from None
     except subprocess.TimeoutExpired as exc:
@@ -599,7 +617,9 @@ async def _status(pkg_id: str, record: Optional[dict] = None) -> str:
         proc = await asyncio.to_thread(
             subprocess.run,
             ["docker", "compose", "ls", "--format", "json"],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
     except Exception:
         logger.debug("compose status probe failed for %s", pkg_id, exc_info=True)
@@ -677,14 +697,16 @@ async def compose_ps(pkg_id: str, *, is_compose: Optional[bool] = None) -> list[
         proc = await asyncio.to_thread(
             subprocess.run,
             ["docker", "compose", "-p", pkg_id, "ps", "--format", "json", "--all"],
-            capture_output=True, text=True, timeout=20, env=_compose_env(pkg_id),
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=_compose_env(pkg_id),
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("compose ps probe failed for %s", pkg_id, exc_info=True)
         return []
     if proc.returncode != 0:
-        logger.debug("compose ps for %s exited %s: %s", pkg_id, proc.returncode,
-                     (proc.stderr or "").strip()[:200])
+        logger.debug("compose ps for %s exited %s: %s", pkg_id, proc.returncode, (proc.stderr or "").strip()[:200])
         return []
     return [_container_view(row) for row in _parse_compose_ps(proc.stdout)]
 
@@ -731,8 +753,7 @@ async def repair_ports(pkg_id: str) -> dict:
     changed = bool(new_port and new_port != previous_port)
     if changed or plan.get("remap"):
         packages_store.replace_package(updated)
-    _, gpu_state = _write_overrides(pkg_id, updated, target,
-                                    plan.get("mapping") or _recorded_mapping(updated))
+    _, gpu_state = _write_overrides(pkg_id, updated, target, plan.get("mapping") or _recorded_mapping(updated))
     gpu_changed = gpu_state != (record.get("gpu") or {})
     if gpu_state and (gpu_changed or updated.get("gpu") != gpu_state):
         updated = {**updated, "gpu": gpu_state}
@@ -745,9 +766,14 @@ async def repair_ports(pkg_id: str) -> dict:
         raise PackageError("Only compose packages publish a host port", 400)
     recreated = changed or gpu_changed
     await _compose(pkg_id, path, "up", "-d", *(["--force-recreate"] if recreated else []))
-    logger.info("Package %s: port/device repair finished (port %s -> %s, gpu=%s, recreated=%s)",
-                pkg_id, previous_port, new_port or previous_port,
-                gpu_state.get("applied"), recreated)
+    logger.info(
+        "Package %s: port/device repair finished (port %s -> %s, gpu=%s, recreated=%s)",
+        pkg_id,
+        previous_port,
+        new_port or previous_port,
+        gpu_state.get("applied"),
+        recreated,
+    )
     return {
         "id": pkg_id,
         "name": updated.get("name") or pkg_id,
@@ -797,8 +823,7 @@ async def compose_action(pkg_id: str, action: str) -> dict:
     return {"ok": True, "package": pkg_id, "action": action, "status": status}
 
 
-async def apply_settings(pkg_id: str, provided: Optional[dict],
-                         data_dir: Optional[str] = None) -> dict:
+async def apply_settings(pkg_id: str, provided: Optional[dict], data_dir: Optional[str] = None) -> dict:
     """Store new settings for an installed package and recreate its service.
 
     The compose file is signed and fixed; the values reach it through the
@@ -816,17 +841,20 @@ async def apply_settings(pkg_id: str, provided: Optional[dict],
     if not definitions and not record.get("data"):
         raise PackageError("This package has no configurable settings", 400)
     values = validate_settings_values(
-        definitions, provided, base=record.get("settings_values") or {},
+        definitions,
+        provided,
+        base=record.get("settings_values") or {},
     )
     current_dir = str(record.get("data_dir") or "") if record.get("data") else ""
     new_dir = current_dir
     if record.get("data") and data_dir is not None:
         new_dir = str(validate_data_dir(pkg_id, data_dir))
     if values == (record.get("settings_values") or {}) and new_dir == current_dir:
-        return {"ok": True, "package": pkg_id, "changed": False, "recreated": False,
-                "data_dir": new_dir or None}
+        return {"ok": True, "package": pkg_id, "changed": False, "recreated": False, "data_dir": new_dir or None}
     updated = {
-        **record, "settings_values": values, "settings_updated_at": _now_iso(),
+        **record,
+        "settings_values": values,
+        "settings_updated_at": _now_iso(),
     }
     if record.get("data"):
         updated["data_dir"] = new_dir
@@ -838,18 +866,25 @@ async def apply_settings(pkg_id: str, provided: Optional[dict],
     if _runtime(record) == "compose" and path is not None:
         await _compose(pkg_id, path, "up", "-d", "--force-recreate")
         recreated = True
-    emit_event("info", f"Package {record.get('name') or pkg_id} settings updated",
-               "Service recreated with the new settings" if recreated
-               else "Settings stored", source="packages")
-    logger.info("Package %s: settings updated (%d field(s), data folder changed=%s, recreated=%s)",
-                pkg_id, len(values), new_dir != current_dir, recreated)
-    return {"ok": True, "package": pkg_id, "changed": True, "recreated": recreated,
-            "data_dir": new_dir or None}
+    emit_event(
+        "info",
+        f"Package {record.get('name') or pkg_id} settings updated",
+        "Service recreated with the new settings" if recreated else "Settings stored",
+        source="packages",
+    )
+    logger.info(
+        "Package %s: settings updated (%d field(s), data folder changed=%s, recreated=%s)",
+        pkg_id,
+        len(values),
+        new_dir != current_dir,
+        recreated,
+    )
+    return {"ok": True, "package": pkg_id, "changed": True, "recreated": recreated, "data_dir": new_dir or None}
 
 
-def _write_record(manifest: dict, entry: dict, source: dict,
-                  settings: Optional[dict] = None,
-                  data_dir: Optional[Path] = None) -> dict:
+def _write_record(
+    manifest: dict, entry: dict, source: dict, settings: Optional[dict] = None, data_dir: Optional[Path] = None
+) -> dict:
     record = {
         **manifest,
         "runtime": manifest.get("runtime") or "compose",
@@ -874,13 +909,13 @@ def _installable(manifest: dict) -> str:
     for conflict_id in manifest.get("conflicts") or []:
         if conflict_id in installed:
             raise PackageError(
-                f"Conflicts with installed package {conflict_id!r}; uninstall it first", 409,
+                f"Conflicts with installed package {conflict_id!r}; uninstall it first",
+                409,
             )
     return ""
 
 
-async def _ensure_requires(manifest: dict, job_id: str, seen: set[str] | None = None,
-                           depth: int = 0) -> None:
+async def _ensure_requires(manifest: dict, job_id: str, seen: set[str] | None = None, depth: int = 0) -> None:
     """Install missing dependencies depth-first, before the package itself.
 
     Dependencies are installed inside the caller's job so the UI shows one
@@ -932,7 +967,10 @@ async def _stage_package(entry: dict, job_id: str, manifest: Optional[dict] = No
     done_units = 0
     if compose:
         await asyncio.to_thread(
-            package_repo.download_verified, compose["url"], staging / "docker-compose.yml", compose["sha256"],
+            package_repo.download_verified,
+            compose["url"],
+            staging / "docker-compose.yml",
+            compose["sha256"],
         )
         done_units += 1
         package_jobs.set_step_progress(job_id, "download", done_units, total_units)
@@ -940,7 +978,9 @@ async def _stage_package(entry: dict, job_id: str, manifest: Optional[dict] = No
     elif manifest.get("compose_url"):
         # Legacy v1 package from an unverified source: no checksum available.
         data = await asyncio.to_thread(
-            package_repo.get_bytes, manifest["compose_url"], settings.PACKAGES_MAX_ARTIFACT_BYTES,
+            package_repo.get_bytes,
+            manifest["compose_url"],
+            settings.PACKAGES_MAX_ARTIFACT_BYTES,
         )
         (staging / "docker-compose.yml").write_bytes(data)
         done_units += 1
@@ -961,9 +1001,12 @@ async def _stage_package(entry: dict, job_id: str, manifest: Optional[dict] = No
     package_jobs.set_step(job_id, "policy")
     compose_path = staging / "docker-compose.yml"
     if compose_path.exists():
-        warnings = enforce_compose(compose_path.read_text(encoding="utf-8"),
-                                  manifest.get("capabilities"),
-                                  package_id=pkg_id, package_dir=staging)
+        warnings = enforce_compose(
+            compose_path.read_text(encoding="utf-8"),
+            manifest.get("capabilities"),
+            package_id=pkg_id,
+            package_dir=staging,
+        )
         for warning in warnings:
             package_jobs.log(job_id, f"warning: {warning}")
         package_jobs.log(job_id, "compose policy passed")
@@ -981,8 +1024,9 @@ async def _stage_package(entry: dict, job_id: str, manifest: Optional[dict] = No
     return manifest, staging
 
 
-async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = None,
-                  data_dir: Optional[str] = None) -> None:
+async def install(
+    entry: dict, job_id: str, provided_settings: Optional[dict] = None, data_dir: Optional[str] = None
+) -> None:
     pkg_id = entry["id"]
     if packages_store.get_package(pkg_id):
         raise PackageError(f"Package {pkg_id!r} is already installed", 409)
@@ -1020,8 +1064,8 @@ async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = 
         if not _discard_dir(target, "stale"):
             shutil.rmtree(staging, ignore_errors=True)
             raise PackageError(
-                f"Stale package directory for {pkg_id} cannot be moved aside; "
-                f"remove {target} on the NAS and retry", 409,
+                f"Stale package directory for {pkg_id} cannot be moved aside; remove {target} on the NAS and retry",
+                409,
             )
         package_jobs.log(job_id, "warning: reclaimed a stale package directory")
     packages_store.APPS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1036,8 +1080,7 @@ async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = 
         if plan.get("remap"):
             package_jobs.log(
                 job_id,
-                f"host port {next(iter(plan['remap']))} is busy — "
-                f"publishing on {plan['ui']} instead",
+                f"host port {next(iter(plan['remap']))} is busy — publishing on {plan['ui']} instead",
             )
         # Hardware passthrough (capabilities `dri`/`nvidia`) lives in the same
         # generated override: a GPU-less host simply gets no devices.
@@ -1077,9 +1120,12 @@ async def install(entry: dict, job_id: str, provided_settings: Optional[dict] = 
         package_jobs.log(job_id, "package service started")
 
     package_jobs.set_step(job_id, "done", "done")
-    emit_event("success", f"Package {manifest['name']} installed",
-               f"v{manifest['version']} from {source.get('name') or source.get('url', '')}",
-               source="packages")
+    emit_event(
+        "success",
+        f"Package {manifest['name']} installed",
+        f"v{manifest['version']} from {source.get('name') or source.get('url', '')}",
+        source="packages",
+    )
 
 
 async def update(pkg_id: str, job_id: str) -> None:
@@ -1119,8 +1165,10 @@ async def update(pkg_id: str, job_id: str) -> None:
     # Keep the user's settings across an update; a new manifest may add or drop
     # fields, so only declared keys survive and defaults fill the gaps.
     preserved = validate_settings_values(
-        _settings_defs(manifest), None,
-        base=(old or {}).get("settings_values") or {}, enforce_required=False,
+        _settings_defs(manifest),
+        None,
+        base=(old or {}).get("settings_values") or {},
+        enforce_required=False,
     )
     data_folder: Optional[Path] = None
     if manifest.get("data"):
@@ -1129,8 +1177,9 @@ async def update(pkg_id: str, job_id: str) -> None:
         try:
             data_folder = validate_data_dir(pkg_id, old.get("data_dir"))
         except PackageError:
-            logger.warning("Stored data folder for %s is not allowed any more; using the default",
-                           pkg_id, exc_info=True)
+            logger.warning(
+                "Stored data folder for %s is not allowed any more; using the default", pkg_id, exc_info=True
+            )
             data_folder = default_data_dir(pkg_id)
     record = _write_record(manifest, entry, source, preserved, data_folder)
     compose_path = compose_file(pkg_id)
@@ -1140,8 +1189,7 @@ async def update(pkg_id: str, job_id: str) -> None:
         if plan.get("remap"):
             package_jobs.log(
                 job_id,
-                f"host port {next(iter(plan['remap']))} is busy — "
-                f"publishing on {plan['ui']} instead",
+                f"host port {next(iter(plan['remap']))} is busy — publishing on {plan['ui']} instead",
             )
         _, gpu_state = _write_overrides(pkg_id, record, target, plan.get("mapping") or {})
         for line in package_gpu.log_lines(manifest, gpu_state):
@@ -1186,12 +1234,17 @@ async def update(pkg_id: str, job_id: str) -> None:
 
     shutil.rmtree(backup, ignore_errors=True)
     package_jobs.set_step(job_id, "done", "done")
-    emit_event("success", f"Package {manifest['name']} updated",
-               f"v{old.get('version')} → v{manifest['version']}", source="packages")
+    emit_event(
+        "success",
+        f"Package {manifest['name']} updated",
+        f"v{old.get('version')} → v{manifest['version']}",
+        source="packages",
+    )
 
 
-async def uninstall(pkg_id: str, job_id: str, remove_volumes: bool = False,
-                    remove_images: bool = False, remove_data: bool = False) -> None:
+async def uninstall(
+    pkg_id: str, job_id: str, remove_volumes: bool = False, remove_images: bool = False, remove_data: bool = False
+) -> None:
     """Tear the package down.
 
     ``remove_volumes`` deletes the named volumes declared by the package's
@@ -1207,12 +1260,14 @@ async def uninstall(pkg_id: str, job_id: str, remove_volumes: bool = False,
     if not record:
         raise PackageError(f"Package {pkg_id!r} not found", 404)
     dependents = [
-        str(p.get("id")) for p in packages_store.load_installed()
+        str(p.get("id"))
+        for p in packages_store.load_installed()
         if pkg_id in (p.get("requires") or []) and p.get("id") != pkg_id
     ]
     if dependents:
         raise PackageError(
-            f"Package {pkg_id!r} is required by {', '.join(dependents)}; uninstall those first", 409,
+            f"Package {pkg_id!r} is required by {', '.join(dependents)}; uninstall those first",
+            409,
         )
     path = compose_file(pkg_id)
     package_jobs.set_step(job_id, "stop")
@@ -1249,8 +1304,7 @@ async def uninstall(pkg_id: str, job_id: str, remove_volumes: bool = False,
             try:
                 state_dir = validate_data_dir(pkg_id, str(record["data_dir"]))
             except PackageError:
-                logger.warning("Kept data folder %s for %s: path is no longer allowed",
-                               record.get("data_dir"), pkg_id)
+                logger.warning("Kept data folder %s for %s: path is no longer allowed", record.get("data_dir"), pkg_id)
         freed = packages_store.dir_size(state_dir)
         shutil.rmtree(state_dir, ignore_errors=True)
         if state_dir.exists():
@@ -1264,17 +1318,20 @@ async def uninstall(pkg_id: str, job_id: str, remove_volumes: bool = False,
         core = package_state.purge(pkg_id)
         if core:
             if core["errors"]:
-                package_jobs.log(job_id, f"warning: could not delete {len(core['errors'])} "
-                                 f"core state path(s) for {pkg_id}")
-                logger.warning("Core state for %s was only partly deleted: %s",
-                               pkg_id, core["errors"])
+                package_jobs.log(
+                    job_id, f"warning: could not delete {len(core['errors'])} core state path(s) for {pkg_id}"
+                )
+                logger.warning("Core state for %s was only partly deleted: %s", pkg_id, core["errors"])
             else:
-                package_jobs.log(job_id,
-                                 f"deleted {core['size_bytes']} bytes of {core['label']}")
+                package_jobs.log(job_id, f"deleted {core['size_bytes']} bytes of {core['label']}")
     package_jobs.set_step(job_id, "done", "done")
     kept = [] if remove_data else ["app data"]
     if not remove_volumes:
         kept.append("volume data")
     summary = "all package data deleted" if not kept else f"kept {' and '.join(kept)}"
-    emit_event("info", f"Package {record.get('name', pkg_id)} uninstalled",
-               f"v{record.get('version', '')} · {summary}", source="packages")
+    emit_event(
+        "info",
+        f"Package {record.get('name', pkg_id)} uninstalled",
+        f"v{record.get('version', '')} · {summary}",
+        source="packages",
+    )

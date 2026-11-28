@@ -21,11 +21,26 @@ _PKG_ID_CORE = r"[a-z0-9][a-z0-9-]{1,48}[a-z0-9]"
 PKG_ID_RE = re.compile(rf"^{_PKG_ID_CORE}$")
 
 # Ids that would collide with other subsystems' directories under DATA_DIR.
-RESERVED_IDS = frozenset({
-    "packages", "trash", "snapshots", "thumbnails", "temp_chunks", "wallpapers",
-    "git", "models", "temp", "users", "desktop_layouts", "app_events",
-    "agent-cache", "backup", "shares", "share_links",
-})
+RESERVED_IDS = frozenset(
+    {
+        "packages",
+        "trash",
+        "snapshots",
+        "thumbnails",
+        "temp_chunks",
+        "wallpapers",
+        "git",
+        "models",
+        "temp",
+        "users",
+        "desktop_layouts",
+        "app_events",
+        "agent-cache",
+        "backup",
+        "shares",
+        "share_links",
+    }
+)
 
 REQUIRED_MANIFEST_FIELDS = ("id", "name", "version", "description", "icon")
 REQUIRED_INDEX_FIELDS = ("id", "name", "version", "description", "icon", "manifest_url")
@@ -119,7 +134,8 @@ def check_min_ethos_version(manifest: dict, current: str) -> None:
     minimum = str(manifest.get("min_ethos_version") or "").strip()
     if minimum and version_gt(minimum, current):
         raise PackageError(
-            f"Requires EthOS {minimum} or newer (running {current})", 409,
+            f"Requires EthOS {minimum} or newer (running {current})",
+            409,
         )
 
 
@@ -165,12 +181,14 @@ def _validate_files(files: Any) -> list[dict]:
             raise PackageError("each files entry must be an object", 400)
         url = item.get("url")
         require_https(url, "files.url")
-        out.append({
-            "url": url,
-            "sha256": require_sha256(item.get("sha256"), "files.sha256"),
-            "path": safe_relative_path(item.get("path"), "files.path"),
-            "mode": int(item.get("mode") or 0o644) & 0o777,
-        })
+        out.append(
+            {
+                "url": url,
+                "sha256": require_sha256(item.get("sha256"), "files.sha256"),
+                "path": safe_relative_path(item.get("path"), "files.path"),
+                "mode": int(item.get("mode") or 0o644) & 0o777,
+            }
+        )
     return out
 
 
@@ -254,8 +272,17 @@ def _validate_ui(value: Any) -> Optional[dict]:
             ribbon = {"entry": ribbon_entry, "title": title or None}
     elif value.get("ribbon") is not None:
         raise PackageError("ui.ribbon requires ui.mode 'native'", 400)
-    return {"mode": mode, "entry": entry, "port": port or None, "path": path, "scheme": scheme,
-            "expose": expose, "auth": auth or None, "embed": embed, "ribbon": ribbon}
+    return {
+        "mode": mode,
+        "entry": entry,
+        "port": port or None,
+        "path": path,
+        "scheme": scheme,
+        "expose": expose,
+        "auth": auth or None,
+        "embed": embed,
+        "ribbon": ribbon,
+    }
 
 
 # ── User-supplied settings (optional, compose packages) ────────────────────
@@ -267,11 +294,27 @@ def _validate_ui(value: Any) -> Optional[dict]:
 SETTING_TYPES = ("text", "password")
 _SETTING_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _SETTING_ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
-_RESERVED_SETTING_ENV = frozenset({
-    "PATH", "HOME", "SHELL", "IFS", "TMPDIR", "USER", "LOGNAME",
-})
+_RESERVED_SETTING_ENV = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "SHELL",
+        "IFS",
+        "TMPDIR",
+        "USER",
+        "LOGNAME",
+    }
+)
 _RESERVED_SETTING_ENV_PREFIXES = (
-    "ETHOS_", "DOCKER_", "COMPOSE_", "LD_", "PYTHON", "BASH", "PERL", "RUBY", "GIT_",
+    "ETHOS_",
+    "DOCKER_",
+    "COMPOSE_",
+    "LD_",
+    "PYTHON",
+    "BASH",
+    "PERL",
+    "RUBY",
+    "GIT_",
 )
 
 
@@ -322,16 +365,18 @@ def _validate_settings(value: Any) -> list[dict]:
         if default and not min_length <= len(default) <= max_length:
             # A default that the validator would reject makes every install fail.
             raise PackageError(f"settings default for {key!r} violates its length limits", 400)
-        out.append({
-            "key": key,
-            "env": env,
-            "label": str(item.get("label") or key).strip()[:80],
-            "type": setting_type,
-            "default": default,
-            "required": bool(item.get("required", False)),
-            "min_length": min_length,
-            "max_length": max_length,
-        })
+        out.append(
+            {
+                "key": key,
+                "env": env,
+                "label": str(item.get("label") or key).strip()[:80],
+                "type": setting_type,
+                "default": default,
+                "required": bool(item.get("required", False)),
+                "min_length": min_length,
+                "max_length": max_length,
+            }
+        )
         keys.add(key)
         envs.add(env)
     return out
@@ -400,7 +445,8 @@ def _validate_wheels(value: Any) -> list[dict]:
         filename = str(item.get("filename") or "").strip()
         if not _WHEEL_FILE_RE.fullmatch(filename):
             raise PackageError(
-                f"python.wheels filename must be a bare .whl file name: {filename!r}", 400,
+                f"python.wheels filename must be a bare .whl file name: {filename!r}",
+                400,
             )
         if filename in seen:
             raise PackageError(f"Duplicate wheel filename: {filename}", 400)
@@ -408,15 +454,18 @@ def _validate_wheels(value: Any) -> list[dict]:
         arch = str(item.get("arch") or "").strip().lower()
         if arch not in PACKAGE_WHEEL_ARCHES:
             raise PackageError(
-                f"python.wheels arch must be one of {', '.join(sorted(PACKAGE_WHEEL_ARCHES))}", 400,
+                f"python.wheels arch must be one of {', '.join(sorted(PACKAGE_WHEEL_ARCHES))}",
+                400,
             )
         require_https(item.get("url"), "python.wheels.url")
-        out.append({
-            "url": item.get("url"),
-            "sha256": require_sha256(item.get("sha256"), "python.wheels.sha256"),
-            "arch": arch,
-            "filename": filename,
-        })
+        out.append(
+            {
+                "url": item.get("url"),
+                "sha256": require_sha256(item.get("sha256"), "python.wheels.sha256"),
+                "arch": arch,
+                "filename": filename,
+            }
+        )
     return out
 
 
@@ -469,7 +518,8 @@ def _validate_runtime(manifest: dict) -> str:
     if declared:
         if declared not in PACKAGE_RUNTIMES:
             raise PackageError(
-                f"Unknown runtime: {declared} (known: {', '.join(sorted(PACKAGE_RUNTIMES))})", 400,
+                f"Unknown runtime: {declared} (known: {', '.join(sorted(PACKAGE_RUNTIMES))})",
+                400,
             )
         return declared
     # Infer: a compose file means the compose runtime, everything else is a
@@ -509,16 +559,14 @@ def validate_manifest(manifest: Any, *, allow_legacy: bool = False) -> dict:
     if compose is None and not legacy_compose and not manifest.get("files"):
         raise PackageError("Package must declare compose or files", 400)
 
-    capabilities = manifest.get("capabilities") or (
-        ["compose"] if (compose or manifest.get("compose_url")) else []
-    )
+    capabilities = manifest.get("capabilities") or (["compose"] if (compose or manifest.get("compose_url")) else [])
     if not isinstance(capabilities, list) or not all(isinstance(item, str) for item in capabilities):
         raise PackageError("capabilities must be a list of strings", 400)
     unknown = sorted({item for item in capabilities if item not in PACKAGE_CAPABILITIES})
     if unknown:
         raise PackageError(
-            f"Unknown package capability: {unknown[0]} "
-            f"(known: {', '.join(sorted(PACKAGE_CAPABILITIES))})", 400,
+            f"Unknown package capability: {unknown[0]} (known: {', '.join(sorted(PACKAGE_CAPABILITIES))})",
+            400,
         )
     capabilities = list(dict.fromkeys(capabilities))
 
@@ -528,8 +576,8 @@ def validate_manifest(manifest: Any, *, allow_legacy: bool = False) -> dict:
     unknown = sorted({item for item in system_requires if item not in PACKAGE_SYSTEM_REQUIRES})
     if unknown:
         raise PackageError(
-            f"Unknown system requirement: {unknown[0]} "
-            f"(known: {', '.join(sorted(PACKAGE_SYSTEM_REQUIRES))})", 400,
+            f"Unknown system requirement: {unknown[0]} (known: {', '.join(sorted(PACKAGE_SYSTEM_REQUIRES))})",
+            400,
         )
     system_requires = list(dict.fromkeys(system_requires))
     if (compose or legacy_compose) and "docker" not in system_requires:
@@ -641,14 +689,16 @@ def validate_index(index: Any) -> dict:
         manifest_sha = entry.get("manifest_sha256")
         if manifest_sha:
             require_sha256(manifest_sha, "manifest_sha256")
-        out.append({
-            **entry,
-            "schema": int(entry.get("schema") or index.get("schema") or 1),
-            "manifest_sha256": str(manifest_sha).lower() if manifest_sha else None,
-            "channel": str(entry.get("channel") or "stable").lower(),
-            "requires": entry.get("requires") or [],
-            "screenshots": [s for s in (entry.get("screenshots") or []) if is_https(s)][:8],
-        })
+        out.append(
+            {
+                **entry,
+                "schema": int(entry.get("schema") or index.get("schema") or 1),
+                "manifest_sha256": str(manifest_sha).lower() if manifest_sha else None,
+                "channel": str(entry.get("channel") or "stable").lower(),
+                "requires": entry.get("requires") or [],
+                "screenshots": [s for s in (entry.get("screenshots") or []) if is_https(s)][:8],
+            }
+        )
     return {
         "schema": int(index.get("schema") or 1),
         "name": str(index.get("name") or "Package repository")[:160],

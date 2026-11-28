@@ -30,10 +30,8 @@ STEP_PLANS: dict[str, tuple[str, ...]] = {
     # `wheels` downloads the offline wheelhouse, `venv` builds the private
     # environment and installs it (runtime 'venv' packages only; the steps are
     # skipped for compose packages, the plan is shared to keep progress stable).
-    "install": ("requires", "verify", "download", "policy", "wheels", "deps", "deploy", "venv",
-                "start", "done"),
-    "update": ("requires", "verify", "download", "policy", "wheels", "deps", "backup", "venv",
-               "start", "done"),
+    "install": ("requires", "verify", "download", "policy", "wheels", "deps", "deploy", "venv", "start", "done"),
+    "update": ("requires", "verify", "download", "policy", "wheels", "deps", "backup", "venv", "start", "done"),
     "uninstall": ("stop", "images", "sysdeps", "cleanup", "data", "done"),
     # Host provisioning (Docker Engine). Not tied to a package id: the owner id
     # is `system:docker`, which cannot collide with a package id.
@@ -52,8 +50,7 @@ def create(kind: str, package_id: str) -> dict:
         if not pressure_guard.heavy_work_allowed():
             # Building a venv / pulling images is the heaviest thing the core
             # does; refuse while the box is under hard memory pressure.
-            raise PackageError(
-                "The NAS is low on memory — try again in a moment", 503)
+            raise PackageError("The NAS is low on memory — try again in a moment", 503)
         job_id = f"job_{uuid.uuid4().hex[:12]}"
         plan = STEP_PLANS.get(kind, ())
         job = {
@@ -108,7 +105,7 @@ def log(job_id: str | None, message: str) -> None:
             return
         job["log"].append(line)
         if len(job["log"]) > _MAX_LOG:
-            del job["log"][0: len(job["log"]) - _MAX_LOG]
+            del job["log"][0 : len(job["log"]) - _MAX_LOG]
 
 
 def set_step(job_id: str, name: str, status: str = "running") -> None:
@@ -162,8 +159,15 @@ def start(job: dict, work: Callable[[str], Awaitable[None]]) -> bool:
             kind = str(job.get("kind") or "job")
             try:
                 await work(job_id)
-                update(job_id, status="success", step="done", progress=100,
-                       step_index=plan_size, step_total=plan_size, finished_at=_now())
+                update(
+                    job_id,
+                    status="success",
+                    step="done",
+                    progress=100,
+                    step_index=plan_size,
+                    step_total=plan_size,
+                    finished_at=_now(),
+                )
                 _record_outcome(package_id, kind, "info", f"{kind} succeeded")
             except PackageError as exc:
                 logger.error("Package job %s failed: %s", job_id, exc.detail)

@@ -20,8 +20,15 @@ from pydantic import BaseModel
 from backend.config import settings
 from backend.routers.auth import require_admin
 from backend.services import (
-    json_store, package_cleanup, package_gpu, package_installer, package_jobs, package_repo,
-    package_state, packages_store, system_deps,
+    json_store,
+    package_cleanup,
+    package_gpu,
+    package_installer,
+    package_jobs,
+    package_repo,
+    package_state,
+    packages_store,
+    system_deps,
 )
 from backend.services.notifications_service import emit_event
 from backend.services.package_schema import PackageError, check_pkg_id, safe_relative_path
@@ -38,11 +45,23 @@ PKG_ICON_RE = re.compile(rf"^pkg-{_PKG_ID_CORE}$")
 
 # Must match frontend/static/core/registry.js and desktop-layout.js.
 APP_REGISTRY_KEYS = [
-    "overview", "storage", "files", "trash",
-    "terminal", "network", "security", "services", "settings",
-    "processes", "logs", "packages", "smart",
+    "overview",
+    "storage",
+    "files",
+    "trash",
+    "terminal",
+    "network",
+    "security",
+    "services",
+    "settings",
+    "processes",
+    "logs",
+    "packages",
+    "smart",
     "cron",
-    "search", "shared-links", "sharing",
+    "search",
+    "shared-links",
+    "sharing",
 ]
 
 # Built-in apps that moved to Packages. Existing per-user layouts keep the
@@ -136,6 +155,7 @@ class PackagesSettingsRequest(BaseModel):
 
 # ── Installed packages / desktop icons ──────────────────────────────────────
 
+
 def _record_view(pkg: dict) -> dict:
     """Installed record for API clients: secret settings never leave the NAS.
 
@@ -147,7 +167,8 @@ def _record_view(pkg: dict) -> dict:
     defs = pkg.get("settings") or []
     masked = {
         str(d["key"]): "" if d.get("type") == "password" else str(values.get(str(d["key"]), ""))
-        for d in defs if isinstance(d, dict) and d.get("key")
+        for d in defs
+        if isinstance(d, dict) and d.get("key")
     }
     view = {**pkg, "settings_values": masked}
     # Absolute host paths (and the DATA_DIR default) are not user-facing; the
@@ -187,6 +208,7 @@ async def desktop_icons() -> list[dict]:
 
 
 # ── Catalog / sources ───────────────────────────────────────────────────────
+
 
 def _packages_settings_view() -> dict:
     data = packages_store.load_settings()
@@ -229,8 +251,11 @@ async def list_registry_sources() -> dict:
 async def add_registry_source(req: AddSourceRequest) -> dict:
     try:
         sources = package_repo.add_source(
-            req.url, name=req.name, public_key=req.public_key,
-            trust=req.trust, enabled=req.enabled,
+            req.url,
+            name=req.name,
+            public_key=req.public_key,
+            trust=req.trust,
+            enabled=req.enabled,
         )
     except PackageError as exc:
         raise _http_error(exc) from None
@@ -264,9 +289,12 @@ async def browse_registry(q: str = "", category: str = "", channel: str = "") ->
     packages = data["packages"]
     if q:
         needle = q.lower()
-        packages = [p for p in packages if needle in " ".join(
-            str(p.get(k, "")) for k in ("id", "name", "description", "category", "author")
-        ).lower()]
+        packages = [
+            p
+            for p in packages
+            if needle
+            in " ".join(str(p.get(k, "")) for k in ("id", "name", "description", "category", "author")).lower()
+        ]
     if category:
         packages = [p for p in packages if p.get("category") == category]
     if channel:
@@ -292,9 +320,12 @@ async def catalog_detail(pkg_id: str) -> dict:
     # Preflight for the Install button: which host binaries the package needs and
     # whether this NAS has them. Probing is a few stat() calls, no subprocess —
     # except the cached `docker info` used for the NVIDIA runtime check.
-    return {**entry, "manifest": manifest,
-            "system_status": system_deps.probe(manifest.get("system_requires")),
-            "gpu_status": package_gpu.summary(manifest) if package_gpu.requested(manifest) else None}
+    return {
+        **entry,
+        "manifest": manifest,
+        "system_status": system_deps.probe(manifest.get("system_requires")),
+        "gpu_status": package_gpu.summary(manifest) if package_gpu.requested(manifest) else None,
+    }
 
 
 @router.get("/updates")
@@ -321,12 +352,15 @@ def _data_inventory(pkg_id: str) -> dict:
         try:
             path = package_installer.validate_data_dir(pkg_id, str(record["data_dir"]))
         except PackageError:
-            logger.warning("Ignoring an invalid data folder for %s: %s",
-                           pkg_id, record.get("data_dir"))
+            logger.warning("Ignoring an invalid data folder for %s: %s", pkg_id, record.get("data_dir"))
     package_exists = path.exists()
-    inventory = {"path": str(path), "paths": [str(path)], "exists": package_exists,
-                 "size_bytes": packages_store.dir_size(path),
-                 "has_package_data": package_exists}
+    inventory = {
+        "path": str(path),
+        "paths": [str(path)],
+        "exists": package_exists,
+        "size_bytes": packages_store.dir_size(path),
+        "has_package_data": package_exists,
+    }
     core = package_state.describe(pkg_id)
     if core:
         inventory["label"] = core["label"]
@@ -365,8 +399,9 @@ async def list_orphan_data() -> dict:
             modified = int(entry.stat().st_mtime)
         except OSError:
             modified = 0
-        orphans.append({"id": entry.name, "path": str(entry),
-                        "size_bytes": packages_store.dir_size(entry), "modified": modified})
+        orphans.append(
+            {"id": entry.name, "path": str(entry), "size_bytes": packages_store.dir_size(entry), "modified": modified}
+        )
     # UI-only packages keep their state in the core, not in packages/data/<id>.
     by_id = {item["id"]: item for item in orphans}
     for pkg_id in package_state.known_packages():
@@ -384,9 +419,16 @@ async def list_orphan_data() -> dict:
             item["label"] = core["label"]
             item["modified"] = max(int(item.get("modified") or 0), int(core["modified"]))
             continue
-        orphans.append({"id": pkg_id, "path": core["path"], "core": True,
-                        "size_bytes": core["size_bytes"], "modified": core["modified"],
-                        "label": core["label"]})
+        orphans.append(
+            {
+                "id": pkg_id,
+                "path": core["path"],
+                "core": True,
+                "size_bytes": core["size_bytes"],
+                "modified": core["modified"],
+                "label": core["label"],
+            }
+        )
     return {"orphans": orphans, "total_bytes": sum(item["size_bytes"] for item in orphans)}
 
 
@@ -395,8 +437,7 @@ async def delete_orphan_data(pkg_id: str) -> dict:
     try:
         check_pkg_id(pkg_id)
         if packages_store.get_package(pkg_id):
-            raise PackageError(
-                f"Package {pkg_id!r} is installed; uninstall it with remove_data=1 instead", 409)
+            raise PackageError(f"Package {pkg_id!r} is installed; uninstall it with remove_data=1 instead", 409)
     except PackageError as exc:
         raise _http_error(exc) from None
     path = packages_store.data_dir(pkg_id)
@@ -410,13 +451,18 @@ async def delete_orphan_data(pkg_id: str) -> dict:
         if core["errors"]:
             raise HTTPException(500, "Could not delete every file in the core state")
     logger.info("Deleted orphan package data for %s (%d bytes)", pkg_id, freed)
-    emit_event("info", "Package data deleted",
-               f"{pkg_id}: removed {freed // 1024} KiB left behind by an uninstalled package",
-               source="packages", dedupe_key=f"pkg-orphan-purge:{pkg_id}:{freed}")
+    emit_event(
+        "info",
+        "Package data deleted",
+        f"{pkg_id}: removed {freed // 1024} KiB left behind by an uninstalled package",
+        source="packages",
+        dedupe_key=f"pkg-orphan-purge:{pkg_id}:{freed}",
+    )
     return {"deleted": pkg_id, "size_bytes": freed}
 
 
 # ── Jobs ────────────────────────────────────────────────────────────────────
+
 
 def _start_job(kind: str, pkg_id: str, work) -> dict:
     job = package_jobs.create(kind, pkg_id)
@@ -433,9 +479,9 @@ async def install_package(req: InstallRequest) -> dict:
             raise PackageError("Package is not available from the selected source", 409)
     except PackageError as exc:
         raise _http_error(exc) from None
-    return _start_job("install", req.package_id,
-                      lambda job_id: package_installer.install(
-                          entry, job_id, req.settings, req.data_dir))
+    return _start_job(
+        "install", req.package_id, lambda job_id: package_installer.install(entry, job_id, req.settings, req.data_dir)
+    )
 
 
 @router.get("/jobs")
@@ -460,12 +506,19 @@ async def bulk_uninstall_packages(req: BulkDeleteRequest) -> dict:
             if not packages_store.get_package(pkg_id):
                 errors.append({"id": pkg_id, "error": "not installed"})
                 continue
-            jobs.append(_start_job(
-                "uninstall", pkg_id,
-                lambda job_id, pid=pkg_id: package_installer.uninstall(
-                    pid, job_id, req.remove_volumes, req.remove_images, req.remove_data,
-                ),
-            ))
+            jobs.append(
+                _start_job(
+                    "uninstall",
+                    pkg_id,
+                    lambda job_id, pid=pkg_id: package_installer.uninstall(
+                        pid,
+                        job_id,
+                        req.remove_volumes,
+                        req.remove_images,
+                        req.remove_data,
+                    ),
+                )
+            )
         except (PackageError, HTTPException) as exc:
             errors.append({"id": pkg_id, "error": getattr(exc, "detail", str(exc))})
     return {"ok": True, "jobs": jobs, "errors": errors}
@@ -473,8 +526,10 @@ async def bulk_uninstall_packages(req: BulkDeleteRequest) -> dict:
 
 # ── Desktop layout (per-user icon order/visibility) ─────────────────────────
 
+
 def _current_username(authorization: str) -> Optional[str]:
     from backend.routers.auth import _verify_token
+
     token = authorization.removeprefix("Bearer ").strip() if authorization else ""
     payload = _verify_token(token)
     if not payload:
@@ -532,8 +587,11 @@ async def get_desktop_layout(authorization: str = Header(default="")) -> dict:
         "visible": _filter_layout_ids(layout.get("visible") or []),
         "positions": _filter_positions(layout.get("positions") or {}),
     }
-    if migrated != {"order": layout.get("order"), "visible": layout.get("visible"),
-                     "positions": layout.get("positions")}:
+    if migrated != {
+        "order": layout.get("order"),
+        "visible": layout.get("visible"),
+        "positions": layout.get("positions"),
+    }:
         with _LAYOUTS_LOCK:
             data = _load_layouts()
             data[username] = migrated
@@ -554,11 +612,11 @@ async def save_desktop_layout(req: LayoutRequest, authorization: str = Header(de
         data = _load_layouts()
         data[username] = {"order": order, "visible": visible, "positions": positions}
         _LAYOUT_STORE.save(data)
-    return {"status": "ok", "username": username, "order": order,
-            "visible": visible, "positions": positions}
+    return {"status": "ok", "username": username, "order": order, "visible": visible, "positions": positions}
 
 
 # ── Per-package endpoints (catch-all — keep LAST) ───────────────────────────
+
 
 def _native_ui(pkg_id: str) -> tuple[dict, dict]:
     try:
@@ -594,8 +652,12 @@ async def package_ui_asset(pkg_id: str, asset_path: str) -> Response:
         raise HTTPException(413, "UI asset is too large")
     payload = target.read_bytes()
     media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-    return Response(content=payload, media_type=media_type,
-                    headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
 
 def _proxy_identity(request: Request) -> tuple[str, str]:
     """Username and role of the caller, taken from the verified JWT only."""
@@ -610,8 +672,8 @@ def _proxy_identity(request: Request) -> tuple[str, str]:
         raise HTTPException(status_code=401, detail="Authentication required")
     return username, role
 
-@router.api_route("/{pkg_id}/proxy/{proxy_path:path}",
-                  methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+
+@router.api_route("/{pkg_id}/proxy/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def package_ui_proxy(pkg_id: str, proxy_path: str, request: Request) -> Response:
     """Forward native package UI requests to the package's loopback service.
 
@@ -651,20 +713,35 @@ async def package_ui_proxy(pkg_id: str, proxy_path: str, request: Request) -> Re
         req = urllib.request.Request(url, data=body, headers=headers, method=request.method)
         try:
             with urllib.request.urlopen(req, timeout=1800) as resp:
-                return (resp.status, resp.read(16 * 1024 * 1024), resp.headers.get(
-                    "Content-Type", "application/octet-stream"), resp.headers.get("ETag", ""))
+                return (
+                    resp.status,
+                    resp.read(16 * 1024 * 1024),
+                    resp.headers.get("Content-Type", "application/octet-stream"),
+                    resp.headers.get("ETag", ""),
+                )
         except urllib.error.HTTPError as exc:
-            return (exc.code, exc.read(1024 * 1024), exc.headers.get(
-                "Content-Type", "application/json"), exc.headers.get("ETag", ""))
+            return (
+                exc.code,
+                exc.read(1024 * 1024),
+                exc.headers.get("Content-Type", "application/json"),
+                exc.headers.get("ETag", ""),
+            )
         except OSError as exc:
             # The exception text is a urllib/socket message ("<urlopen error [Errno 111]
             # Connection refused>"); the UI prints `detail` verbatim, so it must stay
             # a sentence the operator can act on. The real cause goes to the logs.
-            logger.error("Package service for %s is unreachable on 127.0.0.1:%s (%s %s): %s",
-                         pkg_id, port, request.method, path, exc, exc_info=True)
+            logger.error(
+                "Package service for %s is unreachable on 127.0.0.1:%s (%s %s): %s",
+                pkg_id,
+                port,
+                request.method,
+                path,
+                exc,
+                exc_info=True,
+            )
             raise PackageError(
-                f"The {pkg_id} service is not responding. Start it in Package Center "
-                "and try again.", 503) from None
+                f"The {pkg_id} service is not responding. Start it in Package Center and try again.", 503
+            ) from None
 
     try:
         status, payload, media_type, etag = await asyncio.to_thread(_call)
@@ -675,8 +752,7 @@ async def package_ui_proxy(pkg_id: str, proxy_path: str, request: Request) -> Re
         # Private + revalidate: only this account's browser may keep a copy, and
         # it must check with us before reusing it.
         response_headers = {"Cache-Control": "private, no-cache", "ETag": etag}
-    return Response(content=payload, status_code=status, media_type=media_type,
-                    headers=response_headers)
+    return Response(content=payload, status_code=status, media_type=media_type, headers=response_headers)
 
 
 @router.get("/{pkg_id}")
@@ -714,9 +790,15 @@ async def uninstall_preview(pkg_id: str) -> dict:
         if str(record.get("runtime") or "compose") == "venv":
             # A venv package owns no containers, volumes or images.
             return {
-                "id": pkg_id, "name": record.get("name") or pkg_id,
-                "containers": [], "volumes": [], "images": [], "shared_images": [],
-                "has_compose": False, "docker": True, "runtime": "venv",
+                "id": pkg_id,
+                "name": record.get("name") or pkg_id,
+                "containers": [],
+                "volumes": [],
+                "images": [],
+                "shared_images": [],
+                "has_compose": False,
+                "docker": True,
+                "runtime": "venv",
                 "data": _data_inventory(pkg_id),
             }
         inventory = await package_cleanup.preview(pkg_id, package_installer.compose_file(pkg_id))
@@ -762,13 +844,9 @@ async def get_package_settings(pkg_id: str) -> dict:
             raise PackageError(f"Package {pkg_id!r} not found", 404)
     except PackageError as exc:
         raise _http_error(exc) from None
-    defs = [d for d in (record.get("settings") or [])
-            if isinstance(d, dict) and d.get("key")]
+    defs = [d for d in (record.get("settings") or []) if isinstance(d, dict) and d.get("key")]
     values = record.get("settings_values") or {}
-    masked = {
-        str(d["key"]): "" if d.get("type") == "password" else str(values.get(str(d["key"]), ""))
-        for d in defs
-    }
+    masked = {str(d["key"]): "" if d.get("type") == "password" else str(values.get(str(d["key"]), "")) for d in defs}
     data = record.get("data") or None
     default_dir = str(package_installer.default_data_dir(pkg_id)) if data else None
     return {
@@ -804,14 +882,13 @@ async def update_package_endpoint(pkg_id: str) -> dict:
             raise PackageError(f"Package {pkg_id!r} not found", 404)
     except PackageError as exc:
         raise _http_error(exc) from None
-    return _start_job("update", pkg_id,
-                      lambda job_id: package_installer.update(pkg_id, job_id))
+    return _start_job("update", pkg_id, lambda job_id: package_installer.update(pkg_id, job_id))
 
 
 @router.delete("/{pkg_id}", dependencies=[Depends(require_admin)])
-async def uninstall_package(pkg_id: str, remove_volumes: bool = False,
-                            remove_images: bool = False,
-                            remove_data: bool = False) -> dict:
+async def uninstall_package(
+    pkg_id: str, remove_volumes: bool = False, remove_images: bool = False, remove_data: bool = False
+) -> dict:
     """Uninstall a package.
 
     ``remove_volumes`` also deletes the package's named volumes,
@@ -825,6 +902,8 @@ async def uninstall_package(pkg_id: str, remove_volumes: bool = False,
             raise PackageError(f"Package {pkg_id!r} not found", 404)
     except PackageError as exc:
         raise _http_error(exc) from None
-    return _start_job("uninstall", pkg_id,
-                      lambda job_id: package_installer.uninstall(
-                          pkg_id, job_id, remove_volumes, remove_images, remove_data))
+    return _start_job(
+        "uninstall",
+        pkg_id,
+        lambda job_id: package_installer.uninstall(pkg_id, job_id, remove_volumes, remove_images, remove_data),
+    )
