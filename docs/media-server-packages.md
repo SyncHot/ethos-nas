@@ -74,6 +74,12 @@ QuickSync vs ~0,8× with software (`CHANGELOG.md`, 2.41.1).
 - `PLEX_UID`/`PLEX_GID` from the EthOS service identity, `/config` on the data folder, media
   read-only, port 32400 only.
 - Optional `PLEX_CLAIM` (first-run only) and `ADVERTISE_IP` in the install dialog.
+- **Claiming matters more than it looks.** EthOS forbids host networking, so Plex sees every client
+  as the Docker gateway and an *unclaimed* server answers “You do not have access to this server”
+  even from the LAN. `ALLOWED_NETWORKS` (default `172.16.0.0/12,10.0.0.0/8,192.168.0.0/16`) makes
+  those ranges trusted without a Plex login so the wizard loads; the claim token in *Installed →
+  Settings* is the cleaner path (EthOS recreates the container and the image’s first-run script
+  exchanges the token). Clear the field once the server is claimed.
 - VAAPI via `/dev/dri`; NVENC is best-effort (Plex documents Intel Quick Sync only).
 - Hardware transcoding requires a **Plex Pass**.
 
@@ -107,6 +113,7 @@ health `healthy` on port 32400. Plex hardware transcoding itself needs a Plex Pa
 - [x] Packages QA clean for both (`ethos-qa static`: 0 errors on jellyfin/plex)
 - [ ] NVIDIA end-to-end verification on real hardware (no NVIDIA GPU on the dev host)
 - [ ] Plex NVENC official support (upstream documents Quick Sync only)
+- [x] Plex claim/unclaimed-server fix (1.0.2: `ALLOWED_NETWORKS`, transcode volume, walkthrough)
 
 ## Deferred
 
